@@ -184,25 +184,6 @@ class PlatformAutomation:
             ("tp_input", "估算止盈價", instruction.format_price(tp_price)),
         ]
 
-    def arrange(self, internal_platform: str, external_platform: str) -> None:
-        self.emergency.guard()
-        internal_profile = self.config["platforms"][internal_platform]
-        external_profile = self.config["platforms"][external_platform]
-        internal = self.windows.find(internal_profile["window_title"]["internal"])
-        external = self.windows.find(external_profile["window_title"]["external"])
-        if internal.handle == external.handle:
-            raise AutomationError(
-                "場內與場外目前指向同一個視窗，請設定不同的視窗標題規則。"
-            )
-        left, top, right, bottom = self.windows.work_area()
-        width = right - left
-        height = bottom - top
-        half = width // 2
-        self.windows.move(internal, left, top, half, height)
-        self.windows.move(external, left + half, top, width - half, height)
-        self.log("場內與場外視窗已平均排列為左、右各 50%。")
-
-
 def _plain(value: Decimal) -> str:
     text = format(value, "f")
     if "." not in text:

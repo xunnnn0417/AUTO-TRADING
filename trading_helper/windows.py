@@ -13,7 +13,6 @@ from typing import Callable
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 SW_RESTORE = 9
-SPI_GETWORKAREA = 0x0030
 GA_ROOT = 2
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
@@ -234,25 +233,6 @@ class WindowController:
         user32.SetForegroundWindow(window.handle)
         time.sleep(0.2)
         return self._refresh(window.handle)
-
-    def move(self, window: WindowInfo, left: int, top: int, width: int, height: int) -> None:
-        self.emergency.guard()
-        user32.ShowWindow(window.handle, SW_RESTORE)
-        if not user32.MoveWindow(window.handle, left, top, width, height, True):
-            raise AutomationError(f"無法移動視窗：{window.title}")
-
-    def work_area(self) -> tuple[int, int, int, int]:
-        rect = wintypes.RECT()
-        if not user32.SystemParametersInfoW(
-            SPI_GETWORKAREA, 0, ctypes.byref(rect), 0
-        ):
-            return (
-                0,
-                0,
-                user32.GetSystemMetrics(0),
-                user32.GetSystemMetrics(1),
-            )
-        return rect.left, rect.top, rect.right, rect.bottom
 
     def cursor_position(self) -> tuple[int, int]:
         point = wintypes.POINT()

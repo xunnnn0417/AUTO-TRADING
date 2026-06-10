@@ -106,7 +106,6 @@ class UiSignals(QObject):
     status = Signal(str)
     error = Signal(str)
     instruction = Signal(object)
-    dry_run = Signal()
     operation_started = Signal()
     operation_finished = Signal()
 
@@ -128,7 +127,6 @@ class TradingHelperApp(QMainWindow):
         self.signals.status.connect(self._set_status)
         self.signals.error.connect(self._show_error)
         self.signals.instruction.connect(self._show_instruction)
-        self.signals.dry_run.connect(self.execute_dry_run)
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.emergency = EmergencyController(self._emergency_callback)
@@ -256,16 +254,12 @@ class TradingHelperApp(QMainWindow):
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
-            ("排列視窗", self.arrange_windows, 0, 2),
             ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 0),
             ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 1),
             ("校準 TradingView", lambda: self.open_calibration("TradingView"), 1, 2),
             ("填入場內", lambda: self.fill_role("internal"), 2, 0),
             ("填入場外", lambda: self.fill_role("external"), 2, 1),
             ("填入兩邊", self.fill_both, 2, 2),
-            ("執行進場（模擬）", self.execute_dry_run, 3, 0),
-            ("執行完整流程", self.run_full_flow, 3, 1),
-            ("緊急停止", self.emergency.stop, 3, 2),
         ]
         for text, callback, row, column in definitions:
             button = QPushButton(text)
@@ -411,48 +405,6 @@ class TradingHelperApp(QMainWindow):
         item = self._require_instruction()
         self.automation.fill(internal_platform, "internal", item)
         self.automation.fill(external_platform, "external", item)
-
-    def arrange_windows(self) -> None:
-        internal_platform = self.internal_platform.currentText()
-        external_platform = self.external_platform.currentText()
-        self._start(
-            "排列視窗",
-            lambda: self.automation.arrange(
-                internal_platform,
-                external_platform,
-            ),
-        )
-
-    def execute_dry_run(self) -> None:
-        try:
-            item = self._require_instruction()
-        except Exception as exc:
-            self._show_error(str(exc))
-            return
-        message = (
-            "僅模擬確認，不會送出訂單\n\n"
-            f"商品：{item.symbol}\n"
-            f"場內：{self.internal_platform.currentText()} "
-            f"{direction_text(item.internal_direction)}，手數 {item.internal.lot}，"
-            f"止損 {item.internal.sl_points} 點，止盈 {item.internal.tp_points} 點\n"
-            f"場外：{self.external_platform.currentText()} "
-            f"{direction_text(item.external_direction)}，手數 {item.external.lot}，"
-            f"止損 {item.external.sl_points} 點，止盈 {item.external.tp_points} 點\n\n"
-            "程式不會點擊買入或賣出按鈕。"
-        )
-        QMessageBox.information(self, "執行進場 - 模擬模式", message)
-        self.log("已完成進場模擬確認，沒有送出任何訂單。")
-
-    def run_full_flow(self) -> None:
-        internal_platform = self.internal_platform.currentText()
-        external_platform = self.external_platform.currentText()
-
-        def task() -> None:
-            self._read_sheet_task()
-            self._fill_both_task(internal_platform, external_platform)
-            self.log("第一版完整流程已停在進場確認階段。")
-            self.signals.dry_run.emit()
-        self._start("完整流程", task)
 
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
