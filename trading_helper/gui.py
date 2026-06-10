@@ -107,6 +107,8 @@ class UiSignals(QObject):
     error = Signal(str)
     instruction = Signal(object)
     dry_run = Signal()
+    operation_started = Signal()
+    operation_finished = Signal()
 
 
 class TradingHelperApp(QMainWindow):
@@ -127,15 +129,58 @@ class TradingHelperApp(QMainWindow):
         self.signals.error.connect(self._show_error)
         self.signals.instruction.connect(self._show_instruction)
         self.signals.dry_run.connect(self.execute_dry_run)
+        self.signals.operation_started.connect(self._hide_for_operation)
+        self.signals.operation_finished.connect(self._restore_after_operation)
         self.emergency = EmergencyController(self._emergency_callback)
         self.windows = WindowController(self.emergency)
         self.automation = PlatformAutomation(
             self.store.data, self.windows, self.emergency, self.log
         )
         self._build()
+        self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
         self.log("第一版已啟動。目前禁止程式送出訂單。")
+
+    def _build_operation_hint(self) -> None:
+        self.operation_hint = QLabel("按 ESC 暫停操作")
+        self.operation_hint.setWindowFlags(
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        self.operation_hint.setAlignment(Qt.AlignCenter)
+        self.operation_hint.setStyleSheet(
+            "QLabel {"
+            "background: rgba(20, 20, 20, 210);"
+            "color: white;"
+            "padding: 5px 14px;"
+            "border-radius: 4px;"
+            "font-size: 11px;"
+            "}"
+        )
+        self.operation_hint.adjustSize()
+
+    def _hide_for_operation(self) -> None:
+        self.hide()
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.operation_hint.adjustSize()
+            self.operation_hint.move(
+                area.x() + (area.width() - self.operation_hint.width()) // 2,
+                area.y() + 4,
+            )
+        self.operation_hint.show()
+        self.operation_hint.raise_()
+
+    def _restore_after_operation(self) -> None:
+        self.operation_hint.hide()
+        self.show()
+        self._dock_top()
+        self.raise_()
+        self.activateWindow()
 
     def _build(self) -> None:
         central = QWidget()
@@ -293,6 +338,7 @@ class TradingHelperApp(QMainWindow):
             self.log("已解除緊急停止，開始執行新的操作。")
 
         def worker() -> None:
+            self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
             try:
                 task()
@@ -304,6 +350,8 @@ class TradingHelperApp(QMainWindow):
                 self.signals.status.emit("錯誤")
                 self.log(f"錯誤：{exc}")
                 self.signals.error.emit(str(exc))
+            finally:
+                self.signals.operation_finished.emit()
 
         threading.Thread(target=worker, daemon=True).start()
 
