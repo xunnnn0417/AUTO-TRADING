@@ -80,7 +80,7 @@ class PlatformAutomation:
         )
         current_price = None
         if platform == "MT5":
-            price_point_name = "ask_price" if direction == "BUY" else "bid_price"
+            price_point_name = self._mt5_price_point(role, direction)
             if price_point_name in points:
                 price_window = self._window_for_point(
                     profile, role, points[price_point_name]
@@ -123,6 +123,10 @@ class PlatformAutomation:
                 value,
             )
         self.log(f"{role_text} {platform} 欄位已填妥，沒有送出訂單。")
+
+    @staticmethod
+    def _mt5_price_point(role: str, direction: str) -> str:
+        return "ask_price"
 
     def _ensure_ctrader_risk_fields(
         self,

@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -112,8 +113,10 @@ class TradingHelperApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("交易流程輔助工具 - 第一版")
-        self.resize(690, 800)
-        self.setMinimumSize(640, 700)
+        self.resize(1200, 430)
+        self.setMinimumWidth(900)
+        self.setMinimumHeight(390)
+        self.setMaximumHeight(460)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.store = ConfigStore()
         self.reader = SheetReader()
@@ -130,14 +133,17 @@ class TradingHelperApp(QMainWindow):
             self.store.data, self.windows, self.emergency, self.log
         )
         self._build()
+        self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
         self.log("第一版已啟動。目前禁止程式送出訂單。")
 
     def _build(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
-        main = QVBoxLayout(central)
-        main.setContentsMargins(12, 12, 12, 12)
+        main = QGridLayout(central)
+        main.setContentsMargins(8, 8, 8, 8)
+        main.setHorizontalSpacing(8)
+        main.setVerticalSpacing(5)
 
         header = QHBoxLayout()
         title = QLabel("交易流程輔助工具")
@@ -154,7 +160,7 @@ class TradingHelperApp(QMainWindow):
         header.addWidget(self.always_on_top)
         header.addWidget(minimize_button)
         header.addWidget(self.status_label)
-        main.addLayout(header)
+        main.addLayout(header, 0, 0, 1, 2)
 
         platforms = QGroupBox("平台")
         platform_layout = QGridLayout(platforms)
@@ -168,7 +174,7 @@ class TradingHelperApp(QMainWindow):
         platform_layout.addWidget(self.internal_platform, 0, 1)
         platform_layout.addWidget(QLabel("場外平台"), 0, 2)
         platform_layout.addWidget(self.external_platform, 0, 3)
-        main.addWidget(platforms)
+        main.addWidget(platforms, 1, 0)
 
         data_box = QGroupBox("試算表交易資料")
         data_layout = QGridLayout(data_box)
@@ -188,7 +194,7 @@ class TradingHelperApp(QMainWindow):
             self.data_labels[key] = value
             data_layout.addWidget(QLabel(text), row, base)
             data_layout.addWidget(value, row, base + 1)
-        main.addWidget(data_box)
+        main.addWidget(data_box, 2, 0, 2, 1)
 
         options = QHBoxLayout()
         self.simultaneous = QCheckBox("同時進場")
@@ -198,7 +204,7 @@ class TradingHelperApp(QMainWindow):
         options.addWidget(self.simultaneous)
         options.addStretch()
         options.addWidget(note)
-        main.addLayout(options)
+        main.addLayout(options, 4, 0)
 
         actions = QGroupBox("操作")
         action_layout = QGridLayout(actions)
@@ -220,7 +226,7 @@ class TradingHelperApp(QMainWindow):
             button = QPushButton(text)
             button.clicked.connect(callback)
             action_layout.addWidget(button, row, column)
-        main.addWidget(actions)
+        main.addWidget(actions, 1, 1, 3, 1)
 
         future = QGroupBox("第二版功能")
         future_layout = QHBoxLayout(future)
@@ -232,15 +238,27 @@ class TradingHelperApp(QMainWindow):
             button = QPushButton(text)
             button.setEnabled(False)
             future_layout.addWidget(button)
-        main.addWidget(future)
+        main.addWidget(future, 4, 1)
 
         log_box = QGroupBox("操作紀錄")
         log_layout = QVBoxLayout(log_box)
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(72)
         self.log_text.setStyleSheet("font-family: Consolas; font-size: 11px;")
         log_layout.addWidget(self.log_text)
-        main.addWidget(log_box, 1)
+        main.addWidget(log_box, 5, 0, 1, 2)
+        main.setColumnStretch(0, 3)
+        main.setColumnStretch(1, 2)
+
+    def _dock_top(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        width = min(1200, max(900, area.width() - 40))
+        self.resize(width, 430)
+        self.move(area.x() + (area.width() - width) // 2, area.y())
 
     def log(self, message: str) -> None:
         self.signals.log.emit(message)

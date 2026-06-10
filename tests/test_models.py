@@ -51,6 +51,20 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(sl, Decimal("1999.99900"))
         self.assertEqual(tp, Decimal("2000.00200"))
 
+    def test_mt5_estimate_always_reads_ask(self) -> None:
+        self.assertEqual(
+            PlatformAutomation._mt5_price_point("external", "BUY"),
+            "ask_price",
+        )
+        self.assertEqual(
+            PlatformAutomation._mt5_price_point("external", "SELL"),
+            "ask_price",
+        )
+        self.assertEqual(
+            PlatformAutomation._mt5_price_point("internal", "SELL"),
+            "ask_price",
+        )
+
     def test_rejects_unknown_direction(self) -> None:
         values = valid_values()
         values["direction"] = "HOLD"
