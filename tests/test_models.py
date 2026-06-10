@@ -37,19 +37,32 @@ class TradeInstructionTests(unittest.TestCase):
     def test_mt5_prices_follow_direction(self) -> None:
         item = TradeInstruction.from_mapping(2, valid_values())
         sl, tp = item.estimated_prices("BUY", item.internal)
-        self.assertEqual(sl, Decimal("1.09900"))
-        self.assertEqual(tp, Decimal("1.10200"))
+        self.assertEqual(sl, Decimal("-98.90000"))
+        self.assertEqual(tp, Decimal("201.10000"))
         sl, tp = item.estimated_prices("SELL", item.external)
-        self.assertEqual(sl, Decimal("1.10120"))
-        self.assertEqual(tp, Decimal("1.09760"))
+        self.assertEqual(sl, Decimal("121.10000"))
+        self.assertEqual(tp, Decimal("-238.90000"))
 
     def test_mt5_prices_accept_current_platform_price(self) -> None:
         item = TradeInstruction.from_mapping(2, valid_values())
         sl, tp = item.estimated_prices(
             "BUY", item.internal, Decimal("2000.00")
         )
-        self.assertEqual(sl, Decimal("1999.99900"))
-        self.assertEqual(tp, Decimal("2000.00200"))
+        self.assertEqual(sl, Decimal("1900.00"))
+        self.assertEqual(tp, Decimal("2200.00"))
+
+    def test_gold_mt5_uses_sheet_price_distances(self) -> None:
+        values = valid_values()
+        values["external_sl_points"] = "-31.35"
+        values["external_tp_points"] = "6.05"
+        values["point_size"] = "0.01"
+        values["price_digits"] = "2"
+        item = TradeInstruction.from_mapping(2, values)
+        sl, tp = item.estimated_prices(
+            "SELL", item.external, Decimal("4172.89")
+        )
+        self.assertEqual(item.format_price(sl), "4204.24")
+        self.assertEqual(item.format_price(tp), "4166.84")
 
     def test_mt5_estimate_always_reads_ask(self) -> None:
         self.assertEqual(
@@ -91,7 +104,7 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(item.internal.sl_points, Decimal("-100"))
         self.assertEqual(item.external.sl_points, Decimal("-120"))
         sl, _ = item.estimated_prices("BUY", item.internal)
-        self.assertEqual(sl, Decimal("1.09900"))
+        self.assertEqual(sl, Decimal("-98.90000"))
 
     def test_cell_reference_position(self) -> None:
         self.assertEqual(_cell_position("B5"), (4, 1))

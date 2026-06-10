@@ -132,8 +132,10 @@ class TradeInstruction:
             raise ValidationError(
                 "無法取得 MT5 目前價格，也沒有設定備用估算價格。"
             )
-        sl_distance = abs(side.sl_points) * self.point_size
-        tp_distance = side.tp_points * self.point_size
+        # Sheet SL/TP values are price distances. cTrader converts them to
+        # platform points separately; MT5 adds/subtracts them from Ask directly.
+        sl_distance = abs(side.sl_points)
+        tp_distance = side.tp_points
         if direction == "BUY":
             return price - sl_distance, price + tp_distance
         return price + sl_distance, price - tp_distance
