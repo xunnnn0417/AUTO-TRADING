@@ -279,6 +279,7 @@ class WindowController:
         self.emergency.guard()
         try:
             import pyautogui
+            import pyperclip
         except ImportError as exc:
             raise AutomationError(
                 "尚未安裝 pyautogui，請先執行 install.bat。"
@@ -293,7 +294,8 @@ class WindowController:
         self.emergency.guard()
         pyautogui.hotkey("ctrl", "a")
         self.emergency.guard()
-        pyautogui.write(str(text), interval=0.04)
+        pyperclip.copy(str(text))
+        pyautogui.hotkey("ctrl", "v")
 
     def click(self, window: WindowInfo, point: dict[str, float]) -> None:
         self.emergency.guard()
