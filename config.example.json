@@ -1,0 +1,64 @@
+{
+  "sheet": {
+    "mode": "csv",
+    "data_layout": "cells",
+    "spreadsheet_url": "",
+    "worksheet": "Sheet1",
+    "gid": "0",
+    "service_account_file": "",
+    "row_number": 2,
+    "status_value": "",
+    "columns": {
+      "status": "",
+      "symbol": "GOLD",
+      "direction": "C4",
+      "internal_lot": "E8",
+      "internal_sl_points": "E6",
+      "internal_tp_points": "F6",
+      "external_lot": "G8",
+      "external_sl_points": "G6",
+      "external_tp_points": "H6",
+      "estimated_price": "",
+      "point_size": "0.01",
+      "price_digits": "2",
+      "internal_entry_price": "",
+      "final_external_sl_price": "",
+      "final_external_tp_price": ""
+    },
+    "defaults": {
+      "point_size": "0.01",
+      "price_digits": "2"
+    }
+  },
+  "platforms": {
+    "cTrader": {
+      "window_title": {
+        "internal": "cTrader",
+        "external": "cTrader"
+      },
+      "points": {},
+      "open_panel_before_fill": false
+    },
+    "MT5": {
+      "window_title": {
+        "internal": "MetaTrader",
+        "external": "MetaTrader"
+      },
+      "points": {},
+      "open_panel_before_fill": false
+    },
+    "TradingView": {
+      "window_title": {
+        "internal": "TradingView",
+        "external": "TradingView"
+      },
+      "points": {},
+      "open_panel_before_fill": false
+    }
+  },
+  "ui": {
+    "internal_platform": "cTrader",
+    "external_platform": "MT5",
+    "simultaneous_entry": false
+  }
+}
