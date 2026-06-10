@@ -242,11 +242,8 @@ class TradingHelperApp(QMainWindow):
         main.addWidget(data_box, 2, 0, 2, 1)
 
         options = QHBoxLayout()
-        self.simultaneous = QCheckBox("同時進場")
-        self.simultaneous.setChecked(self.store.data["ui"]["simultaneous_entry"])
         note = QLabel("第一版僅確認資料，不會點擊下單按鈕。")
         note.setStyleSheet("color: #8a4d00;")
-        options.addWidget(self.simultaneous)
         options.addStretch()
         options.addWidget(note)
         main.addLayout(options, 4, 0)
@@ -451,7 +448,6 @@ class TradingHelperApp(QMainWindow):
             {
                 "internal_platform": self.internal_platform.currentText(),
                 "external_platform": self.external_platform.currentText(),
-                "simultaneous_entry": self.simultaneous.isChecked(),
             }
         )
         self.store.save()

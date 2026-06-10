@@ -58,7 +58,6 @@
   },
   "ui": {
     "internal_platform": "cTrader",
-    "external_platform": "MT5",
-    "simultaneous_entry": false
+    "external_platform": "MT5"
   }
 }
