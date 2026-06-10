@@ -365,8 +365,10 @@ class PlatformAutomation:
 
         profile = self.config["platforms"][external_platform]
         points = profile.get("points", {})
-        required = ["sl_input", "tp_input"]
-        if external_platform == "cTrader":
+        if external_platform == "MT5":
+            required = ["position_sl_input", "position_tp_input"]
+        else:
+            required = ["sl_input", "tp_input"]
             required.extend(["sl_checkbox", "tp_checkbox"])
         missing = [name for name in required if name not in points]
         if missing:
@@ -376,7 +378,7 @@ class PlatformAutomation:
 
         if external_platform == "MT5":
             if not self.windows.point_window_exists(
-                profile, "external", points["sl_input"]
+                profile, "external", points["position_sl_input"]
             ):
                 position_point = points.get("positions_entry_price")
                 if position_point is None:
@@ -389,11 +391,22 @@ class PlatformAutomation:
                 )
                 self.windows.double_click(position_window, position_point)
                 self.windows.wait_for_point_window(
-                    profile, "external", points["sl_input"], timeout=3.0
+                    profile,
+                    "external",
+                    points["position_sl_input"],
+                    timeout=3.0,
                 )
             values = (
-                ("sl_input", "正式止損價", instruction.format_price(sl_price)),
-                ("tp_input", "正式止盈價", instruction.format_price(tp_price)),
+                (
+                    "position_sl_input",
+                    "正式止損價",
+                    instruction.format_price(sl_price),
+                ),
+                (
+                    "position_tp_input",
+                    "正式止盈價",
+                    instruction.format_price(tp_price),
+                ),
             )
         else:
             self._ensure_ctrader_risk_fields(profile, "external", points)
