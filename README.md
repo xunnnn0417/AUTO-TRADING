@@ -9,7 +9,9 @@ MT5 order panels. This version never clicks Buy or Sell.
 - 從 Google 試算表讀取指定儲存格
 - 自動反轉場內／場外方向
 - cTrader 倉位、止損點數、止盈點數填入
+- cTrader 止損／止盈勾選框狀態偵測與自動啟用
 - MT5 新訂單視窗、Bid／Ask OCR、交易量與止盈止損價格填入
+- MT5 訂單視窗就緒偵測，視窗出現後立即填入
 - 每個平台獨立校準，支援視窗相對座標
 - `ESC` 緊急停止
 - 第一版不會點擊買入或賣出按鈕

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -11,7 +10,13 @@ from .windows import AutomationError, EmergencyController, WindowController
 Log = Callable[[str], None]
 
 REQUIRED_POINTS = {
-    "cTrader": ["lot_input", "sl_input", "tp_input"],
+    "cTrader": [
+        "lot_input",
+        "sl_checkbox",
+        "sl_input",
+        "tp_checkbox",
+        "tp_input",
+    ],
     "MT5": ["lot_input", "sl_input", "tp_input"],
 }
 
@@ -48,16 +53,24 @@ class PlatformAutomation:
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
 
-        should_open_panel = (
-            platform == "MT5" or profile.get("open_panel_before_fill")
+        should_open_panel = platform == "MT5" or profile.get(
+            "open_panel_before_fill"
         )
         if should_open_panel and "new_order_button" in points:
-            self.log(f"正在開啟 {platform} 下單面板。")
-            opener_window = self._window_for_point(
-                profile, role, points["new_order_button"]
+            panel_is_open = self.windows.point_window_exists(
+                profile, role, points["lot_input"]
             )
-            self.windows.click(opener_window, points["new_order_button"])
-            time.sleep(0.8)
+            if panel_is_open:
+                self.log(f"{platform} 下單面板已開啟，直接填入。")
+            else:
+                self.log(f"正在開啟 {platform} 下單面板。")
+                opener_window = self._window_for_point(
+                    profile, role, points["new_order_button"]
+                )
+                self.windows.click(opener_window, points["new_order_button"])
+                self.windows.wait_for_point_window(
+                    profile, role, points["lot_input"], timeout=3.0
+                )
 
         side: SideValues = getattr(instruction, role)
         direction = (
@@ -87,6 +100,8 @@ class PlatformAutomation:
             instruction,
             current_price,
         )
+        if platform == "cTrader":
+            self._ensure_ctrader_risk_fields(profile, role, points)
         for point_name, label, value in values:
             self.emergency.guard()
             self.log(f"正在填入{role_text} {platform} 的{label}：{value}")
@@ -108,6 +123,26 @@ class PlatformAutomation:
                 value,
             )
         self.log(f"{role_text} {platform} 欄位已填妥，沒有送出訂單。")
+
+    def _ensure_ctrader_risk_fields(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        points: dict[str, dict[str, Any]],
+    ) -> None:
+        for point_name, label in (
+            ("sl_checkbox", "止損"),
+            ("tp_checkbox", "止盈"),
+        ):
+            checkbox_window = self._window_for_point(
+                profile, role, points[point_name]
+            )
+            if self.windows.ensure_checkbox_checked(
+                checkbox_window, points[point_name]
+            ):
+                self.log(f"已自動勾選 cTrader {label}。")
+            else:
+                self.log(f"cTrader {label}已勾選。")
 
     def _window_for_point(
         self,

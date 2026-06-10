@@ -203,6 +203,12 @@ class WindowController:
             raise AutomationError(f"找不到符合規則的可見視窗：{title_pattern}")
         return matches[0]
 
+    def try_find(self, title_pattern: str) -> WindowInfo | None:
+        try:
+            return self.find(title_pattern)
+        except AutomationError:
+            return None
+
     def active_window(self) -> WindowInfo:
         handle = user32.GetForegroundWindow()
         for window in self.list_windows():
@@ -308,6 +314,60 @@ class WindowController:
         x, y = self.screen_point(focused, point)
         self.emergency.guard()
         pyautogui.click(x, y)
+
+    def point_window_exists(
+        self,
+        profile: dict,
+        role: str,
+        point: dict[str, float],
+    ) -> bool:
+        title_pattern = str(point.get("window_title", "")).strip()
+        if not title_pattern:
+            title_pattern = profile["window_title"][role]
+        return self.try_find(title_pattern) is not None
+
+    def wait_for_point_window(
+        self,
+        profile: dict,
+        role: str,
+        point: dict[str, float],
+        timeout: float,
+    ) -> WindowInfo:
+        title_pattern = str(point.get("window_title", "")).strip()
+        if not title_pattern:
+            title_pattern = profile["window_title"][role]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            window = self.try_find(title_pattern)
+            if window is not None:
+                return window
+            time.sleep(0.05)
+        raise AutomationError("MT5 新訂單視窗未在期限內出現，已停止填入。")
+
+    def ensure_checkbox_checked(
+        self,
+        window: WindowInfo,
+        point: dict[str, float],
+    ) -> bool:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError("尚未安裝 pyautogui，請先執行 install.bat。") from exc
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        self.emergency.guard()
+        image = pyautogui.screenshot(
+            region=(max(0, x - 7), max(0, y - 7), 15, 15)
+        ).convert("L")
+        bright_pixels = sum(pixel >= 150 for pixel in image.getdata())
+        if bright_pixels >= 5:
+            return False
+        pyautogui.click(x, y)
+        time.sleep(0.08)
+        return True
 
     def show_marker(self, x: int, y: int, duration_ms: int = 2500) -> None:
         threading.Thread(

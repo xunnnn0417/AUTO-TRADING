@@ -46,7 +46,9 @@ PLATFORMS = ("cTrader", "MT5")
 CALIBRATION_TARGETS = {
     "cTrader": [
         ("lot_input", "倉位／手數輸入欄"),
+        ("sl_checkbox", "止損啟用勾選框"),
         ("sl_input", "止損點數輸入欄"),
+        ("tp_checkbox", "止盈啟用勾選框"),
         ("tp_input", "止盈點數輸入欄"),
         ("buy_button", "買入按鈕（第二版使用）"),
         ("sell_button", "賣出按鈕（第二版使用）"),
