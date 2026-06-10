@@ -310,6 +310,22 @@ class WindowController:
         self.emergency.guard()
         pyautogui.click(x, y)
 
+    def double_click(
+        self,
+        window: WindowInfo,
+        point: dict[str, float],
+    ) -> None:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError("尚未安裝 pyautogui，請先執行 install.bat。") from exc
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        self.emergency.guard()
+        pyautogui.doubleClick(x, y, interval=0.08)
+
     def point_window_exists(
         self,
         profile: dict,

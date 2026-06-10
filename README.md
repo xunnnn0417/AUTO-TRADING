@@ -6,6 +6,9 @@ MT5 order panels. This version never clicks Buy or Sell.
 後續開發範圍只保留 TradingView 場外部位繪製；自動下單、成交價
 寫回與 MT5 成交後二次修正止盈止損不再開發。
 
+TradingView 流程會前往最新價格、依場外方向選擇 Long／Short Position、
+放置並雙擊部位，接著以 MT5 Ask 填入進場、止損與止盈價格。
+
 ## 功能
 
 - 中文 Windows 桌面介面

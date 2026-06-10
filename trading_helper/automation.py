@@ -20,6 +20,17 @@ REQUIRED_POINTS = {
     "MT5": ["lot_input", "sl_input", "tp_input"],
 }
 
+TRADINGVIEW_REQUIRED_POINTS = [
+    "latest_price_button",
+    "long_tool",
+    "short_tool",
+    "position_placement",
+    "entry_input",
+    "sl_input",
+    "tp_input",
+    "confirm_button",
+]
+
 
 class PlatformAutomation:
     def __init__(
@@ -214,6 +225,113 @@ class PlatformAutomation:
             ("sl_input", "估算止損價", instruction.format_price(sl_price)),
             ("tp_input", "估算止盈價", instruction.format_price(tp_price)),
         ]
+
+    def draw_tradingview(
+        self,
+        instruction: TradeInstruction,
+        *,
+        external_platform: str,
+    ) -> None:
+        self.emergency.guard()
+        if external_platform != "MT5":
+            raise AutomationError(
+                "TradingView 部位目前需要場外平台為 MT5，才能讀取 Ask。"
+            )
+
+        mt5_profile = self.config["platforms"]["MT5"]
+        mt5_points = mt5_profile.get("points", {})
+        if "ask_price" not in mt5_points:
+            raise AutomationError("MT5 尚未校準 Ask 價格位置。")
+        ask_window = self._window_for_point(
+            mt5_profile, "external", mt5_points["ask_price"]
+        )
+        entry_price = self.windows.read_number(
+            ask_window, mt5_points["ask_price"]
+        )
+        sl_price, tp_price = instruction.estimated_prices(
+            instruction.external_direction,
+            instruction.external,
+            entry_price,
+        )
+
+        profile = self.config["platforms"]["TradingView"]
+        points = profile.get("points", {})
+        missing = [
+            name for name in TRADINGVIEW_REQUIRED_POINTS if name not in points
+        ]
+        if missing:
+            raise AutomationError(
+                "TradingView 尚未完成以下校準："
+                + ", ".join(missing)
+            )
+
+        self._click_profile_point(
+            profile, "external", points["latest_price_button"]
+        )
+        tool_name = (
+            "long_tool"
+            if instruction.external_direction == "BUY"
+            else "short_tool"
+        )
+        self._click_profile_point(profile, "external", points[tool_name])
+        self._click_profile_point(
+            profile, "external", points["position_placement"]
+        )
+        self.windows.double_click(
+            self._window_for_point(
+                profile, "external", points["position_placement"]
+            ),
+            points["position_placement"],
+        )
+        self._fill_profile_point(
+            profile,
+            "external",
+            points["entry_input"],
+            instruction.format_price(entry_price),
+        )
+        self._fill_profile_point(
+            profile,
+            "external",
+            points["sl_input"],
+            instruction.format_price(sl_price),
+        )
+        self._fill_profile_point(
+            profile,
+            "external",
+            points["tp_input"],
+            instruction.format_price(tp_price),
+        )
+        self._click_profile_point(
+            profile, "external", points["confirm_button"]
+        )
+        self.log(
+            "TradingView 場外"
+            f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}"
+            f"部位已繪製：進場 {instruction.format_price(entry_price)}，"
+            f"止損 {instruction.format_price(sl_price)}，"
+            f"止盈 {instruction.format_price(tp_price)}。"
+        )
+
+    def _click_profile_point(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        point: dict[str, Any],
+    ) -> None:
+        self.windows.click(self._window_for_point(profile, role, point), point)
+
+    def _fill_profile_point(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        point: dict[str, Any],
+        value: str,
+    ) -> None:
+        self.windows.click_and_type(
+            self._window_for_point(profile, role, point),
+            point,
+            value,
+        )
 
 def _plain(value: Decimal) -> str:
     text = format(value, "f")

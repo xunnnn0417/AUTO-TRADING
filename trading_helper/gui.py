@@ -68,9 +68,10 @@ CALIBRATION_TARGETS = {
         ("positions_entry_price", "持倉成交價位置（第二版使用）"),
     ],
     "TradingView": [
-        ("symbol_search", "商品搜尋欄"),
+        ("latest_price_button", "前往最新價格按鈕"),
         ("long_tool", "多頭部位工具"),
         ("short_tool", "空頭部位工具"),
+        ("position_placement", "部位放置／雙擊位置"),
         ("entry_input", "部位進場價輸入欄"),
         ("sl_input", "部位止損價輸入欄"),
         ("tp_input", "部位止盈價輸入欄"),
@@ -270,8 +271,8 @@ class TradingHelperApp(QMainWindow):
 
         future = QGroupBox("TradingView")
         future_layout = QHBoxLayout(future)
-        tradingview_button = QPushButton("繪製 TradingView 部位（開發中）")
-        tradingview_button.setEnabled(False)
+        tradingview_button = QPushButton("繪製 TradingView 部位")
+        tradingview_button.clicked.connect(self.draw_tradingview)
         future_layout.addWidget(tradingview_button)
         main.addWidget(future, 4, 1)
 
@@ -401,6 +402,18 @@ class TradingHelperApp(QMainWindow):
         item = self._require_instruction()
         self.automation.fill(internal_platform, "internal", item)
         self.automation.fill(external_platform, "external", item)
+
+    def draw_tradingview(self) -> None:
+        external_platform = self.external_platform.currentText()
+
+        def task() -> None:
+            item = self._require_instruction()
+            self.automation.draw_tradingview(
+                item,
+                external_platform=external_platform,
+            )
+
+        self._start("繪製 TradingView", task)
 
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
