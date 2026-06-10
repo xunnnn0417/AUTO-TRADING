@@ -197,9 +197,21 @@ class PlatformAutomation:
         point: dict[str, Any],
     ):
         point_pattern = str(point.get("window_title", "")).strip()
-        return self.windows.find(
-            point_pattern or profile["window_title"][role]
-        )
+        patterns = [
+            point_pattern,
+            str(profile["window_title"][role]).strip(),
+        ]
+        if profile is self.config["platforms"].get("TradingView"):
+            patterns.append(r"/\s*常用$")
+        last_error: AutomationError | None = None
+        for pattern in dict.fromkeys(value for value in patterns if value):
+            try:
+                return self.windows.find(pattern)
+            except AutomationError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise AutomationError("視窗標題規則不可空白。")
 
     def _field_values(
         self,
@@ -315,6 +327,106 @@ class PlatformAutomation:
             f"部位已繪製：進場 {instruction.format_price(entry_price)}，"
             f"止損 {instruction.format_price(sl_price)}，"
             f"止盈 {instruction.format_price(tp_price)}。"
+        )
+
+    def sync_external_sl_tp(
+        self,
+        instruction: TradeInstruction,
+        *,
+        internal_platform: str,
+        external_platform: str,
+    ) -> None:
+        self.emergency.guard()
+        internal_profile = self.config["platforms"][internal_platform]
+        internal_points = internal_profile.get("points", {})
+        entry_point = internal_points.get("positions_entry_price")
+        if entry_point is None:
+            raise AutomationError(
+                f"{internal_platform} 尚未校準持倉成交價位置。"
+            )
+        entry_window = self._window_for_point(
+            internal_profile, "internal", entry_point
+        )
+        if internal_platform == "cTrader":
+            entry_price = self.windows.read_hover_number(
+                entry_window, entry_point
+            )
+        else:
+            entry_price = self.windows.read_number(entry_window, entry_point)
+        sl_price, tp_price = instruction.estimated_prices(
+            instruction.external_direction,
+            instruction.external,
+            entry_price,
+        )
+        self.log(
+            f"已讀取場內 {internal_platform} 實際進場價："
+            f"{instruction.format_price(entry_price)}"
+        )
+
+        profile = self.config["platforms"][external_platform]
+        points = profile.get("points", {})
+        required = ["sl_input", "tp_input"]
+        if external_platform == "cTrader":
+            required.extend(["sl_checkbox", "tp_checkbox"])
+        missing = [name for name in required if name not in points]
+        if missing:
+            raise AutomationError(
+                f"{external_platform} 尚未完成以下校準：{', '.join(missing)}"
+            )
+
+        if external_platform == "MT5":
+            if not self.windows.point_window_exists(
+                profile, "external", points["sl_input"]
+            ):
+                position_point = points.get("positions_entry_price")
+                if position_point is None:
+                    raise AutomationError(
+                        "MT5 修改視窗未開啟，且尚未校準持倉成交價位置。"
+                    )
+                self.log("正在從 MT5 場外持倉列開啟修改視窗。")
+                position_window = self._window_for_point(
+                    profile, "external", position_point
+                )
+                self.windows.double_click(position_window, position_point)
+                self.windows.wait_for_point_window(
+                    profile, "external", points["sl_input"], timeout=3.0
+                )
+            values = (
+                ("sl_input", "正式止損價", instruction.format_price(sl_price)),
+                ("tp_input", "正式止盈價", instruction.format_price(tp_price)),
+            )
+        else:
+            self._ensure_ctrader_risk_fields(profile, "external", points)
+            values = (
+                (
+                    "sl_input",
+                    "止損點數",
+                    _plain(instruction.external.sl_points / instruction.point_size),
+                ),
+                (
+                    "tp_input",
+                    "止盈點數",
+                    _plain(instruction.external.tp_points / instruction.point_size),
+                ),
+            )
+
+        for point_name, label, value in values:
+            self._fill_field(
+                profile,
+                "external",
+                points,
+                "場外",
+                external_platform,
+                point_name,
+                label,
+                value,
+            )
+        self.log(
+            f"場外 {external_platform} 止盈止損已填入："
+            f"場內成交價 {instruction.format_price(entry_price)}，"
+            f"止損 {instruction.format_price(sl_price)}，"
+            f"止盈 {instruction.format_price(tp_price)}。"
+            "程式沒有按下最後確認按鈕。"
         )
 
     def _click_profile_point(

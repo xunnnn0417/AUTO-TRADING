@@ -269,8 +269,11 @@ class TradingHelperApp(QMainWindow):
             action_layout.addWidget(button, row, column)
         main.addWidget(actions, 1, 1, 3, 1)
 
-        future = QGroupBox("TradingView")
+        future = QGroupBox("進場後操作")
         future_layout = QHBoxLayout(future)
+        sync_sl_tp_button = QPushButton("同步場外止盈止損")
+        sync_sl_tp_button.clicked.connect(self.sync_external_sl_tp)
+        future_layout.addWidget(sync_sl_tp_button)
         tradingview_button = QPushButton("繪製 TradingView 部位")
         tradingview_button.clicked.connect(self.draw_tradingview)
         future_layout.addWidget(tradingview_button)
@@ -415,6 +418,20 @@ class TradingHelperApp(QMainWindow):
 
         self._start("繪製 TradingView", task)
 
+    def sync_external_sl_tp(self) -> None:
+        internal_platform = self.internal_platform.currentText()
+        external_platform = self.external_platform.currentText()
+
+        def task() -> None:
+            item = self._require_instruction()
+            self.automation.sync_external_sl_tp(
+                item,
+                internal_platform=internal_platform,
+                external_platform=external_platform,
+            )
+
+        self._start("同步場外止盈止損", task)
+
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
             raise AutomationError("請先讀取 Google 試算表，再執行這項操作。")
@@ -498,10 +515,22 @@ class CalibrationDialog(QDialog):
                 active = self.app.windows.window_at_cursor()
                 x, y = self.app.windows.cursor_position()
                 point = self.app.windows.relative_point(active, x, y)
-                point["window_title"] = re.escape(active.title)
                 profile = self.app.store.data["platforms"][self.platform]
+                if self.platform == "TradingView":
+                    stable_title = r"/\s*常用$"
+                    point["window_title"] = stable_title
+                    profile["window_title"]["internal"] = stable_title
+                    profile["window_title"]["external"] = stable_title
+                else:
+                    point["window_title"] = re.escape(active.title)
                 profile["points"][key] = point
-                if key == "new_order_button" or not profile["window_title"]["internal"]:
+                if (
+                    self.platform != "TradingView"
+                    and (
+                        key == "new_order_button"
+                        or not profile["window_title"]["internal"]
+                    )
+                ):
                     profile["window_title"]["internal"] = re.escape(active.title)
                     profile["window_title"]["external"] = re.escape(active.title)
                 self.app.store.save()
