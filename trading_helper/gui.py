@@ -268,16 +268,11 @@ class TradingHelperApp(QMainWindow):
             action_layout.addWidget(button, row, column)
         main.addWidget(actions, 1, 1, 3, 1)
 
-        future = QGroupBox("第二版功能")
+        future = QGroupBox("TradingView")
         future_layout = QHBoxLayout(future)
-        for text in (
-            "讀取場內成交價",
-            "同步場外最終止盈止損",
-            "繪製 TradingView 部位",
-        ):
-            button = QPushButton(text)
-            button.setEnabled(False)
-            future_layout.addWidget(button)
+        tradingview_button = QPushButton("繪製 TradingView 部位（開發中）")
+        tradingview_button.setEnabled(False)
+        future_layout.addWidget(tradingview_button)
         main.addWidget(future, 4, 1)
 
         log_box = QGroupBox("操作紀錄")

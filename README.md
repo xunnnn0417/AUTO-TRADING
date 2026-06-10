@@ -3,6 +3,9 @@
 Windows always-on-top helper for reading a Google Sheet and filling cTrader or
 MT5 order panels. This version never clicks Buy or Sell.
 
+後續開發範圍只保留 TradingView 場外部位繪製；自動下單、成交價
+寫回與 MT5 成交後二次修正止盈止損不再開發。
+
 ## 功能
 
 - 中文 Windows 桌面介面
