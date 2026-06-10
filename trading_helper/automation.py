@@ -194,13 +194,13 @@ class PlatformAutomation:
             raise AutomationError(
                 "場內與場外目前指向同一個視窗，請設定不同的視窗標題規則。"
             )
-        screen_width = self.windows.user_screen_width if hasattr(self.windows, "user_screen_width") else 0
-        screen_width = screen_width or __import__("ctypes").windll.user32.GetSystemMetrics(0)
-        screen_height = __import__("ctypes").windll.user32.GetSystemMetrics(1)
-        half = screen_width // 2
-        self.windows.move(internal, 0, 0, half, screen_height)
-        self.windows.move(external, half, 0, screen_width - half, screen_height)
-        self.log("場內與場外視窗已排列在螢幕左右兩側。")
+        left, top, right, bottom = self.windows.work_area()
+        width = right - left
+        height = bottom - top
+        half = width // 2
+        self.windows.move(internal, left, top, half, height)
+        self.windows.move(external, left + half, top, width - half, height)
+        self.log("場內與場外視窗已平均排列為左、右各 50%。")
 
 
 def _plain(value: Decimal) -> str:
