@@ -78,6 +78,17 @@ class PlatformAutomation:
             if role == "internal"
             else instruction.external_direction
         )
+        if platform == "MT5":
+            self._fill_field(
+                profile,
+                role,
+                points,
+                role_text,
+                platform,
+                "lot_input",
+                "手數",
+                _plain(side.lot),
+            )
         current_price = None
         if platform == "MT5":
             price_point_name = self._mt5_price_point(role, direction)
@@ -103,26 +114,46 @@ class PlatformAutomation:
         if platform == "cTrader":
             self._ensure_ctrader_risk_fields(profile, role, points)
         for point_name, label, value in values:
-            self.emergency.guard()
-            self.log(f"正在填入{role_text} {platform} 的{label}：{value}")
-            field_window = self._window_for_point(profile, role, points[point_name])
-            point = points[point_name]
-            calibrated_size = (
-                int(point.get("window_width", field_window.width)),
-                int(point.get("window_height", field_window.height)),
-            )
-            current_size = (field_window.width, field_window.height)
-            if calibrated_size != current_size:
-                self.log(
-                    f"{label}校準尺寸為 {calibrated_size[0]}×{calibrated_size[1]}，"
-                    f"目前為 {current_size[0]}×{current_size[1]}，將使用比例位置。"
-                )
-            self.windows.click_and_type(
-                field_window,
-                point,
+            if platform == "MT5" and point_name == "lot_input":
+                continue
+            self._fill_field(
+                profile,
+                role,
+                points,
+                role_text,
+                platform,
+                point_name,
+                label,
                 value,
             )
         self.log(f"{role_text} {platform} 欄位已填妥，沒有送出訂單。")
+
+    def _fill_field(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        points: dict[str, dict[str, Any]],
+        role_text: str,
+        platform: str,
+        point_name: str,
+        label: str,
+        value: str,
+    ) -> None:
+        self.emergency.guard()
+        self.log(f"正在填入{role_text} {platform} 的{label}：{value}")
+        field_window = self._window_for_point(profile, role, points[point_name])
+        point = points[point_name]
+        calibrated_size = (
+            int(point.get("window_width", field_window.width)),
+            int(point.get("window_height", field_window.height)),
+        )
+        current_size = (field_window.width, field_window.height)
+        if calibrated_size != current_size:
+            self.log(
+                f"{label}校準尺寸為 {calibrated_size[0]}×{calibrated_size[1]}，"
+                f"目前為 {current_size[0]}×{current_size[1]}，將使用比例位置。"
+            )
+        self.windows.click_and_type(field_window, point, value)
 
     @staticmethod
     def _mt5_price_point(role: str, direction: str) -> str:

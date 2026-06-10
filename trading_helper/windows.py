@@ -158,6 +158,7 @@ class EmergencyController:
 
 class WindowController:
     _ocr_engine = None
+    _ocr_lock = threading.Lock()
 
     def __init__(self, emergency: EmergencyController):
         self.emergency = emergency
@@ -441,6 +442,15 @@ class WindowController:
         x, y = self.screen_point(focused, point)
         return self._read_number_ocr(x, y)
 
+    def warm_ocr(self) -> None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            with WindowController._ocr_lock:
+                if WindowController._ocr_engine is None:
+                    WindowController._ocr_engine = RapidOCR()
+        except Exception:
+            return
+
     def _read_number_ocr(self, x: int, y: int) -> Decimal:
         try:
             import cv2
@@ -470,17 +480,18 @@ class WindowController:
                 cv2.COLOR_GRAY2BGR,
             ),
         ]
-        if WindowController._ocr_engine is None:
-            WindowController._ocr_engine = RapidOCR()
-        candidates: list[str] = []
-        for variant in variants:
-            self.emergency.guard()
-            result, _ = WindowController._ocr_engine(variant)
-            if result:
-                candidates.extend(str(item[1]) for item in result)
-        parsed = _extract_decimal_candidates(candidates)
-        if parsed:
-            return parsed[0]
+        with WindowController._ocr_lock:
+            if WindowController._ocr_engine is None:
+                WindowController._ocr_engine = RapidOCR()
+            for variant in variants:
+                self.emergency.guard()
+                result, _ = WindowController._ocr_engine(variant)
+                candidates = (
+                    [str(item[1]) for item in result] if result else []
+                )
+                parsed = _extract_decimal_candidates(candidates)
+                if parsed:
+                    return parsed[0]
         raise AutomationError(
             "無法從校準區域辨識 MT5 價格。"
             "請把校準點放在價格數字正中央後重試。"

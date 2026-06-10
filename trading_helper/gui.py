@@ -131,6 +131,7 @@ class TradingHelperApp(QMainWindow):
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.emergency = EmergencyController(self._emergency_callback)
         self.windows = WindowController(self.emergency)
+        threading.Thread(target=self.windows.warm_ocr, daemon=True).start()
         self.automation = PlatformAutomation(
             self.store.data, self.windows, self.emergency, self.log
         )
