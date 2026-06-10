@@ -404,13 +404,13 @@ class TradingHelperApp(QMainWindow):
         self.automation.fill(external_platform, "external", item)
 
     def draw_tradingview(self) -> None:
-        external_platform = self.external_platform.currentText()
+        internal_platform = self.internal_platform.currentText()
 
         def task() -> None:
             item = self._require_instruction()
             self.automation.draw_tradingview(
                 item,
-                external_platform=external_platform,
+                internal_platform=internal_platform,
             )
 
         self._start("繪製 TradingView", task)

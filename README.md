@@ -7,7 +7,8 @@ MT5 order panels. This version never clicks Buy or Sell.
 寫回與 MT5 成交後二次修正止盈止損不再開發。
 
 TradingView 流程會前往最新價格、依場外方向選擇 Long／Short Position、
-放置並雙擊部位，接著以 MT5 Ask 填入進場、止損與止盈價格。
+放置並雙擊部位，接著以場內持倉的實際進場價填入進場、止損與止盈價格。
+cTrader 會停留在已校準的持倉位置辨識浮動價格；MT5 直接辨識持倉成交價。
 
 ## 功能
 

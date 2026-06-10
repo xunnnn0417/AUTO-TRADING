@@ -458,6 +458,24 @@ class WindowController:
         x, y = self.screen_point(focused, point)
         return self._read_number_ocr(x, y)
 
+    def read_hover_number(
+        self, window: WindowInfo, point: dict[str, float]
+    ) -> Decimal:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError(
+                "尚未安裝 pyautogui，請先執行 install.bat。"
+            ) from exc
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        pyautogui.moveTo(x, y, duration=0.08)
+        time.sleep(0.55)
+        self.emergency.guard()
+        return self._read_number_ocr(x, y + 35, width=190, height=110)
+
     def warm_ocr(self) -> None:
         try:
             from rapidocr_onnxruntime import RapidOCR
@@ -467,7 +485,14 @@ class WindowController:
         except Exception:
             return
 
-    def _read_number_ocr(self, x: int, y: int) -> Decimal:
+    def _read_number_ocr(
+        self,
+        x: int,
+        y: int,
+        *,
+        width: int = 150,
+        height: int = 70,
+    ) -> Decimal:
         try:
             import cv2
             import numpy as np
@@ -479,7 +504,6 @@ class WindowController:
             ) from exc
 
         self.emergency.guard()
-        width, height = 150, 70
         left = max(0, x - width // 2)
         top = max(0, y - height // 2)
         image = pyautogui.screenshot(region=(left, top, width, height))
@@ -509,8 +533,8 @@ class WindowController:
                 if parsed:
                     return parsed[0]
         raise AutomationError(
-            "無法從校準區域辨識 MT5 價格。"
-            "請把校準點放在價格數字正中央後重試。"
+            "無法從校準區域辨識價格。"
+            "請把校準點放在成交價數字或懸浮觸發位置後重試。"
         )
 
     def _read_number_legacy(self, x: int, y: int) -> Decimal:

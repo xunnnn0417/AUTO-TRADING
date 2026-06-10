@@ -230,23 +230,28 @@ class PlatformAutomation:
         self,
         instruction: TradeInstruction,
         *,
-        external_platform: str,
+        internal_platform: str,
     ) -> None:
         self.emergency.guard()
-        if external_platform != "MT5":
+        internal_profile = self.config["platforms"][internal_platform]
+        internal_points = internal_profile.get("points", {})
+        if "positions_entry_price" not in internal_points:
             raise AutomationError(
-                "TradingView 部位目前需要場外平台為 MT5，才能讀取 Ask。"
+                f"{internal_platform} 尚未校準持倉成交價位置。"
             )
-
-        mt5_profile = self.config["platforms"]["MT5"]
-        mt5_points = mt5_profile.get("points", {})
-        if "ask_price" not in mt5_points:
-            raise AutomationError("MT5 尚未校準 Ask 價格位置。")
-        ask_window = self._window_for_point(
-            mt5_profile, "external", mt5_points["ask_price"]
+        entry_point = internal_points["positions_entry_price"]
+        entry_window = self._window_for_point(
+            internal_profile, "internal", entry_point
         )
-        entry_price = self.windows.read_number(
-            ask_window, mt5_points["ask_price"]
+        if internal_platform == "cTrader":
+            entry_price = self.windows.read_hover_number(
+                entry_window, entry_point
+            )
+        else:
+            entry_price = self.windows.read_number(entry_window, entry_point)
+        self.log(
+            f"已讀取場內 {internal_platform} 實際進場價："
+            f"{instruction.format_price(entry_price)}"
         )
         sl_price, tp_price = instruction.estimated_prices(
             instruction.external_direction,
