@@ -89,6 +89,23 @@ class PlatformAutomation:
             if role == "internal"
             else instruction.external_direction
         )
+        if platform == "cTrader":
+            direction_point = (
+                "buy_button" if direction == "BUY" else "sell_button"
+            )
+            if direction_point not in points:
+                raise AutomationError(
+                    "cTrader 尚未校準"
+                    f"{'買入' if direction == 'BUY' else '賣出'}方向按鈕。"
+                )
+            self.log(
+                f"正在選擇{role_text} cTrader "
+                f"{'買入' if direction == 'BUY' else '賣出'}方向。"
+            )
+            direction_window = self._window_for_point(
+                profile, role, points[direction_point]
+            )
+            self.windows.click(direction_window, points[direction_point])
         if platform == "MT5":
             self._fill_field(
                 profile,

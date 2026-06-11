@@ -17,6 +17,7 @@ MT5 的新訂單 SL／TP 與持倉修改 SL／TP 使用不同校準位置。
 
 - 中文 Windows 桌面介面
 - 從 Google 試算表讀取指定儲存格
+- cTrader 填入前會先選擇買入或賣出方向，但不會點擊 Place order
 - 自動反轉場內／場外方向
 - cTrader 倉位、止損點數、止盈點數填入
 - cTrader 止損／止盈勾選框狀態偵測與自動啟用
