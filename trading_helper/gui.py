@@ -4,6 +4,7 @@ import copy
 import re
 import threading
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -111,6 +112,8 @@ class UiSignals(QObject):
     instruction = Signal(object)
     operation_started = Signal()
     operation_finished = Signal()
+    operation_minimized = Signal()
+    entry_price_reset = Signal()
 
 
 class TradingHelperApp(QMainWindow):
@@ -125,6 +128,7 @@ class TradingHelperApp(QMainWindow):
         self.store = ConfigStore()
         self.reader = SheetReader()
         self.instruction: TradeInstruction | None = None
+        self.manual_entry_price: Decimal | None = None
         self.signals = UiSignals()
         self.signals.log.connect(self._append_log)
         self.signals.status.connect(self._set_status)
@@ -132,6 +136,7 @@ class TradingHelperApp(QMainWindow):
         self.signals.instruction.connect(self._show_instruction)
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
+        self.signals.operation_minimized.connect(self._minimize_after_operation)
         self.emergency = EmergencyController(self._emergency_callback)
         self.windows = WindowController(self.emergency)
         threading.Thread(target=self.windows.warm_ocr, daemon=True).start()
@@ -139,6 +144,7 @@ class TradingHelperApp(QMainWindow):
             self.store.data, self.windows, self.emergency, self.log
         )
         self._build()
+        self.signals.entry_price_reset.connect(self.entry_price_input.clear)
         self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
@@ -183,6 +189,10 @@ class TradingHelperApp(QMainWindow):
         self._dock_top()
         self.raise_()
         self.activateWindow()
+
+    def _minimize_after_operation(self) -> None:
+        self.operation_hint.hide()
+        self.showMinimized()
 
     def _build(self) -> None:
         central = QWidget()
@@ -241,6 +251,13 @@ class TradingHelperApp(QMainWindow):
             self.data_labels[key] = value
             data_layout.addWidget(QLabel(text), row, base)
             data_layout.addWidget(value, row, base + 1)
+        self.entry_price_input = QLineEdit()
+        self.entry_price_input.setPlaceholderText("例如 4174.64")
+        update_entry_price = QPushButton("更新")
+        update_entry_price.clicked.connect(self.update_manual_entry_price)
+        data_layout.addWidget(QLabel("場內實際進場價"), 5, 0)
+        data_layout.addWidget(self.entry_price_input, 5, 1, 1, 2)
+        data_layout.addWidget(update_entry_price, 5, 3)
         main.addWidget(data_box, 2, 0, 2, 1)
 
         options = QHBoxLayout()
@@ -324,14 +341,22 @@ class TradingHelperApp(QMainWindow):
         self.signals.status.emit("已停止")
         self.log("緊急停止：已取消所有待執行的滑鼠與鍵盤操作。")
 
-    def _start(self, name: str, task: Callable[[], None]) -> None:
+    def _start(
+        self,
+        name: str,
+        task: Callable[[], None],
+        *,
+        hide_during: bool = True,
+        restore_after: bool = True,
+    ) -> None:
         if self.emergency.event.is_set():
             self.emergency.reset()
             self.signals.status.emit("就緒")
             self.log("已解除緊急停止，開始執行新的操作。")
 
         def worker() -> None:
-            self.signals.operation_started.emit()
+            if hide_during:
+                self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
             try:
                 task()
@@ -344,17 +369,23 @@ class TradingHelperApp(QMainWindow):
                 self.log(f"錯誤：{exc}")
                 self.signals.error.emit(str(exc))
             finally:
-                self.signals.operation_finished.emit()
+                if hide_during:
+                    if restore_after:
+                        self.signals.operation_finished.emit()
+                    else:
+                        self.signals.operation_minimized.emit()
 
         threading.Thread(target=worker, daemon=True).start()
 
     def read_sheet(self) -> None:
-        self._start("讀取中", self._read_sheet_task)
+        self._start("讀取中", self._read_sheet_task, hide_during=False)
 
     def _read_sheet_task(self) -> None:
         self.log("正在讀取 Google 試算表。")
         item = self.reader.read(self.store.data["sheet"])
         self.instruction = item
+        self.manual_entry_price = None
+        self.signals.entry_price_reset.emit()
         self.signals.instruction.emit(item)
         self.log(
             f"已讀取第 {item.source_row} 列：{item.symbol}，"
@@ -388,7 +419,11 @@ class TradingHelperApp(QMainWindow):
         def task() -> None:
             item = self._require_instruction()
             self.automation.fill(platform, role, item)
-        self._start("填入場內" if role == "internal" else "填入場外", task)
+        self._start(
+            "填入場內" if role == "internal" else "填入場外",
+            task,
+            restore_after=False,
+        )
 
     def fill_both(self) -> None:
         internal_platform = self.internal_platform.currentText()
@@ -396,6 +431,7 @@ class TradingHelperApp(QMainWindow):
         self._start(
             "填入兩邊",
             lambda: self._fill_both_task(internal_platform, external_platform),
+            restore_after=False,
         )
 
     def _fill_both_task(
@@ -413,6 +449,7 @@ class TradingHelperApp(QMainWindow):
             self.automation.draw_tradingview(
                 item,
                 internal_platform=internal_platform,
+                entry_price_override=self.manual_entry_price,
             )
 
         self._start("繪製 TradingView", task)
@@ -427,9 +464,28 @@ class TradingHelperApp(QMainWindow):
                 item,
                 internal_platform=internal_platform,
                 external_platform=external_platform,
+                entry_price_override=self.manual_entry_price,
             )
 
         self._start("同步場外止盈止損", task)
+
+    def update_manual_entry_price(self) -> None:
+        raw = self.entry_price_input.text().replace(",", "").strip()
+        if not raw:
+            self.manual_entry_price = None
+            self.log("已清除手動場內進場價，後續改回自動辨識。")
+            return
+        try:
+            value = Decimal(raw)
+        except InvalidOperation:
+            QMessageBox.warning(self, "場內進場價", "請輸入有效數字。")
+            return
+        if value <= 0:
+            QMessageBox.warning(self, "場內進場價", "進場價必須大於 0。")
+            return
+        self.manual_entry_price = value
+        self.entry_price_input.setText(format(value, "f"))
+        self.log(f"已更新手動場內實際進場價：{value}")
 
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:

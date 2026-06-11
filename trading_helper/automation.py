@@ -260,28 +260,19 @@ class PlatformAutomation:
         instruction: TradeInstruction,
         *,
         internal_platform: str,
+        entry_price_override: Decimal | None = None,
     ) -> None:
         self.emergency.guard()
-        internal_profile = self.config["platforms"][internal_platform]
-        internal_points = internal_profile.get("points", {})
-        if "positions_entry_price" not in internal_points:
-            raise AutomationError(
-                f"{internal_platform} 尚未校準持倉成交價位置。"
-            )
-        entry_point = internal_points["positions_entry_price"]
-        entry_window = self._window_for_point(
-            internal_profile, "internal", entry_point
-        )
-        if internal_platform == "cTrader":
-            entry_price = self.windows.read_hover_number(
-                entry_window, entry_point
+        if entry_price_override is not None:
+            entry_price = entry_price_override
+            self.log(
+                "使用手動場內實際進場價："
+                f"{instruction.format_price(entry_price)}"
             )
         else:
-            entry_price = self.windows.read_number(entry_window, entry_point)
-        self.log(
-            f"已讀取場內 {internal_platform} 實際進場價："
-            f"{instruction.format_price(entry_price)}"
-        )
+            entry_price = self._read_internal_entry_price(
+                instruction, internal_platform
+            )
         sl_price, tp_price = instruction.estimated_prices(
             instruction.external_direction,
             instruction.external,
@@ -352,32 +343,23 @@ class PlatformAutomation:
         *,
         internal_platform: str,
         external_platform: str,
+        entry_price_override: Decimal | None = None,
     ) -> None:
         self.emergency.guard()
-        internal_profile = self.config["platforms"][internal_platform]
-        internal_points = internal_profile.get("points", {})
-        entry_point = internal_points.get("positions_entry_price")
-        if entry_point is None:
-            raise AutomationError(
-                f"{internal_platform} 尚未校準持倉成交價位置。"
-            )
-        entry_window = self._window_for_point(
-            internal_profile, "internal", entry_point
-        )
-        if internal_platform == "cTrader":
-            entry_price = self.windows.read_hover_number(
-                entry_window, entry_point
+        if entry_price_override is not None:
+            entry_price = entry_price_override
+            self.log(
+                "使用手動場內實際進場價："
+                f"{instruction.format_price(entry_price)}"
             )
         else:
-            entry_price = self.windows.read_number(entry_window, entry_point)
+            entry_price = self._read_internal_entry_price(
+                instruction, internal_platform
+            )
         sl_price, tp_price = instruction.estimated_prices(
             instruction.external_direction,
             instruction.external,
             entry_price,
-        )
-        self.log(
-            f"已讀取場內 {internal_platform} 實際進場價："
-            f"{instruction.format_price(entry_price)}"
         )
 
         profile = self.config["platforms"][external_platform]
@@ -458,6 +440,33 @@ class PlatformAutomation:
             f"止盈 {instruction.format_price(tp_price)}。"
             "程式沒有按下最後確認按鈕。"
         )
+
+    def _read_internal_entry_price(
+        self,
+        instruction: TradeInstruction,
+        internal_platform: str,
+    ) -> Decimal:
+        internal_profile = self.config["platforms"][internal_platform]
+        internal_points = internal_profile.get("points", {})
+        entry_point = internal_points.get("positions_entry_price")
+        if entry_point is None:
+            raise AutomationError(
+                f"{internal_platform} 尚未校準持倉成交價位置。"
+            )
+        entry_window = self._window_for_point(
+            internal_profile, "internal", entry_point
+        )
+        if internal_platform == "cTrader":
+            entry_price = self.windows.read_hover_number(
+                entry_window, entry_point
+            )
+        else:
+            entry_price = self.windows.read_number(entry_window, entry_point)
+        self.log(
+            f"已讀取場內 {internal_platform} 實際進場價："
+            f"{instruction.format_price(entry_price)}"
+        )
+        return entry_price
 
     def _click_profile_point(
         self,
