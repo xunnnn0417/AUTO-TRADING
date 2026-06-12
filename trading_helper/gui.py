@@ -487,6 +487,7 @@ class TradingHelperApp(QMainWindow):
         self.entry_price_input.setText(format(value, "f"))
         self.entry_price_value.setText(format(value, "f"))
         self.log(f"已更新手動場內實際進場價：{value}")
+        self.draw_tradingview()
 
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
