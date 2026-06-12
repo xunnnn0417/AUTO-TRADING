@@ -310,24 +310,37 @@ class PlatformAutomation:
             ),
             points["position_placement"],
         )
-        self._fill_profile_point(
-            profile,
-            "external",
-            points["tp_input"],
-            instruction.format_price(tp_price),
+        self.windows.wait(0.35)
+        settings_window = self._window_for_point(
+            profile, "external", points["entry_input"]
         )
-        self._fill_profile_point(
-            profile,
-            "external",
-            points["entry_input"],
-            instruction.format_price(entry_price),
+        original_entry_price = self.windows.read_number(
+            settings_window, points["entry_input"]
         )
-        self._fill_profile_point(
-            profile,
-            "external",
-            points["sl_input"],
-            instruction.format_price(sl_price),
+        if tp_price > original_entry_price:
+            field_order = (
+                ("tp_input", tp_price, "止盈"),
+                ("entry_input", entry_price, "進場"),
+                ("sl_input", sl_price, "止損"),
+            )
+        else:
+            field_order = (
+                ("sl_input", sl_price, "止損"),
+                ("entry_input", entry_price, "進場"),
+                ("tp_input", tp_price, "止盈"),
+            )
+        self.log(
+            "TradingView 原始進場價："
+            f"{instruction.format_price(original_entry_price)}；"
+            f"將依序輸入 {' → '.join(label for _, _, label in field_order)}。"
         )
+        for point_name, value, _ in field_order:
+            self._fill_profile_point(
+                profile,
+                "external",
+                points[point_name],
+                instruction.format_price(value),
+            )
         self._click_profile_point(
             profile, "external", points["confirm_button"]
         )

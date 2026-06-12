@@ -7,7 +7,7 @@ import time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -148,6 +148,7 @@ class TradingHelperApp(QMainWindow):
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
         self.log("第一版已啟動。目前禁止程式送出訂單。")
+        QTimer.singleShot(350, self.read_sheet)
 
     def _build_operation_hint(self) -> None:
         self.operation_hint = QLabel("按 ESC 暫停操作")
@@ -204,18 +205,12 @@ class TradingHelperApp(QMainWindow):
         header = QHBoxLayout()
         title = QLabel("交易流程輔助工具")
         title.setStyleSheet("font-size: 20px; font-weight: 700;")
-        self.status_label = QLabel("就緒")
-        self.status_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #176b35;")
         self.always_on_top = QCheckBox("保持最上層")
         self.always_on_top.setChecked(True)
         self.always_on_top.toggled.connect(self.set_always_on_top)
-        minimize_button = QPushButton("縮小工具")
-        minimize_button.clicked.connect(self.showMinimized)
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.always_on_top)
-        header.addWidget(minimize_button)
-        header.addWidget(self.status_label)
         main.addLayout(header, 0, 0, 1, 2)
 
         platforms = QGroupBox("平台")
@@ -252,19 +247,15 @@ class TradingHelperApp(QMainWindow):
             data_layout.addWidget(value, row, base + 1)
         self.entry_price_input = QLineEdit()
         self.entry_price_input.setPlaceholderText("例如 4174.64")
+        self.entry_price_input.returnPressed.connect(
+            self.update_manual_entry_price
+        )
         update_entry_price = QPushButton("更新")
         update_entry_price.clicked.connect(self.update_manual_entry_price)
         data_layout.addWidget(QLabel("場內實際進場價"), 5, 0)
         data_layout.addWidget(self.entry_price_input, 5, 1, 1, 2)
         data_layout.addWidget(update_entry_price, 5, 3)
         main.addWidget(data_box, 2, 0, 2, 1)
-
-        options = QHBoxLayout()
-        note = QLabel("第一版僅確認資料，不會點擊下單按鈕。")
-        note.setStyleSheet("color: #8a4d00;")
-        options.addStretch()
-        options.addWidget(note)
-        main.addLayout(options, 4, 0)
 
         actions = QGroupBox("操作")
         action_layout = QGridLayout(actions)
@@ -321,11 +312,7 @@ class TradingHelperApp(QMainWindow):
         self.log_text.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {message}")
 
     def _set_status(self, value: str) -> None:
-        self.status_label.setText(value)
-        color = "#a00000" if value in {"已停止", "錯誤"} else "#176b35"
-        self.status_label.setStyleSheet(
-            f"font-size: 14px; font-weight: 700; color: {color};"
-        )
+        return
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "交易流程輔助工具", message)
