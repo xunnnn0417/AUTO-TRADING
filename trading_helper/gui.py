@@ -121,10 +121,10 @@ class TradingHelperApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("交易流程輔助工具 - 第一版")
-        self.resize(1200, 430)
+        self.resize(1200, 445)
         self.setMinimumWidth(900)
-        self.setMinimumHeight(390)
-        self.setMaximumHeight(460)
+        self.setMinimumHeight(405)
+        self.setMaximumHeight(475)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.store = ConfigStore()
         self.profiles = ProfileStore(self.store.data)
@@ -255,6 +255,7 @@ class TradingHelperApp(QMainWindow):
         main.addWidget(platforms, 1, 0)
 
         data_box = QGroupBox("試算表交易資料")
+        data_box.setMinimumHeight(205)
         data_layout = QGridLayout(data_box)
         self.data_labels: dict[str, QLabel] = {}
         labels = [
@@ -343,7 +344,7 @@ class TradingHelperApp(QMainWindow):
             return
         area = screen.availableGeometry()
         width = min(1200, max(900, area.width() - 40))
-        self.resize(width, 430)
+        self.resize(width, 445)
         self.move(area.x() + (area.width() - width) // 2, area.y())
 
     def log(self, message: str) -> None:
