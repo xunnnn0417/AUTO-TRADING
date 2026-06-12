@@ -274,12 +274,14 @@ class TradingHelperApp(QMainWindow):
             data_layout.addWidget(value, row, base + 1)
         self.entry_price_input = QLineEdit()
         self.entry_price_input.setPlaceholderText("例如 4174.64")
+        self.entry_price_input.setMinimumHeight(28)
         self.entry_price_input.returnPressed.connect(
             self.update_manual_entry_price
         )
         self.entry_price_value = QLabel("")
         self.entry_price_value.setStyleSheet("font-weight: 700;")
         update_entry_price = QPushButton("更新")
+        update_entry_price.setMinimumHeight(28)
         update_entry_price.clicked.connect(self.update_manual_entry_price)
         entry_editor = QWidget()
         entry_editor_layout = QHBoxLayout(entry_editor)
