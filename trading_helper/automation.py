@@ -303,6 +303,7 @@ class PlatformAutomation:
         self._click_profile_point(
             profile, "external", points["position_placement"]
         )
+        self.windows.wait(0.7)
         self.windows.double_click(
             self._window_for_point(
                 profile, "external", points["position_placement"]

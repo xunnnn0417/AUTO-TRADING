@@ -324,7 +324,14 @@ class WindowController:
         self._validate_calibrated_window(focused, point)
         x, y = self.screen_point(focused, point)
         self.emergency.guard()
-        pyautogui.doubleClick(x, y, interval=0.08)
+        pyautogui.doubleClick(x, y, interval=0.16)
+        time.sleep(0.2)
+
+    def wait(self, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            time.sleep(min(0.05, deadline - time.monotonic()))
 
     def point_window_exists(
         self,
