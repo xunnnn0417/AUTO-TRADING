@@ -144,6 +144,7 @@ class TradingHelperApp(QMainWindow):
         )
         self._build()
         self.signals.entry_price_reset.connect(self.entry_price_input.clear)
+        self.signals.entry_price_reset.connect(self.entry_price_value.clear)
         self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
@@ -250,10 +251,13 @@ class TradingHelperApp(QMainWindow):
         self.entry_price_input.returnPressed.connect(
             self.update_manual_entry_price
         )
+        self.entry_price_value = QLabel("")
+        self.entry_price_value.setStyleSheet("font-weight: 700;")
         update_entry_price = QPushButton("更新")
         update_entry_price.clicked.connect(self.update_manual_entry_price)
         data_layout.addWidget(QLabel("場內實際進場價"), 5, 0)
-        data_layout.addWidget(self.entry_price_input, 5, 1, 1, 2)
+        data_layout.addWidget(self.entry_price_value, 5, 1)
+        data_layout.addWidget(self.entry_price_input, 5, 2)
         data_layout.addWidget(update_entry_price, 5, 3)
         main.addWidget(data_box, 2, 0, 2, 1)
 
@@ -459,6 +463,7 @@ class TradingHelperApp(QMainWindow):
         raw = self.entry_price_input.text().replace(",", "").strip()
         if not raw:
             self.manual_entry_price = None
+            self.entry_price_value.clear()
             self.log("已清除手動場內進場價，後續改回自動辨識。")
             return
         try:
@@ -471,6 +476,7 @@ class TradingHelperApp(QMainWindow):
             return
         self.manual_entry_price = value
         self.entry_price_input.setText(format(value, "f"))
+        self.entry_price_value.setText(format(value, "f"))
         self.log(f"已更新手動場內實際進場價：{value}")
 
     def _require_instruction(self) -> TradeInstruction:
