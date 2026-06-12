@@ -9,7 +9,9 @@ from typing import Any
 
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "TradingWorkflowHelper"
 CONFIG_PATH = APP_DIR / "config.json"
+PROFILES_PATH = APP_DIR / "profiles.json"
 FALLBACK_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+DEFAULT_PROFILE_NAME = "預設方案"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "sheet": {
@@ -96,3 +98,110 @@ class ConfigStore:
         except OSError:
             self.path = FALLBACK_CONFIG_PATH
             self.path.write_text(payload, encoding="utf-8")
+
+
+class ProfileStore:
+    def __init__(
+        self,
+        initial_config: dict[str, Any],
+        path: Path = PROFILES_PATH,
+    ):
+        self.path = path
+        self.data = self._load(initial_config)
+
+    @property
+    def active_name(self) -> str:
+        return str(self.data["active"])
+
+    def names(self) -> list[str]:
+        return list(self.data["profiles"])
+
+    def load_profile(self, name: str | None = None) -> dict[str, Any]:
+        profile_name = name or self.active_name
+        return _merge(DEFAULT_CONFIG, deepcopy(self.data["profiles"][profile_name]))
+
+    def save_profile(self, name: str, config: dict[str, Any]) -> None:
+        self.data["profiles"][name] = deepcopy(config)
+        self.data["active"] = name
+        self.save()
+
+    def create(self, name: str, config: dict[str, Any]) -> None:
+        self._validate_new_name(name)
+        self.data["profiles"][name] = deepcopy(config)
+        self.data["active"] = name
+        self.save()
+
+    def rename(self, old_name: str, new_name: str) -> None:
+        if old_name not in self.data["profiles"]:
+            raise ValueError("找不到要重新命名的方案。")
+        self._validate_new_name(new_name)
+        profiles = self.data["profiles"]
+        rebuilt: dict[str, Any] = {}
+        for name, config in profiles.items():
+            rebuilt[new_name if name == old_name else name] = config
+        self.data["profiles"] = rebuilt
+        if self.active_name == old_name:
+            self.data["active"] = new_name
+        self.save()
+
+    def delete(self, name: str) -> str:
+        profiles = self.data["profiles"]
+        if name not in profiles:
+            raise ValueError("找不到要刪除的方案。")
+        if len(profiles) <= 1:
+            raise ValueError("至少必須保留一個方案。")
+        del profiles[name]
+        next_name = next(iter(profiles))
+        if self.active_name == name:
+            self.data["active"] = next_name
+        self.save()
+        return self.active_name
+
+    def set_active(self, name: str) -> None:
+        if name not in self.data["profiles"]:
+            raise ValueError("找不到指定方案。")
+        self.data["active"] = name
+        self.save()
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self.data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _load(self, initial_config: dict[str, Any]) -> dict[str, Any]:
+        if self.path.exists():
+            try:
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
+                profiles = loaded.get("profiles")
+                active = loaded.get("active")
+                if (
+                    isinstance(profiles, dict)
+                    and profiles
+                    and isinstance(active, str)
+                    and active in profiles
+                ):
+                    return {
+                        "active": active,
+                        "profiles": {
+                            str(name): _merge(DEFAULT_CONFIG, config)
+                            for name, config in profiles.items()
+                            if isinstance(config, dict)
+                        },
+                    }
+            except (OSError, json.JSONDecodeError):
+                pass
+        seeded = {
+            "active": DEFAULT_PROFILE_NAME,
+            "profiles": {DEFAULT_PROFILE_NAME: deepcopy(initial_config)},
+        }
+        self.data = seeded
+        self.save()
+        return seeded
+
+    def _validate_new_name(self, name: str) -> None:
+        if not name.strip():
+            raise ValueError("方案名稱不能空白。")
+        if name in self.data["profiles"]:
+            raise ValueError("方案名稱已存在。")

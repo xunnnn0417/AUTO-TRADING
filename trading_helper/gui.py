@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .automation import PlatformAutomation
-from .config import ConfigStore
+from .config import ConfigStore, ProfileStore
 from .models import TradeInstruction
 from .sheets import SheetReader
 from .windows import (
@@ -126,6 +127,10 @@ class TradingHelperApp(QMainWindow):
         self.setMaximumHeight(460)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.store = ConfigStore()
+        self.profiles = ProfileStore(self.store.data)
+        self.store.data = self.profiles.load_profile()
+        self.store.save()
+        self._profile_switching = False
         self.reader = SheetReader()
         self.instruction: TradeInstruction | None = None
         self.manual_entry_price: Decimal | None = None
@@ -211,8 +216,25 @@ class TradingHelperApp(QMainWindow):
         self.always_on_top.setChecked(True)
         self.always_on_top.toggled.connect(self.set_always_on_top)
         header.addWidget(title)
+        header.addSpacing(22)
+        header.addWidget(QLabel("方案"))
+        self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.addItems(self.profiles.names())
+        self.profile_combo.setCurrentText(self.profiles.active_name)
+        header.addWidget(self.profile_combo)
+        create_profile = QPushButton("建立")
+        create_profile.clicked.connect(self.create_profile)
+        header.addWidget(create_profile)
+        rename_profile = QPushButton("重新命名")
+        rename_profile.clicked.connect(self.rename_profile)
+        header.addWidget(rename_profile)
+        delete_profile = QPushButton("刪除")
+        delete_profile.clicked.connect(self.delete_profile)
+        header.addWidget(delete_profile)
         header.addStretch()
         header.addWidget(self.always_on_top)
+        self.profile_combo.currentTextChanged.connect(self.switch_profile)
         main.addLayout(header, 0, 0, 1, 2)
 
         platforms = QGroupBox("平台")
@@ -504,6 +526,10 @@ class TradingHelperApp(QMainWindow):
             self.automation.config = self.store.data
             self.log("設定已儲存。")
 
+    def save_config(self) -> None:
+        self.store.save()
+        self.profiles.save_profile(self.profiles.active_name, self.store.data)
+
     def save_ui_state(self) -> None:
         self.store.data["ui"].update(
             {
@@ -511,7 +537,106 @@ class TradingHelperApp(QMainWindow):
                 "external_platform": self.external_platform.currentText(),
             }
         )
-        self.store.save()
+        self.save_config()
+
+    def switch_profile(self, name: str) -> None:
+        if self._profile_switching or not name:
+            return
+        previous = self.profiles.active_name
+        if name == previous:
+            return
+        try:
+            self.save_ui_state()
+            self.profiles.set_active(name)
+            self.store.data = self.profiles.load_profile(name)
+            self.store.save()
+            self.automation.config = self.store.data
+            self._apply_profile_ui()
+            self.log(f"已切換方案：{name}")
+            self.read_sheet()
+        except Exception as exc:
+            self._set_profile_combo(previous)
+            QMessageBox.critical(self, "方案", str(exc))
+
+    def create_profile(self) -> None:
+        name, accepted = QInputDialog.getText(
+            self, "建立方案", "方案名稱："
+        )
+        name = name.strip()
+        if not accepted:
+            return
+        try:
+            self.save_ui_state()
+            self.profiles.create(name, self.store.data)
+            self._refresh_profile_combo(name)
+            self.log(f"已建立方案：{name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "建立方案", str(exc))
+
+    def rename_profile(self) -> None:
+        old_name = self.profiles.active_name
+        name, accepted = QInputDialog.getText(
+            self, "重新命名方案", "新名稱：", text=old_name
+        )
+        name = name.strip()
+        if not accepted or name == old_name:
+            return
+        try:
+            self.profiles.rename(old_name, name)
+            self._refresh_profile_combo(name)
+            self.log(f"方案已重新命名：{old_name} → {name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "重新命名方案", str(exc))
+
+    def delete_profile(self) -> None:
+        name = self.profiles.active_name
+        answer = QMessageBox.question(
+            self,
+            "刪除方案",
+            f"確定刪除「{name}」？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            active = self.profiles.delete(name)
+            self.store.data = self.profiles.load_profile(active)
+            self.store.save()
+            self.automation.config = self.store.data
+            self._refresh_profile_combo(active)
+            self._apply_profile_ui()
+            self.log(f"已刪除方案：{name}")
+            self.read_sheet()
+        except Exception as exc:
+            QMessageBox.warning(self, "刪除方案", str(exc))
+
+    def _apply_profile_ui(self) -> None:
+        ui = self.store.data["ui"]
+        self.internal_platform.blockSignals(True)
+        self.external_platform.blockSignals(True)
+        self.internal_platform.setCurrentText(ui["internal_platform"])
+        self.external_platform.setCurrentText(ui["external_platform"])
+        self.internal_platform.blockSignals(False)
+        self.external_platform.blockSignals(False)
+        self.instruction = None
+        self.manual_entry_price = None
+        self.entry_price_input.clear()
+        self.entry_price_value.clear()
+        for label in self.data_labels.values():
+            label.setText("-")
+
+    def _refresh_profile_combo(self, selected: str) -> None:
+        self._profile_switching = True
+        self.profile_combo.clear()
+        self.profile_combo.addItems(self.profiles.names())
+        self.profile_combo.setCurrentText(selected)
+        self._profile_switching = False
+
+    def _set_profile_combo(self, selected: str) -> None:
+        self._profile_switching = True
+        self.profile_combo.setCurrentText(selected)
+        self._profile_switching = False
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.save_ui_state()
@@ -590,7 +715,7 @@ class CalibrationDialog(QDialog):
                 ):
                     profile["window_title"]["internal"] = re.escape(active.title)
                     profile["window_title"]["external"] = re.escape(active.title)
-                self.app.store.save()
+                self.app.save_config()
                 self.app.log(
                     f"已儲存 {self.platform}「{key}」的相對位置："
                     f"({point['x']:.3f}, {point['y']:.3f})，"
@@ -750,7 +875,7 @@ class SettingsDialog(QDialog):
                     checkbox.isChecked()
                 )
             self.app.store.data = self.draft
-            self.app.store.save()
+            self.app.save_config()
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
