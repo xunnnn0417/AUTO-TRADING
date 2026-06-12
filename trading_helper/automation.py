@@ -413,6 +413,7 @@ class PlatformAutomation:
                 "position_sl_input",
                 "position_tp_input",
                 "position_order_lot",
+                "position_order_lot_next",
                 "position_order_row",
             ]
         else:
@@ -428,23 +429,28 @@ class PlatformAutomation:
             if not self.windows.point_window_exists(
                 profile, "external", points["position_sl_input"]
             ):
-                lot_point = points["position_order_lot"]
-                lot_window = self._window_for_point(
-                    profile, "external", lot_point
-                )
-                detected_lot = self.windows.read_number(lot_window, lot_point)
                 expected_lot = instruction.external.lot
-                self.log(
-                    "正在確認 MT5 場外已進場訂單手數："
-                    f"辨識 {detected_lot}，預期 {expected_lot}。"
+                matched_row = self._find_mt5_position_row(
+                    profile,
+                    points,
+                    expected_lot,
+                    max_rows=12,
                 )
-                if detected_lot != expected_lot:
+                if matched_row is None:
                     raise AutomationError(
-                        "MT5 場外訂單手數不符，已停止修改。"
-                        f"辨識到 {detected_lot}，試算表要求 {expected_lot}。"
+                        "找不到手數符合的 MT5 場外訂單，已停止修改。"
+                        f"試算表要求 {expected_lot}。"
                     )
-                position_point = points["position_order_row"]
-                self.log("正在雙擊 MT5 場外已進場訂單列，開啟修改視窗。")
+                position_point = self._offset_position_point(
+                    points["position_order_row"],
+                    points["position_order_lot"],
+                    points["position_order_lot_next"],
+                    matched_row,
+                )
+                self.log(
+                    f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
+                    "正在雙擊開啟修改視窗。"
+                )
                 position_window = self._window_for_point(
                     profile, "external", position_point
                 )
@@ -500,6 +506,56 @@ class PlatformAutomation:
             f"止盈 {instruction.format_price(tp_price)}。"
             "程式沒有按下最後確認按鈕。"
         )
+
+    def _find_mt5_position_row(
+        self,
+        profile: dict[str, Any],
+        points: dict[str, dict[str, Any]],
+        expected_lot: Decimal,
+        *,
+        max_rows: int,
+    ) -> int | None:
+        first_lot = points["position_order_lot"]
+        next_lot = points["position_order_lot_next"]
+        for row_index in range(max_rows):
+            self.emergency.guard()
+            lot_point = self._offset_position_point(
+                first_lot, first_lot, next_lot, row_index
+            )
+            lot_window = self._window_for_point(
+                profile, "external", lot_point
+            )
+            try:
+                detected_lot = self.windows.read_number(lot_window, lot_point)
+            except AutomationError:
+                self.log(
+                    f"MT5 場外第 {row_index + 1} 筆無法辨識手數，"
+                    "停止往下搜尋。"
+                )
+                return None
+            self.log(
+                f"MT5 場外第 {row_index + 1} 筆手數："
+                f"{detected_lot}，預期 {expected_lot}。"
+            )
+            if detected_lot == expected_lot:
+                return row_index
+        return None
+
+    @staticmethod
+    def _offset_position_point(
+        point: dict[str, Any],
+        first_row: dict[str, Any],
+        next_row: dict[str, Any],
+        row_index: int,
+    ) -> dict[str, Any]:
+        result = dict(point)
+        if "y_px" in result and "y_px" in first_row and "y_px" in next_row:
+            row_height_px = int(next_row["y_px"]) - int(first_row["y_px"])
+            result["y_px"] = int(result["y_px"]) + row_height_px * row_index
+        if "y" in result and "y" in first_row and "y" in next_row:
+            row_height = float(next_row["y"]) - float(first_row["y"])
+            result["y"] = float(result["y"]) + row_height * row_index
+        return result
 
     def _read_internal_entry_price(
         self,

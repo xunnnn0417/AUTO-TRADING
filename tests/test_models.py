@@ -141,6 +141,18 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(fields[1][2], "-711")
         self.assertEqual(fields[2][2], "4410")
 
+    def test_mt5_position_point_moves_by_calibrated_row_height(self) -> None:
+        point = {"x": 0.5, "y": 0.4, "x_px": 500, "y_px": 400}
+        first = {"y": 0.3, "y_px": 300}
+        second = {"y": 0.35, "y_px": 350}
+
+        moved = PlatformAutomation._offset_position_point(
+            point, first, second, 2
+        )
+
+        self.assertEqual(moved["y"], 0.5)
+        self.assertEqual(moved["y_px"], 500)
+
     def test_ocr_price_parser_prefers_complete_price(self) -> None:
         values = _extract_decimal_candidates(["0.18", "4180.92", "18"])
         self.assertEqual(values[0], Decimal("4180.92"))
