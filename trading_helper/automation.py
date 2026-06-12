@@ -292,7 +292,17 @@ class PlatformAutomation:
         tradingview_window = self._window_for_point(
             profile, "external", points["position_placement"]
         )
-        self.windows.hotkey(tradingview_window, "alt", "shift", "right")
+        self.windows.click(
+            tradingview_window, points["position_placement"]
+        )
+        self.windows.wait(0.25)
+        self.windows.hotkey(
+            tradingview_window,
+            "alt",
+            "shift",
+            "right",
+            interval=0.08,
+        )
         self.log("已用 Alt + Shift + → 前往 TradingView 最新價格。")
         self.windows.wait(1.0)
         tool_name = (

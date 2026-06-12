@@ -386,7 +386,12 @@ class WindowController:
         pyautogui.click(x, y)
         time.sleep(0.08)
 
-    def hotkey(self, window: WindowInfo, *keys: str) -> None:
+    def hotkey(
+        self,
+        window: WindowInfo,
+        *keys: str,
+        interval: float = 0.04,
+    ) -> None:
         self.emergency.guard()
         try:
             import pyautogui
@@ -396,7 +401,22 @@ class WindowController:
             ) from exc
         self.focus(window)
         self.emergency.guard()
-        pyautogui.hotkey(*keys)
+        if not keys:
+            return
+        modifiers = keys[:-1]
+        trigger = keys[-1]
+        pressed: list[str] = []
+        try:
+            for key in modifiers:
+                self.emergency.guard()
+                pyautogui.keyDown(key)
+                pressed.append(key)
+            time.sleep(interval)
+            self.emergency.guard()
+            pyautogui.press(trigger)
+        finally:
+            for key in reversed(pressed):
+                pyautogui.keyUp(key)
         time.sleep(0.12)
         return True
 
