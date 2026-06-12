@@ -294,6 +294,7 @@ class PlatformAutomation:
         )
         self.windows.hotkey(tradingview_window, "alt", "shift", "right")
         self.log("已用 Alt + Shift + → 前往 TradingView 最新價格。")
+        self.windows.wait(1.0)
         tool_name = (
             "long_tool"
             if instruction.external_direction == "BUY"
