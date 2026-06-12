@@ -21,7 +21,6 @@ REQUIRED_POINTS = {
 }
 
 TRADINGVIEW_REQUIRED_POINTS = [
-    "latest_price_button",
     "long_tool",
     "short_tool",
     "position_placement",
@@ -290,9 +289,11 @@ class PlatformAutomation:
                 + ", ".join(missing)
             )
 
-        self._click_profile_point(
-            profile, "external", points["latest_price_button"]
+        tradingview_window = self._window_for_point(
+            profile, "external", points["position_placement"]
         )
+        self.windows.hotkey(tradingview_window, "alt", "shift", "right")
+        self.log("已用 Alt + Shift + → 前往 TradingView 最新價格。")
         tool_name = (
             "long_tool"
             if instruction.external_direction == "BUY"

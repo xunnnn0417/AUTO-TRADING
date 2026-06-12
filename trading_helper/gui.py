@@ -71,7 +71,6 @@ CALIBRATION_TARGETS = {
         ("positions_entry_price", "持倉成交價位置（第二版使用）"),
     ],
     "TradingView": [
-        ("latest_price_button", "前往最新價格按鈕"),
         ("long_tool", "多頭部位工具"),
         ("short_tool", "空頭部位工具"),
         ("position_placement", "部位放置／雙擊位置"),

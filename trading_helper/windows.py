@@ -378,6 +378,19 @@ class WindowController:
             return False
         pyautogui.click(x, y)
         time.sleep(0.08)
+
+    def hotkey(self, window: WindowInfo, *keys: str) -> None:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError(
+                "尚未安裝 pyautogui，請先執行 install.bat。"
+            ) from exc
+        self.focus(window)
+        self.emergency.guard()
+        pyautogui.hotkey(*keys)
+        time.sleep(0.12)
         return True
 
     def show_marker(self, x: int, y: int, duration_ms: int = 2500) -> None:
