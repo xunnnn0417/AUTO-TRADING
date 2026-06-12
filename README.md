@@ -9,6 +9,7 @@ MT5 order panels. This version never clicks Buy or Sell.
 TradingView 流程會用 Alt + Shift + → 前往最新價格、依場外方向選擇 Long／Short Position、
 放置並雙擊部位，接著以場內持倉的實際進場價填入進場、止損與止盈價格。
 cTrader 會停留在已校準的持倉位置辨識浮動價格；MT5 直接辨識持倉成交價。
+TradingView 部位設定填寫完成後會按 Enter 確認，不需校準確認按鈕。
 「同步場外止盈止損」會在手動進場後讀取場內實際成交價，重新計算並
 填入場外 SL／TP；程式不會按下最後確認按鈕。
 MT5 的新訂單 SL／TP 與持倉修改 SL／TP 使用不同校準位置。
