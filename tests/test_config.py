@@ -62,3 +62,20 @@ class ProfileStoreTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             store.delete("預設方案")
+
+    def test_calibration_point_syncs_to_every_profile(self):
+        store = ProfileStore(self.config, self.path)
+        store.create("第二方案", store.load_profile())
+        point = {"x": 0.4, "y": 0.6, "window_title": "current"}
+
+        store.sync_calibration_point("MT5", "lot_input", point)
+
+        active_point = store.load_profile("第二方案")["platforms"]["MT5"][
+            "points"
+        ]["lot_input"]
+        other_point = store.load_profile("預設方案")["platforms"]["MT5"][
+            "points"
+        ]["lot_input"]
+        self.assertNotIn("window_title", active_point)
+        self.assertNotIn("window_title", other_point)
+        self.assertEqual(other_point["x"], 0.4)

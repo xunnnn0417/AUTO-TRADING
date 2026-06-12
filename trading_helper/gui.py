@@ -720,23 +720,26 @@ class CalibrationDialog(QDialog):
                     profile["window_title"]["internal"] = stable_title
                     profile["window_title"]["external"] = stable_title
                 else:
-                    point["window_title"] = re.escape(active.title)
+                    point.pop("window_title", None)
                 profile["points"][key] = point
                 if (
                     self.platform != "TradingView"
-                    and (
-                        key == "new_order_button"
-                        or not profile["window_title"]["internal"]
-                    )
+                    and not profile["window_title"]["internal"]
                 ):
                     profile["window_title"]["internal"] = re.escape(active.title)
                     profile["window_title"]["external"] = re.escape(active.title)
                 self.app.save_config()
+                self.app.profiles.sync_calibration_point(
+                    self.platform, key, point
+                )
                 self.app.log(
                     f"已儲存 {self.platform}「{key}」的相對位置："
                     f"({point['x']:.3f}, {point['y']:.3f})，"
                     f"精確像素 ({point['x_px']}, {point['y_px']})，"
                     f"螢幕座標 ({x}, {y})。"
+                )
+                self.app.log(
+                    f"已同步 {self.platform}「{key}」到所有方案。"
                 )
                 self.capture_finished.emit(key)
             except Exception as exc:

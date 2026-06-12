@@ -163,6 +163,21 @@ class ProfileStore:
         self.data["active"] = name
         self.save()
 
+    def sync_calibration_point(
+        self,
+        platform: str,
+        point_name: str,
+        point: dict[str, Any],
+    ) -> None:
+        for profile_name, config in self.data["profiles"].items():
+            synced_point = deepcopy(point)
+            if platform != "TradingView":
+                synced_point.pop("window_title", None)
+            config["platforms"][platform].setdefault("points", {})[
+                point_name
+            ] = synced_point
+        self.save()
+
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(

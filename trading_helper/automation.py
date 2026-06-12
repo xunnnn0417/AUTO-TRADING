@@ -214,12 +214,14 @@ class PlatformAutomation:
         point: dict[str, Any],
     ):
         point_pattern = str(point.get("window_title", "")).strip()
-        patterns = [
-            point_pattern,
-            str(profile["window_title"][role]).strip(),
-        ]
         if profile is self.config["platforms"].get("TradingView"):
-            patterns.append(r"/\s*常用$")
+            patterns = [
+                point_pattern,
+                str(profile["window_title"][role]).strip(),
+                r"/\s*常用$",
+            ]
+        else:
+            patterns = [str(profile["window_title"][role]).strip()]
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):
             try:
@@ -434,7 +436,7 @@ class PlatformAutomation:
                     profile,
                     points,
                     expected_lot,
-                    max_rows=12,
+                    max_rows=30,
                 )
                 if matched_row is None:
                     raise AutomationError(
