@@ -69,7 +69,8 @@ CALIBRATION_TARGETS = {
         ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
         ("buy_button", "買入按鈕（第二版使用）"),
         ("sell_button", "賣出按鈕（第二版使用）"),
-        ("positions_entry_price", "持倉成交價位置（第二版使用）"),
+        ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
+        ("position_order_lot", "場外已進場訂單手數（修改前確認）"),
         ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
     ],
     "TradingView": [

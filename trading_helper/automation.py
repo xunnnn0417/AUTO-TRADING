@@ -409,7 +409,12 @@ class PlatformAutomation:
         profile = self.config["platforms"][external_platform]
         points = profile.get("points", {})
         if external_platform == "MT5":
-            required = ["position_sl_input", "position_tp_input"]
+            required = [
+                "position_sl_input",
+                "position_tp_input",
+                "position_order_lot",
+                "position_order_row",
+            ]
         else:
             required = ["sl_input", "tp_input"]
             required.extend(["sl_checkbox", "tp_checkbox"])
@@ -423,11 +428,22 @@ class PlatformAutomation:
             if not self.windows.point_window_exists(
                 profile, "external", points["position_sl_input"]
             ):
-                position_point = points.get("position_order_row")
-                if position_point is None:
+                lot_point = points["position_order_lot"]
+                lot_window = self._window_for_point(
+                    profile, "external", lot_point
+                )
+                detected_lot = self.windows.read_number(lot_window, lot_point)
+                expected_lot = instruction.external.lot
+                self.log(
+                    "正在確認 MT5 場外已進場訂單手數："
+                    f"辨識 {detected_lot}，預期 {expected_lot}。"
+                )
+                if detected_lot != expected_lot:
                     raise AutomationError(
-                        "MT5 修改視窗未開啟，且尚未校準已進場訂單列。"
+                        "MT5 場外訂單手數不符，已停止修改。"
+                        f"辨識到 {detected_lot}，試算表要求 {expected_lot}。"
                     )
+                position_point = points["position_order_row"]
                 self.log("正在雙擊 MT5 場外已進場訂單列，開啟修改視窗。")
                 position_window = self._window_for_point(
                     profile, "external", position_point
