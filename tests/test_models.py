@@ -1,11 +1,18 @@
 from decimal import Decimal
+import ctypes
 import unittest
 
 from trading_helper.models import TradeInstruction, ValidationError
 from trading_helper.sheets import _cell_position
 from trading_helper.windows import (
+    KEYEVENTF_KEYUP,
+    INPUT,
+    VK_LMENU,
+    VK_LSHIFT,
+    VK_RIGHT,
     WindowController,
     WindowInfo,
+    _alt_shift_right_events,
     _extract_decimal_candidates,
 )
 from trading_helper.automation import PlatformAutomation, _plain
@@ -137,6 +144,22 @@ class TradeInstructionTests(unittest.TestCase):
     def test_ocr_price_parser_prefers_complete_price(self) -> None:
         values = _extract_decimal_candidates(["0.18", "4180.92", "18"])
         self.assertEqual(values[0], Decimal("4180.92"))
+
+    def test_alt_shift_right_holds_both_modifiers(self) -> None:
+        events = _alt_shift_right_events()
+        self.assertEqual([key for key, _ in events[:3]], [
+            VK_LMENU,
+            VK_LSHIFT,
+            VK_RIGHT,
+        ])
+        self.assertEqual(events[3][0], VK_RIGHT)
+        self.assertTrue(events[3][1] & KEYEVENTF_KEYUP)
+        self.assertEqual([key for key, _ in events[4:]], [
+            VK_LSHIFT,
+            VK_LMENU,
+        ])
+        self.assertTrue(all(flags & KEYEVENTF_KEYUP for _, flags in events[4:]))
+        self.assertEqual(ctypes.sizeof(INPUT), 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
 
 
 if __name__ == "__main__":

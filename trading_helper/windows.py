@@ -25,6 +25,12 @@ SW_SHOWNOACTIVATE = 4
 WM_PAINT = 0x000F
 WM_DESTROY = 0x0002
 PS_SOLID = 0
+INPUT_KEYBOARD = 1
+KEYEVENTF_EXTENDEDKEY = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+VK_LSHIFT = 0xA0
+VK_LMENU = 0xA4
+VK_RIGHT = 0x27
 
 
 class PAINTSTRUCT(ctypes.Structure):
@@ -35,6 +41,51 @@ class PAINTSTRUCT(ctypes.Structure):
         ("fRestore", wintypes.BOOL),
         ("fIncUpdate", wintypes.BOOL),
         ("rgbReserved", ctypes.c_byte * 32),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", wintypes.WPARAM),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", wintypes.WPARAM),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
+class INPUTUNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("data",)
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("data", INPUTUNION),
     ]
 
 
@@ -102,6 +153,17 @@ def _extract_decimal_candidates(texts: list[str]) -> list[Decimal]:
             ranked.append((digit_count, value))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [value for _, value in ranked]
+
+
+def _alt_shift_right_events() -> list[tuple[int, int]]:
+    return [
+        (VK_LMENU, 0),
+        (VK_LSHIFT, 0),
+        (VK_RIGHT, KEYEVENTF_EXTENDEDKEY),
+        (VK_RIGHT, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
+        (VK_LSHIFT, KEYEVENTF_KEYUP),
+        (VK_LMENU, KEYEVENTF_KEYUP),
+    ]
 
 
 @dataclass(frozen=True)
@@ -401,6 +463,10 @@ class WindowController:
             ) from exc
         self.focus(window)
         self.emergency.guard()
+        if tuple(key.lower() for key in keys) == ("alt", "shift", "right"):
+            self._send_alt_shift_right()
+            time.sleep(0.12)
+            return
         if not keys:
             return
         modifiers = keys[:-1]
@@ -418,6 +484,35 @@ class WindowController:
             for key in reversed(pressed):
                 pyautogui.keyUp(key)
         time.sleep(0.12)
+
+    def _send_alt_shift_right(self) -> None:
+        events = _alt_shift_right_events()
+        inputs = (INPUT * len(events))(
+            *[
+                INPUT(
+                    type=INPUT_KEYBOARD,
+                    data=INPUTUNION(
+                        ki=KEYBDINPUT(
+                            wVk=virtual_key,
+                            wScan=0,
+                            dwFlags=flags,
+                            time=0,
+                            dwExtraInfo=0,
+                        )
+                    ),
+                )
+                for virtual_key, flags in events
+            ]
+        )
+        sent = user32.SendInput(
+            len(inputs),
+            inputs,
+            ctypes.sizeof(INPUT),
+        )
+        if sent != len(inputs):
+            raise AutomationError(
+                "Windows 未完整送出 Alt + Shift + → 快捷鍵。"
+            )
         return True
 
     def show_marker(self, x: int, y: int, duration_ms: int = 2500) -> None:
