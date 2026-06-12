@@ -317,7 +317,12 @@ class PlatformAutomation:
         original_entry_price = self.windows.read_number(
             settings_window, points["entry_input"]
         )
-        if tp_price > original_entry_price:
+        take_profit_is_valid = (
+            tp_price > original_entry_price
+            if instruction.external_direction == "BUY"
+            else tp_price < original_entry_price
+        )
+        if take_profit_is_valid:
             field_order = (
                 ("tp_input", tp_price, "止盈"),
                 ("entry_input", entry_price, "進場"),
@@ -330,7 +335,9 @@ class PlatformAutomation:
                 ("tp_input", tp_price, "止盈"),
             )
         self.log(
-            "TradingView 原始進場價："
+            f"TradingView 場外"
+            f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}，"
+            "原始進場價："
             f"{instruction.format_price(original_entry_price)}；"
             f"將依序輸入 {' → '.join(label for _, _, label in field_order)}。"
         )
