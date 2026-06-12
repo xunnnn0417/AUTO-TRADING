@@ -21,6 +21,7 @@ REQUIRED_POINTS = {
 }
 
 TRADINGVIEW_REQUIRED_POINTS = [
+    "auto_scale_button",
     "long_tool",
     "short_tool",
     "position_placement",
@@ -305,6 +306,11 @@ class PlatformAutomation:
         )
         self.log("已用 Alt + Shift + → 前往 TradingView 最新價格。")
         self.windows.wait(1.0)
+        self._click_profile_point(
+            profile, "external", points["auto_scale_button"]
+        )
+        self.log("已開啟 TradingView 自動適應價格模式。")
+        self.windows.wait(0.7)
         tool_name = (
             "long_tool"
             if instruction.external_direction == "BUY"
@@ -362,6 +368,11 @@ class PlatformAutomation:
         self._click_profile_point(
             profile, "external", points["confirm_button"]
         )
+        self.windows.wait(0.35)
+        self._click_profile_point(
+            profile, "external", points["auto_scale_button"]
+        )
+        self.log("已關閉 TradingView 自動適應價格模式。")
         self.log(
             "TradingView 場外"
             f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}"
