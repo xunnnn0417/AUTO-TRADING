@@ -423,12 +423,12 @@ class PlatformAutomation:
             if not self.windows.point_window_exists(
                 profile, "external", points["position_sl_input"]
             ):
-                position_point = points.get("positions_entry_price")
+                position_point = points.get("position_order_row")
                 if position_point is None:
                     raise AutomationError(
-                        "MT5 修改視窗未開啟，且尚未校準持倉成交價位置。"
+                        "MT5 修改視窗未開啟，且尚未校準已進場訂單列。"
                     )
-                self.log("正在從 MT5 場外持倉列開啟修改視窗。")
+                self.log("正在雙擊 MT5 場外已進場訂單列，開啟修改視窗。")
                 position_window = self._window_for_point(
                     profile, "external", position_point
                 )

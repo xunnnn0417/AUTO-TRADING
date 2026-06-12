@@ -70,6 +70,7 @@ CALIBRATION_TARGETS = {
         ("buy_button", "買入按鈕（第二版使用）"),
         ("sell_button", "賣出按鈕（第二版使用）"),
         ("positions_entry_price", "持倉成交價位置（第二版使用）"),
+        ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
     ],
     "TradingView": [
         ("auto_scale_button", "自動適應價格按鈕"),
