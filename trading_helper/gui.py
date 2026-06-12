@@ -234,9 +234,9 @@ class TradingHelperApp(QMainWindow):
         labels = [
             ("商品代碼", "symbol"), ("表格方向", "sheet_direction"),
             ("場內方向", "internal_direction"), ("場外方向", "external_direction"),
-            ("場內手數", "internal_lot"), ("場內止損點數", "internal_sl"),
-            ("場內止盈點數", "internal_tp"), ("場外手數", "external_lot"),
-            ("場外止損點數", "external_sl"), ("場外止盈點數", "external_tp"),
+            ("場內手數", "internal_lot"), ("場外手數", "external_lot"),
+            ("場內止盈點數", "internal_tp"), ("場外止盈點數", "external_tp"),
+            ("場內止損點數", "internal_sl"), ("場外止損點數", "external_sl"),
         ]
         for index, (text, key) in enumerate(labels):
             row, section = divmod(index, 2)
