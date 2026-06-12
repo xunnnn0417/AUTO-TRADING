@@ -226,6 +226,9 @@ class TradingHelperApp(QMainWindow):
         create_profile = QPushButton("建立")
         create_profile.clicked.connect(self.create_profile)
         header.addWidget(create_profile)
+        save_profile = QPushButton("儲存")
+        save_profile.clicked.connect(self.save_current_profile)
+        header.addWidget(save_profile)
         rename_profile = QPushButton("重新命名")
         rename_profile.clicked.connect(self.rename_profile)
         header.addWidget(rename_profile)
@@ -572,6 +575,13 @@ class TradingHelperApp(QMainWindow):
             self.log(f"已建立方案：{name}")
         except Exception as exc:
             QMessageBox.warning(self, "建立方案", str(exc))
+
+    def save_current_profile(self) -> None:
+        try:
+            self.save_ui_state()
+            self.log(f"已儲存方案：{self.profiles.active_name}")
+        except Exception as exc:
+            QMessageBox.warning(self, "儲存方案", str(exc))
 
     def rename_profile(self) -> None:
         old_name = self.profiles.active_name
