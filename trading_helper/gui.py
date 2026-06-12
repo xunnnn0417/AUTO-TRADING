@@ -77,6 +77,7 @@ CALIBRATION_TARGETS = {
         ("entry_input", "部位進場價輸入欄"),
         ("sl_input", "部位止損價輸入欄"),
         ("tp_input", "部位止盈價輸入欄"),
+        ("confirm_button", "部位設定確認按鈕"),
     ],
 }
 

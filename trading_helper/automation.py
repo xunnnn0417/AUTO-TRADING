@@ -27,6 +27,7 @@ TRADINGVIEW_REQUIRED_POINTS = [
     "entry_input",
     "sl_input",
     "tp_input",
+    "confirm_button",
 ]
 
 
@@ -312,6 +313,12 @@ class PlatformAutomation:
         self._fill_profile_point(
             profile,
             "external",
+            points["tp_input"],
+            instruction.format_price(tp_price),
+        )
+        self._fill_profile_point(
+            profile,
+            "external",
             points["entry_input"],
             instruction.format_price(entry_price),
         )
@@ -321,16 +328,9 @@ class PlatformAutomation:
             points["sl_input"],
             instruction.format_price(sl_price),
         )
-        self._fill_profile_point(
-            profile,
-            "external",
-            points["tp_input"],
-            instruction.format_price(tp_price),
+        self._click_profile_point(
+            profile, "external", points["confirm_button"]
         )
-        settings_window = self._window_for_point(
-            profile, "external", points["tp_input"]
-        )
-        self.windows.hotkey(settings_window, "enter")
         self.log(
             "TradingView 場外"
             f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}"
