@@ -318,23 +318,17 @@ class TradingHelperApp(QMainWindow):
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
-            (
-                "校準 GooeyTrade",
-                lambda: self.open_calibration("GooeyTrade"),
-                1,
-                0,
-            ),
-            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 1),
-            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 2),
+            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 0),
+            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 1),
             (
                 "校準 TradingView",
                 lambda: self.open_calibration("TradingView"),
+                1,
                 2,
-                0,
             ),
-            ("填入場內", lambda: self.fill_role("internal"), 3, 0),
-            ("填入場外", lambda: self.fill_role("external"), 3, 1),
-            ("填入兩邊", self.fill_both, 3, 2),
+            ("填入場內", lambda: self.fill_role("internal"), 2, 0),
+            ("填入場外", lambda: self.fill_role("external"), 2, 1),
+            ("填入兩邊", self.fill_both, 2, 2),
         ]
         for text, callback, row, column in definitions:
             button = QPushButton(text)
