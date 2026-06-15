@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from trading_helper.config import DEFAULT_CONFIG, ProfileStore
+from trading_helper.config import (
+    ConfigStore,
+    DEFAULT_CONFIG,
+    ProfileStore,
+)
 
 
 class ProfileStoreTests(unittest.TestCase):
@@ -79,3 +83,62 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertNotIn("window_title", active_point)
         self.assertNotIn("window_title", other_point)
         self.assertEqual(other_point["x"], 0.4)
+
+    def test_ctrader_calibration_syncs_to_gooeytrade(self):
+        store = ProfileStore(self.config, self.path)
+        point = {"x": 0.25, "y": 0.75, "window_title": "cTrader"}
+
+        store.sync_calibration_point("cTrader", "tp_input", point)
+
+        profile = store.load_profile()
+        self.assertEqual(
+            profile["platforms"]["cTrader"]["points"]["tp_input"]["x"],
+            0.25,
+        )
+        self.assertEqual(
+            profile["platforms"]["GooeyTrade"]["points"]["tp_input"]["x"],
+            0.25,
+        )
+        self.assertNotIn(
+            "window_title",
+            profile["platforms"]["GooeyTrade"]["points"]["tp_input"],
+        )
+
+    def test_legacy_ctrader_configuration_migrates_to_gooeytrade(self):
+        legacy = {
+            "platforms": {
+                "cTrader": {
+                    "window_title": {
+                        "internal": "GooeyTrade Trader 5.7.10",
+                        "external": "GooeyTrade Trader 5.7.10",
+                    },
+                    "points": {"lot_input": {"x": 0.5, "y": 0.4}},
+                    "open_panel_before_fill": False,
+                }
+            },
+            "ui": {
+                "internal_platform": "cTrader",
+                "external_platform": "MT5",
+            },
+        }
+        config_path = Path(self.temp_dir.name) / "config.json"
+        config_path.write_text(
+            __import__("json").dumps(legacy),
+            encoding="utf-8",
+        )
+
+        loaded = ConfigStore(config_path).data
+
+        self.assertEqual(loaded["ui"]["internal_platform"], "GooeyTrade")
+        self.assertIn(
+            "lot_input",
+            loaded["platforms"]["GooeyTrade"]["points"],
+        )
+        self.assertEqual(
+            loaded["platforms"]["GooeyTrade"]["window_title"]["internal"],
+            "GooeyTrade",
+        )
+        self.assertEqual(
+            loaded["platforms"]["cTrader"]["window_title"]["internal"],
+            "cTrader",
+        )

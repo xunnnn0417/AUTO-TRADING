@@ -10,6 +10,13 @@ from .windows import AutomationError, EmergencyController, WindowController
 Log = Callable[[str], None]
 
 REQUIRED_POINTS = {
+    "GooeyTrade": [
+        "lot_input",
+        "sl_checkbox",
+        "sl_input",
+        "tp_checkbox",
+        "tp_input",
+    ],
     "cTrader": [
         "lot_input",
         "sl_checkbox",
@@ -89,7 +96,7 @@ class PlatformAutomation:
             if role == "internal"
             else instruction.external_direction
         )
-        if platform == "cTrader":
+        if _is_ctrader(platform):
             direction_point = (
                 "buy_button" if direction == "BUY" else "sell_button"
             )
@@ -139,7 +146,7 @@ class PlatformAutomation:
             instruction,
             current_price,
         )
-        if platform == "cTrader":
+        if _is_ctrader(platform):
             self._ensure_ctrader_risk_fields(profile, role, points)
         for point_name, label, value in values:
             if platform == "MT5" and point_name == "lot_input":
@@ -240,7 +247,7 @@ class PlatformAutomation:
         instruction: TradeInstruction,
         base_price: Decimal | None = None,
     ) -> list[tuple[str, str, str]]:
-        if platform == "cTrader":
+        if _is_ctrader(platform):
             sl_value = side.sl_points / instruction.point_size
             tp_value = side.tp_points / instruction.point_size
             return [
@@ -574,7 +581,7 @@ class PlatformAutomation:
         entry_window = self._window_for_point(
             internal_profile, "internal", entry_point
         )
-        if internal_platform == "cTrader":
+        if _is_ctrader(internal_platform):
             entry_price = self.windows.read_hover_number(
                 entry_window, entry_point
             )
@@ -612,3 +619,7 @@ def _plain(value: Decimal) -> str:
     if "." not in text:
         return text
     return text.rstrip("0").rstrip(".")
+
+
+def _is_ctrader(platform: str) -> bool:
+    return platform in {"GooeyTrade", "cTrader"}

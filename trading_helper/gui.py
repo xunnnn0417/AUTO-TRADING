@@ -45,8 +45,19 @@ from .windows import (
 )
 
 
-PLATFORMS = ("cTrader", "MT5")
+PLATFORMS = ("GooeyTrade", "cTrader", "MT5")
 CALIBRATION_TARGETS = {
+    "GooeyTrade": [
+        ("lot_input", "倉位／手數輸入欄"),
+        ("sl_checkbox", "止損啟用勾選框"),
+        ("sl_input", "止損點數輸入欄"),
+        ("tp_checkbox", "止盈啟用勾選框"),
+        ("tp_input", "止盈點數輸入欄"),
+        ("buy_button", "買入方向按鈕"),
+        ("sell_button", "賣出方向按鈕"),
+        ("positions_entry_price", "持倉成交價懸浮位置（OCR 使用）"),
+        ("new_order_button", "新增訂單按鈕（選用）"),
+    ],
     "cTrader": [
         ("lot_input", "倉位／手數輸入欄"),
         ("sl_checkbox", "止損啟用勾選框"),
@@ -307,12 +318,23 @@ class TradingHelperApp(QMainWindow):
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
-            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 0),
-            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 1),
-            ("校準 TradingView", lambda: self.open_calibration("TradingView"), 1, 2),
-            ("填入場內", lambda: self.fill_role("internal"), 2, 0),
-            ("填入場外", lambda: self.fill_role("external"), 2, 1),
-            ("填入兩邊", self.fill_both, 2, 2),
+            (
+                "校準 GooeyTrade",
+                lambda: self.open_calibration("GooeyTrade"),
+                1,
+                0,
+            ),
+            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 1),
+            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 2),
+            (
+                "校準 TradingView",
+                lambda: self.open_calibration("TradingView"),
+                2,
+                0,
+            ),
+            ("填入場內", lambda: self.fill_role("internal"), 3, 0),
+            ("填入場外", lambda: self.fill_role("external"), 3, 1),
+            ("填入兩邊", self.fill_both, 3, 2),
         ]
         for text, callback, row, column in definitions:
             button = QPushButton(text)
@@ -732,15 +754,21 @@ class CalibrationDialog(QDialog):
                 self.app.profiles.sync_calibration_point(
                     self.platform, key, point
                 )
+                self.app.store.data = self.app.profiles.load_profile()
+                self.app.store.save()
+                self.app.automation.config = self.app.store.data
                 self.app.log(
                     f"已儲存 {self.platform}「{key}」的相對位置："
                     f"({point['x']:.3f}, {point['y']:.3f})，"
                     f"精確像素 ({point['x_px']}, {point['y_px']})，"
                     f"螢幕座標 ({x}, {y})。"
                 )
-                self.app.log(
-                    f"已同步 {self.platform}「{key}」到所有方案。"
+                sync_target = (
+                    "GooeyTrade、cTrader 與所有方案"
+                    if self.platform in {"GooeyTrade", "cTrader"}
+                    else f"{self.platform} 與所有方案"
                 )
+                self.app.log(f"已同步「{key}」到 {sync_target}。")
                 self.capture_finished.emit(key)
             except Exception as exc:
                 self.app.signals.error.emit(str(exc))
@@ -852,7 +880,7 @@ class SettingsDialog(QDialog):
     def _windows_tab(self) -> QWidget:
         tab = QWidget()
         form = QFormLayout(tab)
-        for platform in ("cTrader", "MT5", "TradingView"):
+        for platform in ("GooeyTrade", "cTrader", "MT5", "TradingView"):
             title = QLabel(platform)
             title.setStyleSheet("font-weight: 700; margin-top: 8px;")
             form.addRow(title)

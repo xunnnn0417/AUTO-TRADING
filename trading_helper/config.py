@@ -43,6 +43,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "defaults": {"point_size": "0.0001", "price_digits": "5"},
     },
     "platforms": {
+        "GooeyTrade": {
+            "window_title": {
+                "internal": "GooeyTrade",
+                "external": "GooeyTrade",
+            },
+            "points": {},
+            "open_panel_before_fill": False,
+        },
         "cTrader": {
             "window_title": {"internal": "cTrader", "external": "cTrader"},
             "points": {},
@@ -60,7 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "ui": {
-        "internal_platform": "cTrader",
+        "internal_platform": "GooeyTrade",
         "external_platform": "MT5",
     },
 }
@@ -76,6 +84,25 @@ def _merge(default: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _migrate_legacy_ctrader(config: dict[str, Any]) -> dict[str, Any]:
+    migrated = deepcopy(config)
+    platforms = migrated.setdefault("platforms", {})
+    if "GooeyTrade" not in platforms and "cTrader" in platforms:
+        gooey = deepcopy(platforms["cTrader"])
+        gooey["window_title"] = {
+            "internal": "GooeyTrade",
+            "external": "GooeyTrade",
+        }
+        platforms["GooeyTrade"] = gooey
+        platforms["cTrader"] = deepcopy(DEFAULT_CONFIG["platforms"]["cTrader"])
+        ui = migrated.setdefault("ui", {})
+        if ui.get("internal_platform") == "cTrader":
+            ui["internal_platform"] = "GooeyTrade"
+        if ui.get("external_platform") == "cTrader":
+            ui["external_platform"] = "GooeyTrade"
+    return migrated
+
+
 class ConfigStore:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
@@ -86,7 +113,7 @@ class ConfigStore:
             return deepcopy(DEFAULT_CONFIG)
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
-            return _merge(DEFAULT_CONFIG, loaded)
+            return _merge(DEFAULT_CONFIG, _migrate_legacy_ctrader(loaded))
         except (OSError, json.JSONDecodeError):
             return deepcopy(DEFAULT_CONFIG)
 
@@ -169,13 +196,19 @@ class ProfileStore:
         point_name: str,
         point: dict[str, Any],
     ) -> None:
-        for profile_name, config in self.data["profiles"].items():
-            synced_point = deepcopy(point)
-            if platform != "TradingView":
-                synced_point.pop("window_title", None)
-            config["platforms"][platform].setdefault("points", {})[
-                point_name
-            ] = synced_point
+        target_platforms = (
+            ("GooeyTrade", "cTrader")
+            if platform in {"GooeyTrade", "cTrader"}
+            else (platform,)
+        )
+        for config in self.data["profiles"].values():
+            for target_platform in target_platforms:
+                synced_point = deepcopy(point)
+                if target_platform != "TradingView":
+                    synced_point.pop("window_title", None)
+                config["platforms"][target_platform].setdefault("points", {})[
+                    point_name
+                ] = synced_point
         self.save()
 
     def save(self) -> None:
@@ -200,7 +233,10 @@ class ProfileStore:
                     return {
                         "active": active,
                         "profiles": {
-                            str(name): _merge(DEFAULT_CONFIG, config)
+                            str(name): _merge(
+                                DEFAULT_CONFIG,
+                                _migrate_legacy_ctrader(config),
+                            )
                             for name, config in profiles.items()
                             if isinstance(config, dict)
                         },
