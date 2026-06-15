@@ -100,6 +100,12 @@ def _migrate_legacy_ctrader(config: dict[str, Any]) -> dict[str, Any]:
             ui["internal_platform"] = "GooeyTrade"
         if ui.get("external_platform") == "cTrader":
             ui["external_platform"] = "GooeyTrade"
+    gooey_points = platforms.get("GooeyTrade", {}).get("points", {})
+    ctrader_points = platforms.get("cTrader", {}).get("points", {})
+    if gooey_points and not ctrader_points:
+        platforms["cTrader"]["points"] = deepcopy(gooey_points)
+    elif ctrader_points and not gooey_points:
+        platforms["GooeyTrade"]["points"] = deepcopy(ctrader_points)
     return migrated
 
 
@@ -135,6 +141,7 @@ class ProfileStore:
     ):
         self.path = path
         self.data = self._load(initial_config)
+        self.save()
 
     @property
     def active_name(self) -> str:
