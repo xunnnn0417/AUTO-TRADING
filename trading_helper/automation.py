@@ -247,13 +247,19 @@ class PlatformAutomation:
         instruction: TradeInstruction,
         base_price: Decimal | None = None,
     ) -> list[tuple[str, str, str]]:
-        if _is_ctrader(platform):
+        if platform == "GooeyTrade":
             sl_value = side.sl_points / instruction.point_size
             tp_value = side.tp_points / instruction.point_size
             return [
                 ("lot_input", "手數", _plain(side.lot)),
                 ("sl_input", "止損點數", _plain(sl_value)),
                 ("tp_input", "止盈點數", _plain(tp_value)),
+            ]
+        if platform == "cTrader":
+            return [
+                ("lot_input", "手數", _plain(side.lot)),
+                ("sl_input", "止損點數", _plain(side.sl_points)),
+                ("tp_input", "止盈點數", _plain(side.tp_points)),
             ]
         sl_price, tp_price = instruction.estimated_prices(
             direction, side, base_price

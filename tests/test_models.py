@@ -136,10 +136,25 @@ class TradeInstructionTests(unittest.TestCase):
         item = TradeInstruction.from_mapping(2, values)
         automation = PlatformAutomation({}, None, None, lambda _: None)
         fields = automation._field_values(
-            "cTrader", "BUY", item.internal, item
+            "GooeyTrade", "BUY", item.internal, item
         )
         self.assertEqual(fields[1][2], "-711")
         self.assertEqual(fields[2][2], "4410")
+
+    def test_real_ctrader_uses_sheet_points_without_conversion(self) -> None:
+        values = valid_values()
+        values["internal_sl_points"] = "-7.11"
+        values["internal_tp_points"] = "44.10"
+        values["point_size"] = "0.01"
+        item = TradeInstruction.from_mapping(2, values)
+        automation = PlatformAutomation({}, None, None, lambda _: None)
+
+        fields = automation._field_values(
+            "cTrader", "BUY", item.internal, item
+        )
+
+        self.assertEqual(fields[1][2], "-7.11")
+        self.assertEqual(fields[2][2], "44.1")
 
     def test_mt5_position_point_moves_by_calibrated_row_height(self) -> None:
         point = {"x": 0.5, "y": 0.4, "x_px": 500, "y_px": 400}
