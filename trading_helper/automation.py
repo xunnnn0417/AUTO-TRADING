@@ -490,16 +490,30 @@ class PlatformAutomation:
             )
         else:
             self._ensure_ctrader_risk_fields(profile, "external", points)
+            external_values = self._field_values(
+                external_platform,
+                instruction.external_direction,
+                instruction.external,
+                instruction,
+            )
             values = (
                 (
                     "sl_input",
                     "止損點數",
-                    _plain(instruction.external.sl_points / instruction.point_size),
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "sl_input"
+                    ),
                 ),
                 (
                     "tp_input",
                     "止盈點數",
-                    _plain(instruction.external.tp_points / instruction.point_size),
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "tp_input"
+                    ),
                 ),
             )
 
@@ -586,6 +600,10 @@ class PlatformAutomation:
             )
         entry_window = self._window_for_point(
             internal_profile, "internal", entry_point
+        )
+        self.log(
+            f"正在依場內平台選擇讀取視窗：{internal_platform}，"
+            f"視窗：{entry_window.title}"
         )
         if _is_ctrader(internal_platform):
             entry_price = self.windows.read_hover_number(

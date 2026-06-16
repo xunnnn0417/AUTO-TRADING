@@ -156,6 +156,48 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(fields[1][2], "-7.11")
         self.assertEqual(fields[2][2], "44.1")
 
+    def test_window_lookup_uses_selected_platform_title(self) -> None:
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "GooeyTrade": {
+                        "window_title": {
+                            "internal": "GooeyTrade",
+                            "external": "GooeyTrade",
+                        }
+                    },
+                    "cTrader": {
+                        "window_title": {
+                            "internal": "cTrader",
+                            "external": "cTrader",
+                        }
+                    },
+                }
+            },
+            None,
+            None,
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.patterns = []
+
+            def find(self, pattern):
+                self.patterns.append(pattern)
+                return WindowInfo(1, pattern, 0, 0, 100, 100)
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        automation._window_for_point(
+            automation.config["platforms"]["cTrader"],
+            "internal",
+            {"window_title": "GooeyTrade old point title"},
+        )
+
+        self.assertEqual(fake.patterns, ["cTrader"])
+
     def test_mt5_position_point_moves_by_calibrated_row_height(self) -> None:
         point = {"x": 0.5, "y": 0.4, "x_px": 500, "y_px": 400}
         first = {"y": 0.3, "y_px": 300}
