@@ -884,11 +884,13 @@ class CalibrationDialog(QDialog):
         profile: dict[str, Any],
         point: dict[str, Any],
     ) -> tuple[int, int]:
-        title_patterns = [
-            str(point.get("window_title", "")).strip(),
-            str(profile["window_title"].get("internal", "")).strip(),
-            str(profile["window_title"].get("external", "")).strip(),
-        ]
+        title_patterns: list[str] = []
+        if self.app.internal_platform.currentText() == self.platform:
+            title_patterns.append(str(profile["window_title"].get("internal", "")).strip())
+        if self.app.external_platform.currentText() == self.platform:
+            title_patterns.append(str(profile["window_title"].get("external", "")).strip())
+        if self.platform == "TradingView":
+            title_patterns.append(str(profile["window_title"].get("external", "")).strip())
         last_error: Exception | None = None
         for title_pattern in dict.fromkeys(value for value in title_patterns if value):
             try:
@@ -896,11 +898,9 @@ class CalibrationDialog(QDialog):
                 return self.app.windows.screen_point(target_window, point)
             except Exception as exc:
                 last_error = exc
-        if "screen_x" in point and "screen_y" in point:
-            return int(point["screen_x"]), int(point["screen_y"])
         if last_error is not None:
             raise last_error
-        raise AutomationError("這個校準點沒有可用的視窗規則或螢幕座標。")
+        raise AutomationError("這個平台目前不是場內或場外選項，請先在主畫面選好平台。")
 
     def _show_marker(self, x: int, y: int) -> None:
         if self.marker_label is not None:
