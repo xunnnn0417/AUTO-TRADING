@@ -268,6 +268,12 @@ class TradingHelperApp(QMainWindow):
         delete_profile.clicked.connect(self.delete_profile)
         header.addWidget(delete_profile)
         header.addStretch()
+        self.tv_draw_internal = QCheckBox("TV 顯示場內")
+        self.tv_draw_internal.setChecked(
+            bool(self.store.data["ui"].get("tv_draw_internal", False))
+        )
+        self.tv_draw_internal.toggled.connect(lambda _: self.save_ui_state())
+        header.addWidget(self.tv_draw_internal)
         header.addWidget(self.always_on_top)
         self.profile_combo.currentTextChanged.connect(self.switch_profile)
         main.addLayout(header, 0, 0, 1, 2)
@@ -510,6 +516,7 @@ class TradingHelperApp(QMainWindow):
 
     def draw_tradingview(self) -> None:
         internal_platform = self.internal_platform.currentText()
+        draw_internal = self.tv_draw_internal.isChecked()
 
         def task() -> None:
             item = self._require_instruction()
@@ -517,6 +524,7 @@ class TradingHelperApp(QMainWindow):
                 item,
                 internal_platform=internal_platform,
                 entry_price_override=self.manual_entry_price,
+                draw_internal=draw_internal,
             )
 
         self._start("繪製 TradingView", task)
@@ -649,6 +657,7 @@ class TradingHelperApp(QMainWindow):
             {
                 "internal_platform": self.internal_platform.currentText(),
                 "external_platform": self.external_platform.currentText(),
+                "tv_draw_internal": self.tv_draw_internal.isChecked(),
             }
         )
         self.save_config()
@@ -736,10 +745,13 @@ class TradingHelperApp(QMainWindow):
         ui = self.store.data["ui"]
         self.internal_platform.blockSignals(True)
         self.external_platform.blockSignals(True)
+        self.tv_draw_internal.blockSignals(True)
         self.internal_platform.setCurrentText(ui["internal_platform"])
         self.external_platform.setCurrentText(ui["external_platform"])
+        self.tv_draw_internal.setChecked(bool(ui.get("tv_draw_internal", False)))
         self.internal_platform.blockSignals(False)
         self.external_platform.blockSignals(False)
+        self.tv_draw_internal.blockSignals(False)
         self.instruction = None
         self.manual_entry_price = None
         self.entry_price_input.clear()
@@ -870,10 +882,32 @@ class CalibrationDialog(QDialog):
             QMessageBox.warning(self, "顯示位置", "這個項目尚未校準。")
             return
         try:
-            title_pattern = str(point.get("window_title", "")).strip()
-            if not title_pattern:
-                title_pattern = profile["window_title"]["internal"]
-            target_window = self.app.windows.find(title_pattern)
+            patterns: list[str] = []
+            point_pattern = str(point.get("window_title", "")).strip()
+            if point_pattern:
+                patterns.append(point_pattern)
+            if self.app.internal_platform.currentText() == self.platform:
+                patterns.append(str(profile["window_title"]["internal"]).strip())
+            if self.app.external_platform.currentText() == self.platform:
+                patterns.append(str(profile["window_title"]["external"]).strip())
+            patterns.extend(
+                [
+                    str(profile["window_title"]["internal"]).strip(),
+                    str(profile["window_title"]["external"]).strip(),
+                ]
+            )
+            target_window = None
+            last_error: Exception | None = None
+            for title_pattern in dict.fromkeys(value for value in patterns if value):
+                try:
+                    target_window = self.app.windows.find(title_pattern)
+                    break
+                except Exception as exc:
+                    last_error = exc
+            if target_window is None:
+                if last_error is not None:
+                    raise last_error
+                raise AutomationError("視窗標題規則不可空白。")
             x, y = self.app.windows.screen_point(target_window, point)
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))

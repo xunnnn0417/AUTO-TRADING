@@ -278,6 +278,7 @@ class PlatformAutomation:
         *,
         internal_platform: str,
         entry_price_override: Decimal | None = None,
+        draw_internal: bool = False,
     ) -> None:
         self.emergency.guard()
         if entry_price_override is not None:
@@ -290,9 +291,16 @@ class PlatformAutomation:
             entry_price = self._read_internal_entry_price(
                 instruction, internal_platform
             )
+        tv_direction = (
+            instruction.internal_direction
+            if draw_internal
+            else instruction.external_direction
+        )
+        tv_side = instruction.internal if draw_internal else instruction.external
+        tv_side_label = "場內" if draw_internal else "場外"
         sl_price, tp_price = instruction.estimated_prices(
-            instruction.external_direction,
-            instruction.external,
+            tv_direction,
+            tv_side,
             entry_price,
         )
 
@@ -330,7 +338,7 @@ class PlatformAutomation:
         self.windows.wait(0.7)
         tool_name = (
             "long_tool"
-            if instruction.external_direction == "BUY"
+            if tv_direction == "BUY"
             else "short_tool"
         )
         self._click_profile_point(profile, "external", points[tool_name])
@@ -353,7 +361,7 @@ class PlatformAutomation:
         )
         take_profit_is_valid = (
             tp_price > original_entry_price
-            if instruction.external_direction == "BUY"
+            if tv_direction == "BUY"
             else tp_price < original_entry_price
         )
         if take_profit_is_valid:
@@ -369,8 +377,8 @@ class PlatformAutomation:
                 ("tp_input", tp_price, "止盈"),
             )
         self.log(
-            f"TradingView 場外"
-            f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}，"
+            f"TradingView {tv_side_label}"
+            f"{'多頭' if tv_direction == 'BUY' else '空頭'}，"
             "原始進場價："
             f"{instruction.format_price(original_entry_price)}；"
             f"將依序輸入 {' → '.join(label for _, _, label in field_order)}。"
@@ -391,8 +399,8 @@ class PlatformAutomation:
         )
         self.log("已關閉 TradingView 自動適應價格模式。")
         self.log(
-            "TradingView 場外"
-            f"{'多頭' if instruction.external_direction == 'BUY' else '空頭'}"
+            f"TradingView {tv_side_label}"
+            f"{'多頭' if tv_direction == 'BUY' else '空頭'}"
             f"部位已繪製：進場 {instruction.format_price(entry_price)}，"
             f"止損 {instruction.format_price(sl_price)}，"
             f"止盈 {instruction.format_price(tp_price)}。"
