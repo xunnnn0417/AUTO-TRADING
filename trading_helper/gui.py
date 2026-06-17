@@ -154,6 +154,7 @@ class UiSignals(QObject):
     operation_finished = Signal()
     operation_minimized = Signal()
     entry_price_reset = Signal()
+    parameter_inputs_reset = Signal(object)
 
 
 class TradingHelperApp(QMainWindow):
@@ -189,6 +190,7 @@ class TradingHelperApp(QMainWindow):
         self._build()
         self.signals.entry_price_reset.connect(self.entry_price_input.clear)
         self.signals.entry_price_reset.connect(self.entry_price_value.clear)
+        self.signals.parameter_inputs_reset.connect(self._clear_parameter_inputs)
         self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
@@ -351,6 +353,9 @@ class TradingHelperApp(QMainWindow):
         self.internal_direction_input = QComboBox()
         self.internal_direction_input.addItem("買入", "BUY")
         self.internal_direction_input.addItem("賣出", "SELL")
+        self.internal_direction_input.currentIndexChanged.connect(
+            self.update_trade_direction
+        )
         self.parameter_inputs: dict[str, QLineEdit] = {}
         parameter_layout.addWidget(QLabel("場內多空"), 0, 0)
         parameter_layout.addWidget(self.internal_direction_input, 0, 1)
@@ -363,7 +368,9 @@ class TradingHelperApp(QMainWindow):
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(24)
-            entry.returnPressed.connect(self.read_sheet)
+            entry.returnPressed.connect(
+                lambda key=key: self.update_trade_parameter(key)
+            )
             self.parameter_inputs[key] = entry
             parameter_layout.addWidget(QLabel(label), row, column)
             parameter_layout.addWidget(entry, row, column + 1)
@@ -518,9 +525,11 @@ class TradingHelperApp(QMainWindow):
         }
         for key, value in values.items():
             self.data_labels[key].setText(value)
+        self.internal_direction_input.blockSignals(True)
         self.internal_direction_input.setCurrentIndex(
             0 if item.internal_direction == "BUY" else 1
         )
+        self.internal_direction_input.blockSignals(False)
         parameter_values = {
             "daily_pnl": item.daily_pnl,
             "internal_balance": item.internal_balance,
@@ -623,6 +632,74 @@ class TradingHelperApp(QMainWindow):
         self.log(f"已更新手動場內實際進場價：{value}")
         self._write_internal_entry_price(value)
         self.draw_tradingview()
+
+    def update_trade_direction(self) -> None:
+        value = "多" if self.internal_direction_input.currentData() == "BUY" else "空"
+        self._write_trade_parameter_values({"direction": value}, "場內多空")
+
+    def update_trade_parameter(self, key: str) -> None:
+        if key not in self.parameter_inputs:
+            return
+        raw = self.parameter_inputs[key].text().replace(",", "").strip()
+        if key == "expected_sl_combined":
+            try:
+                points, percent = (
+                    self._parse_expected_sl_combined(raw)
+                    if raw
+                    else (None, None)
+                )
+            except AutomationError as exc:
+                QMessageBox.warning(self, "交易參數", str(exc))
+                return
+            values = {
+                "expected_sl_points": "" if points is None else format(points, "f"),
+                "expected_sl_percent": "" if percent is None else format(percent, "f"),
+            }
+            self._write_trade_parameter_values(values, "預期止損點/%數")
+            return
+        label = {
+            "daily_pnl": "每日獲利/虧損",
+            "internal_balance": "場內餘額",
+        }.get(key, key)
+        if raw:
+            try:
+                value = Decimal(raw)
+            except InvalidOperation:
+                QMessageBox.warning(self, "交易參數", f"{label} 必須是數字。")
+                return
+            raw = format(value, "f")
+        self._write_trade_parameter_values({key: raw}, label)
+
+    def _write_trade_parameter_values(
+        self, values: dict[str, object], label: str
+    ) -> None:
+        source_row = self.instruction.source_row if self.instruction else None
+
+        def task() -> None:
+            targets: list[str] = []
+            for field, value in values.items():
+                target = self.reader.write_value(
+                    self.store.data["sheet"],
+                    field,
+                    value,
+                    source_row=source_row,
+                )
+                targets.append(target)
+            self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
+            self.signals.parameter_inputs_reset.emit(list(values))
+            self._read_sheet_task()
+
+        self._start(f"寫回{label}", task, hide_during=False)
+
+    def _clear_parameter_inputs(self, fields: object) -> None:
+        field_list = fields if isinstance(fields, list) else []
+        for field in field_list:
+            if field == "direction":
+                continue
+            if field in self.parameter_inputs:
+                self.parameter_inputs[field].clear()
+        if {"expected_sl_points", "expected_sl_percent"} & set(field_list):
+            self.parameter_inputs["expected_sl_combined"].clear()
 
     def _write_internal_entry_price(self, value: Decimal) -> None:
         if self.instruction is None:
