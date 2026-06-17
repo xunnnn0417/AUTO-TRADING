@@ -563,7 +563,15 @@ class TradingHelperApp(QMainWindow):
         return self.instruction
 
     def open_calibration(self, platform: str) -> None:
-        CalibrationDialog(self, platform).exec()
+        was_minimized = self.isMinimized()
+        self.showMinimized()
+        try:
+            CalibrationDialog(self, platform).exec()
+        finally:
+            if not was_minimized:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
 
     def bind_role_window(self, role: str) -> None:
         platform = (
@@ -853,6 +861,7 @@ class CalibrationDialog(QDialog):
         threading.Thread(target=task, daemon=True).start()
 
     def show_position(self) -> None:
+        self.app.showMinimized()
         key = next(key for key, radio in self.radios.items() if radio.isChecked())
         profile = self.app.store.data["platforms"][self.platform]
         point = profile.get("points", {}).get(key)
