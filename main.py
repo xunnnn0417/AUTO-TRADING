@@ -1,8 +1,11 @@
 import ctypes
 import sys
+from pathlib import Path
 
 MUTEX_NAME = "Local\\TradingWorkflowHelperMVP"
 ERROR_ALREADY_EXISTS = 183
+APP_ID = "Xun.TradingWorkflowHelper"
+APP_ICON = Path(__file__).resolve().parent / "assets" / "app.ico"
 
 
 def enable_dpi_awareness() -> None:
@@ -33,11 +36,18 @@ def acquire_single_instance():
 
 def main() -> None:
     enable_dpi_awareness()
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
 
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
     from trading_helper.gui import TradingHelperApp
 
     qt = QApplication(sys.argv)
+    if APP_ICON.exists():
+        qt.setWindowIcon(QIcon(str(APP_ICON)))
     mutex, is_first = acquire_single_instance()
     if not is_first:
         QMessageBox.warning(

@@ -7,10 +7,11 @@ import time
 import webbrowser
 from dataclasses import replace
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QApplication,
@@ -49,6 +50,7 @@ from .windows import (
 
 
 PLATFORMS = ("cTrader", "MT5")
+APP_ICON = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
 MT5_TARGETS = [
     ("new_order_button", "主視窗的新訂單按鈕"),
     ("lot_input", "交易量輸入欄"),
@@ -162,6 +164,8 @@ class TradingHelperApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("交易流程輔助工具 - 第一版")
+        if APP_ICON.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON)))
         self.resize(1200, 545)
         self.setMinimumWidth(900)
         self.setMinimumHeight(520)
