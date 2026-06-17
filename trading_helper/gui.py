@@ -877,8 +877,16 @@ class CalibrationDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
-        self.app.windows.show_marker(x, y, duration_ms=2500)
+        self.showMinimized()
+        self.app.windows.show_marker(x, y, duration_ms=5000)
         self.result.setText(f"正在顯示：{key}")
+        QTimer.singleShot(5200, self._restore_after_marker)
+
+    def _restore_after_marker(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
 
     def _finish_capture(self, key: str) -> None:
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
