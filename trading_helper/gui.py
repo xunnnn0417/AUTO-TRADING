@@ -122,6 +122,20 @@ def direction_text(value: str) -> str:
     return {"BUY": "買入", "SELL": "賣出"}.get(value, value)
 
 
+def _window_title_pattern(platform: str, title: str) -> str:
+    if platform == "GooeyTrade":
+        return "GooeyTrade"
+    if platform == "cTrader":
+        return "cTrader"
+    if platform in {"BYBIT MT5", "原版MT5"}:
+        parts = [part.strip() for part in title.split(" - ") if part.strip()]
+        if len(parts) >= 2:
+            return f"{re.escape(parts[0])}.*{re.escape(parts[1])}"
+    if platform == "TradingView":
+        return r"/\s*常用$"
+    return re.escape(title)
+
+
 class UiSignals(QObject):
     log = Signal(str)
     status = Signal(str)
@@ -320,17 +334,19 @@ class TradingHelperApp(QMainWindow):
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
-            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 0),
-            ("校準 MT5", lambda: self.open_calibration("BYBIT MT5"), 1, 1),
+            ("綁定場內視窗", lambda: self.bind_role_window("internal"), 0, 2),
+            ("綁定場外視窗", lambda: self.bind_role_window("external"), 1, 0),
+            ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 1),
+            ("校準 MT5", lambda: self.open_calibration("BYBIT MT5"), 1, 2),
             (
                 "校準 TradingView",
                 lambda: self.open_calibration("TradingView"),
-                1,
                 2,
+                0,
             ),
-            ("填入場內", lambda: self.fill_role("internal"), 2, 0),
-            ("填入場外", lambda: self.fill_role("external"), 2, 1),
-            ("填入兩邊", self.fill_both, 2, 2),
+            ("填入場內", lambda: self.fill_role("internal"), 3, 0),
+            ("填入場外", lambda: self.fill_role("external"), 3, 1),
+            ("填入兩邊", self.fill_both, 3, 2),
         ]
         for text, callback, row, column in definitions:
             button = QPushButton(text)
@@ -546,6 +562,34 @@ class TradingHelperApp(QMainWindow):
 
     def open_calibration(self, platform: str) -> None:
         CalibrationDialog(self, platform).exec()
+
+    def bind_role_window(self, role: str) -> None:
+        platform = (
+            self.internal_platform.currentText()
+            if role == "internal"
+            else self.external_platform.currentText()
+        )
+        role_text = "場內" if role == "internal" else "場外"
+
+        def task() -> None:
+            self.log(
+                f"準備綁定{role_text} {platform} 視窗。"
+                "請在 3 秒內把滑鼠移到目標視窗上。"
+            )
+            for count in (3, 2, 1):
+                self.log(f"綁定{role_text} {platform}：{count}")
+                time.sleep(1)
+            active = self.windows.window_at_cursor()
+            pattern = _window_title_pattern(platform, active.title)
+            self.store.data["platforms"][platform]["window_title"][role] = pattern
+            self.save_config()
+            self.automation.config = self.store.data
+            self.log(
+                f"已綁定{role_text} {platform} 視窗：{active.title}；"
+                f"規則：{pattern}"
+            )
+
+        self._start(f"綁定{role_text}視窗", task, hide_during=False)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)

@@ -16,6 +16,7 @@ from trading_helper.windows import (
     _extract_decimal_candidates,
 )
 from trading_helper.automation import PlatformAutomation, _plain
+from trading_helper.gui import _window_title_pattern
 
 
 def valid_values() -> dict[str, str]:
@@ -197,6 +198,24 @@ class TradeInstructionTests(unittest.TestCase):
         )
 
         self.assertEqual(fake.patterns, ["cTrader"])
+
+    def test_mt5_window_binding_uses_account_and_server_only(self) -> None:
+        pattern = _window_title_pattern(
+            "原版MT5",
+            "569569160 - Bybit-Live-2 - Hedge - Infra Capital Limited - [GOLD_,M1]",
+        )
+
+        self.assertEqual(pattern, r"569569160.*Bybit\-Live\-2")
+
+    def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
+        self.assertEqual(
+            _window_title_pattern("GooeyTrade", "GooeyTrade cTrader 5.7.10"),
+            "GooeyTrade",
+        )
+        self.assertEqual(
+            _window_title_pattern("cTrader", "cTrader"),
+            "cTrader",
+        )
 
     def test_mt5_position_point_moves_by_calibrated_row_height(self) -> None:
         point = {"x": 0.5, "y": 0.4, "x_px": 500, "y_px": 400}
