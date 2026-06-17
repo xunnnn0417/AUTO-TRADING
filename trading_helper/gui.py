@@ -772,7 +772,6 @@ class CalibrationDialog(QDialog):
         super().__init__(app)
         self.app = app
         self.platform = platform
-        self.marker_label: QLabel | None = None
         self.setWindowTitle(f"校準 {platform}")
         self.resize(530, 470)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -871,67 +870,16 @@ class CalibrationDialog(QDialog):
             QMessageBox.warning(self, "顯示位置", "這個項目尚未校準。")
             return
         try:
-            x, y = self._marker_position(profile, point)
+            title_pattern = str(point.get("window_title", "")).strip()
+            if not title_pattern:
+                title_pattern = profile["window_title"]["internal"]
+            target_window = self.app.windows.find(title_pattern)
+            x, y = self.app.windows.screen_point(target_window, point)
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
-        self._show_marker(x, y)
-        self.result.setText(f"正在顯示：{key}")
-
-    def _marker_position(
-        self,
-        profile: dict[str, Any],
-        point: dict[str, Any],
-    ) -> tuple[int, int]:
-        title_pattern = ""
-        if self.app.internal_platform.currentText() == self.platform:
-            title_pattern = str(profile["window_title"]["internal"]).strip()
-        elif self.app.external_platform.currentText() == self.platform:
-            title_pattern = str(profile["window_title"]["external"]).strip()
-        if not title_pattern:
-            title_pattern = str(point.get("calibration_window_title", "")).strip()
-        if not title_pattern:
-            title_pattern = str(point.get("window_title", "")).strip()
-        if not title_pattern:
-            title_pattern = str(profile["window_title"]["internal"]).strip()
-        target_window = self.app.windows.find(title_pattern)
-        focused_window = self.app.windows.focus(target_window)
-        if "x_px" in point and "y_px" in point:
-            return (
-                focused_window.left + int(point["x_px"]),
-                focused_window.top + int(point["y_px"]),
-            )
-        return self.app.windows.screen_point(focused_window, point)
-
-    def _show_marker(self, x: int, y: int) -> None:
-        if self.marker_label is not None:
-            self.marker_label.close()
-        marker = QLabel("＋")
-        marker.setWindowFlags(
-            Qt.Tool
-            | Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.WindowDoesNotAcceptFocus
-        )
-        marker.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        marker.setAlignment(Qt.AlignCenter)
-        marker.setFixedSize(72, 72)
-        marker.setStyleSheet(
-            "QLabel {"
-            "color: #ff0000;"
-            "background: rgba(255, 255, 255, 170);"
-            "border: 4px solid #ff0000;"
-            "border-radius: 36px;"
-            "font-size: 42px;"
-            "font-weight: 900;"
-            "}"
-        )
-        marker.move(x - 36, y - 36)
-        marker.show()
-        marker.raise_()
-        self.marker_label = marker
         self.app.windows.show_marker(x, y, duration_ms=5000)
-        QTimer.singleShot(5000, marker.close)
+        self.result.setText(f"正在顯示：{key}")
 
     def _finish_capture(self, key: str) -> None:
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
