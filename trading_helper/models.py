@@ -48,6 +48,10 @@ class TradeInstruction:
     internal_entry_price: Decimal | None = None
     final_external_sl_price: Decimal | None = None
     final_external_tp_price: Decimal | None = None
+    daily_pnl: Decimal | None = None
+    internal_balance: Decimal | None = None
+    expected_sl_points: Decimal | None = None
+    expected_sl_percent: Decimal | None = None
 
     @property
     def internal_direction(self) -> str:
@@ -87,6 +91,10 @@ class TradeInstruction:
         entry_raw = str(values.get("internal_entry_price", "")).strip()
         final_sl_raw = str(values.get("final_external_sl_price", "")).strip()
         final_tp_raw = str(values.get("final_external_tp_price", "")).strip()
+        daily_pnl_raw = str(values.get("daily_pnl", "")).strip()
+        balance_raw = str(values.get("internal_balance", "")).strip()
+        expected_sl_points_raw = str(values.get("expected_sl_points", "")).strip()
+        expected_sl_percent_raw = str(values.get("expected_sl_percent", "")).strip()
         point_size_raw = values.get("point_size", "0.0001")
         digits_raw = str(values.get("price_digits", "5")).strip() or "5"
 
@@ -119,6 +127,29 @@ class TradeInstruction:
             internal_entry_price=_decimal(entry_raw, "Internal Entry Price") if entry_raw else None,
             final_external_sl_price=_decimal(final_sl_raw, "Final External SL price") if final_sl_raw else None,
             final_external_tp_price=_decimal(final_tp_raw, "Final External TP price") if final_tp_raw else None,
+            daily_pnl=_decimal(
+                daily_pnl_raw,
+                "每日獲利/虧損",
+                allow_zero=True,
+                allow_negative=True,
+            ) if daily_pnl_raw else None,
+            internal_balance=_decimal(
+                balance_raw,
+                "場內餘額",
+                allow_zero=True,
+            ) if balance_raw else None,
+            expected_sl_points=_decimal(
+                expected_sl_points_raw,
+                "預期止損點",
+                allow_zero=True,
+                allow_negative=True,
+            ) if expected_sl_points_raw else None,
+            expected_sl_percent=_decimal(
+                expected_sl_percent_raw,
+                "預期止損%",
+                allow_zero=True,
+                allow_negative=True,
+            ) if expected_sl_percent_raw else None,
         )
 
     def estimated_prices(

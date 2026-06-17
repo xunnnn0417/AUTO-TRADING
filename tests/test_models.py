@@ -104,6 +104,24 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(item.internal_direction, "SELL")
         self.assertEqual(item.external_direction, "BUY")
 
+    def test_accepts_optional_account_parameters(self) -> None:
+        values = valid_values()
+        values.update(
+            {
+                "daily_pnl": "-123.45",
+                "internal_balance": "50000",
+                "expected_sl_points": "-6.81",
+                "expected_sl_percent": "-1.2",
+            }
+        )
+
+        item = TradeInstruction.from_mapping(2, values)
+
+        self.assertEqual(item.daily_pnl, Decimal("-123.45"))
+        self.assertEqual(item.internal_balance, Decimal("50000"))
+        self.assertEqual(item.expected_sl_points, Decimal("-6.81"))
+        self.assertEqual(item.expected_sl_percent, Decimal("-1.2"))
+
     def test_negative_stop_points_are_preserved_for_ctrader(self) -> None:
         values = valid_values()
         values["internal_sl_points"] = "-100"

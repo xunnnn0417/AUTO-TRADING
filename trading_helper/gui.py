@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import webbrowser
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -117,6 +118,10 @@ FIELD_LABELS = {
     "internal_entry_price": "場內成交價",
     "final_external_sl_price": "場外最終止損價",
     "final_external_tp_price": "場外最終止盈價",
+    "daily_pnl": "每日獲利/虧損",
+    "internal_balance": "場內餘額",
+    "expected_sl_points": "預期止損點",
+    "expected_sl_percent": "預期止損%",
 }
 
 
@@ -341,6 +346,32 @@ class TradingHelperApp(QMainWindow):
         data_layout.setColumnStretch(3, 1)
         main.addWidget(data_box, 2, 0, 2, 1)
 
+        parameter_box = QGroupBox("交易參數")
+        parameter_layout = QGridLayout(parameter_box)
+        self.internal_direction_input = QComboBox()
+        self.internal_direction_input.addItem("買入", "BUY")
+        self.internal_direction_input.addItem("賣出", "SELL")
+        self.parameter_inputs: dict[str, QLineEdit] = {}
+        parameter_layout.addWidget(QLabel("場內多空"), 0, 0)
+        parameter_layout.addWidget(self.internal_direction_input, 0, 1)
+        parameter_fields = [
+            ("每日獲利/虧損", "daily_pnl"),
+            ("場內餘額", "internal_balance"),
+            ("預期止損點", "expected_sl_points"),
+            ("預期止損%", "expected_sl_percent"),
+        ]
+        positions = [(0, 2), (0, 4), (1, 0), (1, 2)]
+        for (label, key), (row, column) in zip(parameter_fields, positions):
+            entry = QLineEdit()
+            entry.setFixedHeight(24)
+            self.parameter_inputs[key] = entry
+            parameter_layout.addWidget(QLabel(label), row, column)
+            parameter_layout.addWidget(entry, row, column + 1)
+        parameter_layout.setColumnStretch(1, 1)
+        parameter_layout.setColumnStretch(3, 1)
+        parameter_layout.setColumnStretch(5, 1)
+        main.addWidget(parameter_box, 4, 0)
+
         actions = QGroupBox("操作")
         action_layout = QGridLayout(actions)
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
@@ -485,6 +516,17 @@ class TradingHelperApp(QMainWindow):
         }
         for key, value in values.items():
             self.data_labels[key].setText(value)
+        self.internal_direction_input.setCurrentIndex(
+            0 if item.internal_direction == "BUY" else 1
+        )
+        parameter_values = {
+            "daily_pnl": item.daily_pnl,
+            "internal_balance": item.internal_balance,
+            "expected_sl_points": item.expected_sl_points,
+            "expected_sl_percent": item.expected_sl_percent,
+        }
+        for key, value in parameter_values.items():
+            self.parameter_inputs[key].setText("" if value is None else str(value))
 
     def fill_role(self, role: str) -> None:
         platform = (
@@ -588,7 +630,35 @@ class TradingHelperApp(QMainWindow):
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
             raise AutomationError("請先讀取 Google 試算表，再執行這項操作。")
-        return self.instruction
+        return self._instruction_with_parameter_overrides(self.instruction)
+
+    def _instruction_with_parameter_overrides(
+        self, instruction: TradeInstruction
+    ) -> TradeInstruction:
+        values: dict[str, Decimal | None] = {}
+        labels = {
+            "daily_pnl": "每日獲利/虧損",
+            "internal_balance": "場內餘額",
+            "expected_sl_points": "預期止損點",
+            "expected_sl_percent": "預期止損%",
+        }
+        for key, entry in self.parameter_inputs.items():
+            raw = entry.text().replace(",", "").strip()
+            if not raw:
+                values[key] = None
+                continue
+            try:
+                values[key] = Decimal(raw)
+            except InvalidOperation:
+                raise AutomationError(f"{labels[key]} 必須是數字。") from None
+        return replace(
+            instruction,
+            sheet_direction=str(self.internal_direction_input.currentData()),
+            daily_pnl=values["daily_pnl"],
+            internal_balance=values["internal_balance"],
+            expected_sl_points=values["expected_sl_points"],
+            expected_sl_percent=values["expected_sl_percent"],
+        )
 
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
@@ -784,6 +854,9 @@ class TradingHelperApp(QMainWindow):
         self.manual_entry_price = None
         self.entry_price_input.clear()
         self.entry_price_value.clear()
+        self.internal_direction_input.setCurrentIndex(0)
+        for entry in self.parameter_inputs.values():
+            entry.clear()
         for label in self.data_labels.values():
             label.setText("-")
 

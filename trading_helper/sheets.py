@@ -101,6 +101,10 @@ class SheetReader:
                     "internal_entry_price",
                     "final_external_sl_price",
                     "final_external_tp_price",
+                    "daily_pnl",
+                    "internal_balance",
+                    "expected_sl_points",
+                    "expected_sl_percent",
                 }:
                     mapped[field] = ""
                 else:
@@ -121,6 +125,10 @@ class SheetReader:
             "internal_entry_price",
             "final_external_sl_price",
             "final_external_tp_price",
+            "daily_pnl",
+            "internal_balance",
+            "expected_sl_points",
+            "expected_sl_percent",
         }
         mapped: dict[str, object] = {}
         source_rows: list[int] = []
