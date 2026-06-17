@@ -562,9 +562,7 @@ class TradingHelperApp(QMainWindow):
         percent = item.expected_sl_percent
         if points is None and percent is None:
             return None
-        left = "" if points is None else str(points)
-        right = "" if percent is None else str(percent)
-        return f"{left} / {right}"
+        return str(points if points is not None else percent)
 
     def fill_role(self, role: str) -> None:
         platform = (
@@ -1386,6 +1384,8 @@ class SettingsDialog(QDialog):
         content = QWidget()
         form = QFormLayout(content)
         for key, value in self.draft["sheet"]["columns"].items():
+            if key == "expected_sl_percent":
+                continue
             entry = QLineEdit(str(value))
             self.column_fields[key] = entry
             form.addRow(FIELD_LABELS.get(key, key), entry)
@@ -1439,6 +1439,9 @@ class SettingsDialog(QDialog):
                 self.draft["sheet"][key] = value
             for key, entry in self.column_fields.items():
                 self.draft["sheet"]["columns"][key] = entry.text().strip()
+            self.draft["sheet"]["columns"]["expected_sl_percent"] = (
+                self.draft["sheet"]["columns"].get("expected_sl_points", "")
+            )
             for (platform, role), entry in self.title_fields.items():
                 self.draft["platforms"][platform]["window_title"][role] = (
                     entry.text().strip()
