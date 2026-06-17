@@ -150,12 +150,18 @@ class PlatformAutomation:
                 raise AutomationError(
                     f"MT5 尚未校準 {price_point_name}，也沒有設定備用估算價格。"
                 )
+        ctrader_uses_point_size = (
+            self._ctrader_uses_point_size(platform, profile, role, points)
+            if _is_ctrader(platform)
+            else False
+        )
         values = self._field_values(
             platform,
             direction,
             side,
             instruction,
             current_price,
+            ctrader_uses_point_size=ctrader_uses_point_size,
         )
         if _is_ctrader(platform):
             self._ensure_ctrader_risk_fields(profile, role, points)
@@ -262,20 +268,25 @@ class PlatformAutomation:
         side: SideValues,
         instruction: TradeInstruction,
         base_price: Decimal | None = None,
+        *,
+        ctrader_uses_point_size: bool = False,
     ) -> list[tuple[str, str, str]]:
-        if platform == "GooeyTrade":
-            sl_value = side.sl_points / instruction.point_size
-            tp_value = side.tp_points / instruction.point_size
+        if _is_ctrader(platform):
+            uses_point_size = platform == "GooeyTrade" or ctrader_uses_point_size
+            sl_value = (
+                side.sl_points / instruction.point_size
+                if uses_point_size
+                else side.sl_points
+            )
+            tp_value = (
+                side.tp_points / instruction.point_size
+                if uses_point_size
+                else side.tp_points
+            )
             return [
                 ("lot_input", "手數", _plain(side.lot)),
                 ("sl_input", "止損點數", _plain(sl_value)),
                 ("tp_input", "止盈點數", _plain(tp_value)),
-            ]
-        if platform == "cTrader":
-            return [
-                ("lot_input", "手數", _plain(side.lot)),
-                ("sl_input", "止損點數", _plain(side.sl_points)),
-                ("tp_input", "止盈點數", _plain(side.tp_points)),
             ]
         sl_price, tp_price = instruction.estimated_prices(
             direction, side, base_price
@@ -519,6 +530,9 @@ class PlatformAutomation:
                 instruction.external_direction,
                 instruction.external,
                 instruction,
+                ctrader_uses_point_size=self._ctrader_uses_point_size(
+                    external_platform, profile, "external", points
+                ),
             )
             values = (
                 (
@@ -661,6 +675,34 @@ class PlatformAutomation:
             point,
             value,
         )
+
+    @staticmethod
+    def _ctrader_uses_point_size(
+        platform: str,
+        profile: dict[str, Any],
+        role: str,
+        points: dict[str, dict[str, Any]],
+    ) -> bool:
+        if platform == "GooeyTrade":
+            return True
+        if platform != "cTrader":
+            return False
+        texts: list[str] = [str(profile.get("window_title", {}).get(role, ""))]
+        for point_name in (
+            "lot_input",
+            "sl_input",
+            "tp_input",
+            "sl_checkbox",
+            "tp_checkbox",
+        ):
+            point = points.get(point_name, {})
+            texts.extend(
+                [
+                    str(point.get("window_title", "")),
+                    str(point.get("calibration_window_title", "")),
+                ]
+            )
+        return any("GooeyTrade" in text for text in texts)
 
 def _plain(value: Decimal) -> str:
     text = format(value, "f")
