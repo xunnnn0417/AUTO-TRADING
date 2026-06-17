@@ -237,6 +237,67 @@ class SheetReader:
         if not reference:
             raise ValidationError(f"{field} 尚未設定寫回位置。")
         worksheet = self._open_gspread_worksheet(config)
+        target = self._target_for_reference(
+            worksheet,
+            config,
+            reference,
+            source_row=source_row,
+        )
+        worksheet.update_acell(target, str(value))
+        return target
+
+    def read_field_values(
+        self,
+        config: dict[str, Any],
+        fields: list[str],
+        *,
+        source_row: int | None = None,
+    ) -> dict[str, str]:
+        if config.get("mode") != "service_account":
+            raise ValidationError("讀取寫回前原值需要使用 service_account 讀取模式。")
+        worksheet = self._open_gspread_worksheet(config)
+        values: dict[str, str] = {}
+        for field in fields:
+            reference = str(config["columns"].get(field, "")).strip()
+            if not reference:
+                raise ValidationError(f"{field} 尚未設定寫回位置。")
+            target = self._target_for_reference(
+                worksheet,
+                config,
+                reference,
+                source_row=source_row,
+            )
+            values[target] = worksheet.acell(target).value or ""
+        return values
+
+    def read_a1_values(
+        self, config: dict[str, Any], references: list[str]
+    ) -> dict[str, str]:
+        if config.get("mode") != "service_account":
+            raise ValidationError("讀取檢查格需要使用 service_account 讀取模式。")
+        worksheet = self._open_gspread_worksheet(config)
+        return {
+            reference: worksheet.acell(reference).value or ""
+            for reference in references
+        }
+
+    def write_a1_values(
+        self, config: dict[str, Any], values: dict[str, str]
+    ) -> None:
+        if config.get("mode") != "service_account":
+            raise ValidationError("還原試算表需要使用 service_account 讀取模式。")
+        worksheet = self._open_gspread_worksheet(config)
+        for target, value in values.items():
+            worksheet.update_acell(target, str(value))
+
+    def _target_for_reference(
+        self,
+        worksheet,
+        config: dict[str, Any],
+        reference: str,
+        *,
+        source_row: int | None = None,
+    ) -> str:
         if config.get("data_layout", "row") == "cells":
             row_index, column_index = _cell_position(reference)
         else:
@@ -248,7 +309,6 @@ class SheetReader:
             column_index = _column_index(reference, rows[0])
             row_index = source_row - 1
         target = _a1_notation(row_index, column_index)
-        worksheet.update_acell(target, str(value))
         return target
 
     def _select_row(

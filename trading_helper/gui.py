@@ -689,6 +689,11 @@ class TradingHelperApp(QMainWindow):
         values = self._dedupe_same_sheet_targets(values)
 
         def task() -> None:
+            previous_values = self.reader.read_field_values(
+                self.store.data["sheet"],
+                list(values),
+                source_row=source_row,
+            )
             targets: list[str] = []
             for field, value in values.items():
                 target = self.reader.write_value(
@@ -699,6 +704,28 @@ class TradingHelperApp(QMainWindow):
                 )
                 targets.append(target)
             self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
+            warning_values = self.reader.read_a1_values(
+                self.store.data["sheet"],
+                ["A20", "E12"],
+            )
+            warnings = {
+                cell: str(value).strip()
+                for cell, value in warning_values.items()
+                if str(value).strip()
+            }
+            if warnings:
+                self.reader.write_a1_values(self.store.data["sheet"], previous_values)
+                self.log(
+                    "A20/E12 出現警示文字，已取消剛剛的調整並還原原值。"
+                )
+                details = "\n".join(
+                    f"{cell}: {message}" for cell, message in warnings.items()
+                )
+                self.signals.error.emit(
+                    f"表格警示，已取消剛剛的調整：\n{details}"
+                )
+                self._read_sheet_task(retries=3)
+                return
             self.signals.parameter_inputs_reset.emit(list(values))
             self._read_sheet_task(retries=3)
 

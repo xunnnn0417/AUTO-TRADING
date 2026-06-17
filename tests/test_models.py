@@ -163,6 +163,43 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(target, "D8")
         self.assertEqual(reader.worksheet.updated, ("D8", "4174.64"))
 
+    def test_read_and_restore_a1_values(self) -> None:
+        class FakeCell:
+            def __init__(self, value):
+                self.value = value
+
+        class FakeWorksheet:
+            def __init__(self):
+                self.values = {"D8": "old", "A20": "", "E12": "warning"}
+
+            def acell(self, target):
+                return FakeCell(self.values.get(target, ""))
+
+            def update_acell(self, target, value):
+                self.values[target] = value
+
+        class FakeReader(SheetReader):
+            def __init__(self):
+                self.worksheet = FakeWorksheet()
+
+            def _open_gspread_worksheet(self, config):
+                return self.worksheet
+
+        config = {
+            "mode": "service_account",
+            "data_layout": "cells",
+            "columns": {"internal_entry_price": "D8"},
+        }
+        reader = FakeReader()
+
+        previous = reader.read_field_values(config, ["internal_entry_price"])
+        warnings = reader.read_a1_values(config, ["A20", "E12"])
+        reader.write_a1_values(config, {"D8": "old"})
+
+        self.assertEqual(previous, {"D8": "old"})
+        self.assertEqual(warnings, {"A20": "", "E12": "warning"})
+        self.assertEqual(reader.worksheet.values["D8"], "old")
+
     def test_write_value_uses_selected_row_for_row_mapping(self) -> None:
         class FakeWorksheet:
             def __init__(self):
