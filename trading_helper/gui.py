@@ -819,8 +819,7 @@ class CalibrationDialog(QDialog):
                 active = self.app.windows.window_at_cursor()
                 x, y = self.app.windows.cursor_position()
                 point = self.app.windows.relative_point(active, x, y)
-                point["screen_x"] = x
-                point["screen_y"] = y
+                point["calibration_window_title"] = re.escape(active.title)
                 profile = self.app.store.data["platforms"][self.platform]
                 if self.platform == "TradingView":
                     stable_title = r"/\s*常用$"
@@ -884,23 +883,25 @@ class CalibrationDialog(QDialog):
         profile: dict[str, Any],
         point: dict[str, Any],
     ) -> tuple[int, int]:
-        title_patterns: list[str] = []
+        title_pattern = ""
         if self.app.internal_platform.currentText() == self.platform:
-            title_patterns.append(str(profile["window_title"].get("internal", "")).strip())
-        if self.app.external_platform.currentText() == self.platform:
-            title_patterns.append(str(profile["window_title"].get("external", "")).strip())
-        if self.platform == "TradingView":
-            title_patterns.append(str(profile["window_title"].get("external", "")).strip())
-        last_error: Exception | None = None
-        for title_pattern in dict.fromkeys(value for value in title_patterns if value):
-            try:
-                target_window = self.app.windows.find(title_pattern)
-                return self.app.windows.screen_point(target_window, point)
-            except Exception as exc:
-                last_error = exc
-        if last_error is not None:
-            raise last_error
-        raise AutomationError("這個平台目前不是場內或場外選項，請先在主畫面選好平台。")
+            title_pattern = str(profile["window_title"]["internal"]).strip()
+        elif self.app.external_platform.currentText() == self.platform:
+            title_pattern = str(profile["window_title"]["external"]).strip()
+        if not title_pattern:
+            title_pattern = str(point.get("calibration_window_title", "")).strip()
+        if not title_pattern:
+            title_pattern = str(point.get("window_title", "")).strip()
+        if not title_pattern:
+            title_pattern = str(profile["window_title"]["internal"]).strip()
+        target_window = self.app.windows.find(title_pattern)
+        focused_window = self.app.windows.focus(target_window)
+        if "x_px" in point and "y_px" in point:
+            return (
+                focused_window.left + int(point["x_px"]),
+                focused_window.top + int(point["y_px"]),
+            )
+        return self.app.windows.screen_point(focused_window, point)
 
     def _show_marker(self, x: int, y: int) -> None:
         if self.marker_label is not None:
