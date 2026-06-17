@@ -238,6 +238,11 @@ class PlatformAutomation:
                 str(profile["window_title"][role]).strip(),
                 r"/\s*常用$",
             ]
+        elif profile is self.config["platforms"].get("MT5"):
+            patterns = [
+                point_pattern,
+                str(profile["window_title"][role]).strip(),
+            ]
         else:
             patterns = [str(profile["window_title"][role]).strip()]
         last_error: AutomationError | None = None

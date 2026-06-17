@@ -288,6 +288,42 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(pattern, r"569569160.*Bybit\-Live\-2")
 
+    def test_mt5_points_prefer_order_window_title(self) -> None:
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "MT5": {
+                        "window_title": {
+                            "internal": "Main Window",
+                            "external": "Main Window",
+                        }
+                    }
+                }
+            },
+            None,
+            None,
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.patterns = []
+
+            def find(self, pattern):
+                self.patterns.append(pattern)
+                return WindowInfo(1, pattern, 0, 0, 100, 100)
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        automation._window_for_point(
+            automation.config["platforms"]["MT5"],
+            "external",
+            {"window_title": "Order Window"},
+        )
+
+        self.assertEqual(fake.patterns, ["Order Window"])
+
     def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
         self.assertEqual(
             _window_title_pattern("GooeyTrade", "GooeyTrade cTrader 5.7.10"),
