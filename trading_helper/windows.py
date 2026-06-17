@@ -591,7 +591,30 @@ class WindowController:
         focused = self.focus(window)
         self._validate_calibrated_window(focused, point)
         x, y = self.screen_point(focused, point)
-        return self._read_number_ocr(x, y)
+        attempts = [
+            (x, y, 150, 70),
+            (x, y + 22, 190, 100),
+            (x, y + 35, 230, 125),
+            (x + 35, y, 230, 95),
+        ]
+        last_error: AutomationError | None = None
+        for target_x, target_y, width, height in attempts:
+            try:
+                return self._read_number_ocr(
+                    target_x,
+                    target_y,
+                    width=width,
+                    height=height,
+                )
+            except AutomationError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise AutomationError(
+            "無法從校準區域辨識價格。"
+            "請把校準點放在成交價數字或懸浮觸發位置後重試。"
+        )
 
     def read_hover_number(
         self, window: WindowInfo, point: dict[str, float]
