@@ -497,9 +497,20 @@ class TradingHelperApp(QMainWindow):
     def read_sheet(self) -> None:
         self._start("讀取中", self._read_sheet_task, hide_during=False)
 
-    def _read_sheet_task(self) -> None:
+    def _read_sheet_task(self, retries: int = 0) -> None:
         self.log("正在讀取 Google 試算表。")
-        item = self.reader.read(self.store.data["sheet"])
+        item = None
+        for attempt in range(retries + 1):
+            try:
+                item = self.reader.read(self.store.data["sheet"])
+                break
+            except ValidationError:
+                if attempt >= retries:
+                    raise
+                self.log("試算表公式尚未更新完成，稍後重讀。")
+                time.sleep(0.7)
+        if item is None:
+            raise ValidationError("讀取試算表失敗。")
         self.instruction = item
         self.manual_entry_price = None
         self.signals.entry_price_reset.emit()
@@ -674,6 +685,7 @@ class TradingHelperApp(QMainWindow):
         self, values: dict[str, object], label: str
     ) -> None:
         source_row = self.instruction.source_row if self.instruction else None
+        values = self._dedupe_same_sheet_targets(values)
 
         def task() -> None:
             targets: list[str] = []
@@ -687,9 +699,29 @@ class TradingHelperApp(QMainWindow):
                 targets.append(target)
             self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
             self.signals.parameter_inputs_reset.emit(list(values))
-            self._read_sheet_task()
+            self._read_sheet_task(retries=3)
 
         self._start(f"寫回{label}", task, hide_during=False)
+
+    def _dedupe_same_sheet_targets(
+        self, values: dict[str, object]
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        seen: dict[str, str] = {}
+        columns = self.store.data.get("sheet", {}).get("columns", {})
+        for field, value in values.items():
+            reference = str(columns.get(field, "")).strip().upper()
+            key = reference or field
+            if key in seen:
+                self.log(
+                    f"{FIELD_LABELS.get(field, field)} 和 "
+                    f"{FIELD_LABELS.get(seen[key], seen[key])} 共用 {reference}，"
+                    "只寫入一次。"
+                )
+                continue
+            seen[key] = field
+            result[field] = value
+        return result
 
     def _clear_parameter_inputs(self, fields: object) -> None:
         field_list = fields if isinstance(fields, list) else []
