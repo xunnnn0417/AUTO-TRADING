@@ -827,7 +827,7 @@ class TradingHelperApp(QMainWindow):
                 self.raise_()
                 self.activateWindow()
 
-    def bind_role_window(self, role: str) -> None:
+    def bind_role_window(self, role: str) -> bool:
         platform = (
             self.internal_platform.currentText()
             if role == "internal"
@@ -866,7 +866,7 @@ class TradingHelperApp(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             self.log(f"已取消修改{role_text} {platform} 視窗綁定。")
-            return
+            return False
 
         def task() -> None:
             self.log(
@@ -887,6 +887,7 @@ class TradingHelperApp(QMainWindow):
             )
 
         self._start(f"綁定{role_text}視窗", task, hide_during=False)
+        return True
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
@@ -1020,28 +1021,30 @@ class TradingHelperApp(QMainWindow):
         QTimer.singleShot(0, lambda: self._run_help_action(action))
 
     def _run_help_action(self, action: str) -> None:
-        reopen_help = action in {
-            "settings",
-            "calibrate_ctrader",
-            "calibrate_mt5",
-            "calibrate_tv",
-        }
+        reopen_delay: int | None = None
         if action == "settings":
             self.open_settings()
+            reopen_delay = 150
         elif action == "bind_internal":
-            self.bind_role_window("internal")
+            started = self.bind_role_window("internal")
+            reopen_delay = 4300 if started else 150
         elif action == "bind_external":
-            self.bind_role_window("external")
+            started = self.bind_role_window("external")
+            reopen_delay = 4300 if started else 150
         elif action == "calibrate_ctrader":
             self.open_calibration("cTrader")
+            reopen_delay = 150
         elif action == "calibrate_mt5":
             self.open_calibration("MT5")
+            reopen_delay = 150
         elif action == "calibrate_tv":
             self.open_calibration("TradingView")
+            reopen_delay = 150
         elif action == "sheet_url":
             self.open_sheet_url()
-        if reopen_help:
-            QTimer.singleShot(150, self.open_help)
+            reopen_delay = 150
+        if reopen_delay is not None:
+            QTimer.singleShot(reopen_delay, self.open_help)
 
     def save_config(self) -> None:
         self.store.save()
