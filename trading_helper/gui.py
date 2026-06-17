@@ -772,6 +772,7 @@ class CalibrationDialog(QDialog):
         super().__init__(app)
         self.app = app
         self.platform = platform
+        self.marker_label: QLabel | None = None
         self.setWindowTitle(f"校準 {platform}")
         self.resize(530, 470)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -875,7 +876,7 @@ class CalibrationDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
-        self.app.windows.show_marker(x, y, duration_ms=5000)
+        self._show_marker(x, y)
         self.result.setText(f"正在顯示：{key}")
 
     def _marker_position(
@@ -900,6 +901,36 @@ class CalibrationDialog(QDialog):
         if last_error is not None:
             raise last_error
         raise AutomationError("這個校準點沒有可用的視窗規則或螢幕座標。")
+
+    def _show_marker(self, x: int, y: int) -> None:
+        if self.marker_label is not None:
+            self.marker_label.close()
+        marker = QLabel("＋")
+        marker.setWindowFlags(
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        marker.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        marker.setAlignment(Qt.AlignCenter)
+        marker.setFixedSize(72, 72)
+        marker.setStyleSheet(
+            "QLabel {"
+            "color: #ff0000;"
+            "background: rgba(255, 255, 255, 170);"
+            "border: 4px solid #ff0000;"
+            "border-radius: 36px;"
+            "font-size: 42px;"
+            "font-weight: 900;"
+            "}"
+        )
+        marker.move(x - 36, y - 36)
+        marker.show()
+        marker.raise_()
+        self.marker_label = marker
+        self.app.windows.show_marker(x, y, duration_ms=5000)
+        QTimer.singleShot(5000, marker.close)
 
     def _finish_capture(self, key: str) -> None:
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
