@@ -4,6 +4,7 @@ import copy
 import re
 import threading
 import time
+import webbrowser
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
@@ -274,6 +275,9 @@ class TradingHelperApp(QMainWindow):
         )
         self.tv_draw_internal.toggled.connect(lambda _: self.save_ui_state())
         header.addWidget(self.tv_draw_internal)
+        sheet_url_button = QPushButton("表格網址")
+        sheet_url_button.clicked.connect(self.open_sheet_url)
+        header.addWidget(sheet_url_button)
         header.addWidget(self.always_on_top)
         self.profile_combo.currentTextChanged.connect(self.switch_profile)
         main.addLayout(header, 0, 0, 1, 2)
@@ -647,6 +651,14 @@ class TradingHelperApp(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             self.automation.config = self.store.data
             self.log("設定已儲存。")
+
+    def open_sheet_url(self) -> None:
+        url = str(self.store.data["sheet"].get("spreadsheet_url", "")).strip()
+        if not url:
+            QMessageBox.warning(self, "表格網址", "目前方案沒有設定試算表網址。")
+            return
+        webbrowser.open(url)
+        self.log("已開啟表格網址。")
 
     def save_config(self) -> None:
         self.store.save()
