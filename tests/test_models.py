@@ -3,7 +3,7 @@ import ctypes
 import unittest
 
 from trading_helper.models import TradeInstruction, ValidationError
-from trading_helper.sheets import _cell_position
+from trading_helper.sheets import SheetReader, _cell_position
 from trading_helper.windows import (
     KEYEVENTF_KEYUP,
     INPUT,
@@ -117,6 +117,69 @@ class TradeInstructionTests(unittest.TestCase):
     def test_cell_reference_position(self) -> None:
         self.assertEqual(_cell_position("B5"), (4, 1))
         self.assertEqual(_cell_position("AA12"), (11, 26))
+
+    def test_write_value_uses_cell_mapping(self) -> None:
+        class FakeWorksheet:
+            def __init__(self):
+                self.updated = None
+
+            def update_acell(self, target, value):
+                self.updated = (target, value)
+
+        class FakeReader(SheetReader):
+            def __init__(self):
+                self.worksheet = FakeWorksheet()
+
+            def _open_gspread_worksheet(self, config):
+                return self.worksheet
+
+        config = {
+            "mode": "service_account",
+            "data_layout": "cells",
+            "columns": {"internal_entry_price": "D8"},
+        }
+        reader = FakeReader()
+
+        target = reader.write_value(config, "internal_entry_price", "4174.64")
+
+        self.assertEqual(target, "D8")
+        self.assertEqual(reader.worksheet.updated, ("D8", "4174.64"))
+
+    def test_write_value_uses_selected_row_for_row_mapping(self) -> None:
+        class FakeWorksheet:
+            def __init__(self):
+                self.updated = None
+
+            def get_all_values(self):
+                return [["Status", "Internal Entry Price"]]
+
+            def update_acell(self, target, value):
+                self.updated = (target, value)
+
+        class FakeReader(SheetReader):
+            def __init__(self):
+                self.worksheet = FakeWorksheet()
+
+            def _open_gspread_worksheet(self, config):
+                return self.worksheet
+
+        config = {
+            "mode": "service_account",
+            "data_layout": "row",
+            "row_number": 2,
+            "columns": {"internal_entry_price": "Internal Entry Price"},
+        }
+        reader = FakeReader()
+
+        target = reader.write_value(
+            config,
+            "internal_entry_price",
+            "4174.64",
+            source_row=5,
+        )
+
+        self.assertEqual(target, "B5")
+        self.assertEqual(reader.worksheet.updated, ("B5", "4174.64"))
 
     def test_calibration_uses_exact_pixels_when_window_size_matches(self) -> None:
         controller = WindowController(None)

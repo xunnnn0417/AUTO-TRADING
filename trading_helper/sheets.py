@@ -38,6 +38,15 @@ def _cell_position(reference: object) -> tuple[int, int]:
     return int(match.group(2)) - 1, column - 1
 
 
+def _a1_notation(row_index: int, column_index: int) -> str:
+    column = column_index + 1
+    letters = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return f"{letters}{row_index + 1}"
+
+
 def _cell_or_literal(
     rows: list[list[str]], reference: object, *, allow_literal: bool
 ) -> tuple[object, int | None]:
@@ -189,6 +198,9 @@ class SheetReader:
         return list(csv.reader(io.StringIO(text)))
 
     def _fetch_gspread(self, config: dict[str, Any]) -> list[list[str]]:
+        return self._open_gspread_worksheet(config).get_all_values()
+
+    def _open_gspread_worksheet(self, config: dict[str, Any]):
         try:
             import gspread
         except ImportError as exc:
@@ -199,9 +211,37 @@ class SheetReader:
         try:
             client = gspread.service_account(filename=credential_file)
             book = client.open_by_url(config["spreadsheet_url"])
-            return book.worksheet(config.get("worksheet", "Sheet1")).get_all_values()
+            return book.worksheet(config.get("worksheet", "Sheet1"))
         except Exception as exc:
             raise ValidationError(f"Google 試算表 API 錯誤：{exc}") from exc
+
+    def write_value(
+        self,
+        config: dict[str, Any],
+        field: str,
+        value: object,
+        *,
+        source_row: int | None = None,
+    ) -> str:
+        if config.get("mode") != "service_account":
+            raise ValidationError("寫回試算表需要使用 service_account 讀取模式。")
+        reference = str(config["columns"].get(field, "")).strip()
+        if not reference:
+            raise ValidationError(f"{field} 尚未設定寫回位置。")
+        worksheet = self._open_gspread_worksheet(config)
+        if config.get("data_layout", "row") == "cells":
+            row_index, column_index = _cell_position(reference)
+        else:
+            if source_row is None:
+                source_row = max(2, int(config.get("row_number", 2)))
+            rows = worksheet.get_all_values()
+            if not rows:
+                raise ValidationError("工作表沒有標題列，無法寫回。")
+            column_index = _column_index(reference, rows[0])
+            row_index = source_row - 1
+        target = _a1_notation(row_index, column_index)
+        worksheet.update_acell(target, str(value))
+        return target
 
     def _select_row(
         self, rows: list[list[str]], headers: list[str], config: dict[str, Any]

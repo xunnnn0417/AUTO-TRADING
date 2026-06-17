@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 
 from .automation import PlatformAutomation
 from .config import ConfigStore, ProfileStore
-from .models import TradeInstruction
+from .models import TradeInstruction, ValidationError
 from .sheets import SheetReader
 from .windows import (
     AutomationError,
@@ -567,7 +567,23 @@ class TradingHelperApp(QMainWindow):
         self.entry_price_input.setText(format(value, "f"))
         self.entry_price_value.setText(format(value, "f"))
         self.log(f"已更新手動場內實際進場價：{value}")
+        self._write_internal_entry_price(value)
         self.draw_tradingview()
+
+    def _write_internal_entry_price(self, value: Decimal) -> None:
+        if self.instruction is None:
+            return
+        try:
+            target = self.reader.write_value(
+                self.store.data["sheet"],
+                "internal_entry_price",
+                format(value, "f"),
+                source_row=self.instruction.source_row,
+            )
+        except ValidationError as exc:
+            self.log(f"未寫回試算表：{exc}")
+            return
+        self.log(f"已寫回場內實際進場價到試算表 {target}。")
 
     def _require_instruction(self) -> TradeInstruction:
         if self.instruction is None:
