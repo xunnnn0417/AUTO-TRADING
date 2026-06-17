@@ -121,7 +121,7 @@ FIELD_LABELS = {
     "final_external_tp_price": "場外最終止盈價",
     "daily_pnl": "每日獲利/虧損",
     "internal_balance": "場內餘額",
-    "expected_sl_points": "預期止損點",
+    "expected_sl_points": "預期止損點/%數",
     "expected_sl_percent": "預期止損%",
 }
 
@@ -658,7 +658,7 @@ class TradingHelperApp(QMainWindow):
         raw = self.parameter_inputs[key].text().replace(",", "").strip()
         if key == "expected_sl_combined":
             try:
-                points, percent = (
+                points, _ = (
                     self._parse_expected_sl_combined(raw)
                     if raw
                     else (None, None)
@@ -666,10 +666,7 @@ class TradingHelperApp(QMainWindow):
             except AutomationError as exc:
                 QMessageBox.warning(self, "交易參數", str(exc))
                 return
-            values = {
-                "expected_sl_points": "" if points is None else format(points, "f"),
-                "expected_sl_percent": "" if percent is None else format(percent, "f"),
-            }
+            values = {"expected_sl_points": "" if points is None else format(points, "f")}
             self._write_trade_parameter_values(values, "預期止損點/%數")
             return
         label = {
@@ -771,9 +768,8 @@ class TradingHelperApp(QMainWindow):
             if not raw:
                 continue
             if key == "expected_sl_combined":
-                points, percent = self._parse_expected_sl_combined(raw)
+                points, _ = self._parse_expected_sl_combined(raw)
                 values["expected_sl_points"] = points
-                values["expected_sl_percent"] = percent
                 continue
             try:
                 values[key] = Decimal(raw)
@@ -782,16 +778,12 @@ class TradingHelperApp(QMainWindow):
         expected_points = values.get(
             "expected_sl_points", instruction.expected_sl_points
         )
-        expected_percent = values.get(
-            "expected_sl_percent", instruction.expected_sl_percent
-        )
         return replace(
             instruction,
             sheet_direction=str(self.internal_direction_input.currentData()),
             daily_pnl=values.get("daily_pnl", instruction.daily_pnl),
             internal_balance=values.get("internal_balance", instruction.internal_balance),
             expected_sl_points=expected_points,
-            expected_sl_percent=expected_percent,
         )
 
     def _parse_expected_sl_combined(
@@ -1439,9 +1431,6 @@ class SettingsDialog(QDialog):
                 self.draft["sheet"][key] = value
             for key, entry in self.column_fields.items():
                 self.draft["sheet"]["columns"][key] = entry.text().strip()
-            self.draft["sheet"]["columns"]["expected_sl_percent"] = (
-                self.draft["sheet"]["columns"].get("expected_sl_points", "")
-            )
             for (platform, role), entry in self.title_fields.items():
                 self.draft["platforms"][platform]["window_title"][role] = (
                     entry.text().strip()
