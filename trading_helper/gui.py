@@ -357,13 +357,13 @@ class TradingHelperApp(QMainWindow):
         parameter_fields = [
             ("每日獲利/虧損", "daily_pnl"),
             ("場內餘額", "internal_balance"),
-            ("預期止損點", "expected_sl_points"),
-            ("預期止損%", "expected_sl_percent"),
+            ("預期止損點/%數", "expected_sl_combined"),
         ]
-        positions = [(0, 2), (0, 4), (1, 0), (1, 2)]
+        positions = [(0, 2), (0, 4), (1, 0)]
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(24)
+            entry.returnPressed.connect(self.read_sheet)
             self.parameter_inputs[key] = entry
             parameter_layout.addWidget(QLabel(label), row, column)
             parameter_layout.addWidget(entry, row, column + 1)
@@ -524,11 +524,21 @@ class TradingHelperApp(QMainWindow):
         parameter_values = {
             "daily_pnl": item.daily_pnl,
             "internal_balance": item.internal_balance,
-            "expected_sl_points": item.expected_sl_points,
-            "expected_sl_percent": item.expected_sl_percent,
+            "expected_sl_combined": self._format_expected_sl_placeholder(item),
         }
         for key, value in parameter_values.items():
-            self.parameter_inputs[key].setText("" if value is None else str(value))
+            self.parameter_inputs[key].setPlaceholderText("" if value is None else str(value))
+
+    def _format_expected_sl_placeholder(
+        self, item: TradeInstruction
+    ) -> str | None:
+        points = item.expected_sl_points
+        percent = item.expected_sl_percent
+        if points is None and percent is None:
+            return None
+        left = "" if points is None else str(points)
+        right = "" if percent is None else str(percent)
+        return f"{left} / {right}"
 
     def fill_role(self, role: str) -> None:
         platform = (
@@ -641,26 +651,55 @@ class TradingHelperApp(QMainWindow):
         labels = {
             "daily_pnl": "每日獲利/虧損",
             "internal_balance": "場內餘額",
-            "expected_sl_points": "預期止損點",
-            "expected_sl_percent": "預期止損%",
+            "expected_sl_combined": "預期止損點/%數",
         }
         for key, entry in self.parameter_inputs.items():
             raw = entry.text().replace(",", "").strip()
             if not raw:
-                values[key] = None
+                continue
+            if key == "expected_sl_combined":
+                points, percent = self._parse_expected_sl_combined(raw)
+                values["expected_sl_points"] = points
+                values["expected_sl_percent"] = percent
                 continue
             try:
                 values[key] = Decimal(raw)
             except InvalidOperation:
                 raise AutomationError(f"{labels[key]} 必須是數字。") from None
+        expected_points = values.get(
+            "expected_sl_points", instruction.expected_sl_points
+        )
+        expected_percent = values.get(
+            "expected_sl_percent", instruction.expected_sl_percent
+        )
         return replace(
             instruction,
             sheet_direction=str(self.internal_direction_input.currentData()),
-            daily_pnl=values["daily_pnl"],
-            internal_balance=values["internal_balance"],
-            expected_sl_points=values["expected_sl_points"],
-            expected_sl_percent=values["expected_sl_percent"],
+            daily_pnl=values.get("daily_pnl", instruction.daily_pnl),
+            internal_balance=values.get("internal_balance", instruction.internal_balance),
+            expected_sl_points=expected_points,
+            expected_sl_percent=expected_percent,
         )
+
+    def _parse_expected_sl_combined(
+        self, raw: str
+    ) -> tuple[Decimal | None, Decimal | None]:
+        separators = ["/", "／", "|", "｜"]
+        parts = [raw]
+        for separator in separators:
+            if separator in raw:
+                parts = raw.split(separator, 1)
+                break
+        try:
+            points = Decimal(parts[0].replace("%", "").strip()) if parts[0].strip() else None
+            percent = (
+                Decimal(parts[1].replace("%", "").strip())
+                if len(parts) > 1 and parts[1].strip()
+                else None
+            )
+        except InvalidOperation:
+            raise AutomationError("預期止損點/%數 必須是數字，例如 -6.81 / -1.2。") from None
+        return points, percent
 
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
@@ -859,6 +898,7 @@ class TradingHelperApp(QMainWindow):
         self.internal_direction_input.setCurrentIndex(0)
         for entry in self.parameter_inputs.values():
             entry.clear()
+            entry.setPlaceholderText("")
         for label in self.data_labels.values():
             label.setText("-")
 
