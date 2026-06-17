@@ -818,6 +818,8 @@ class CalibrationDialog(QDialog):
                 active = self.app.windows.window_at_cursor()
                 x, y = self.app.windows.cursor_position()
                 point = self.app.windows.relative_point(active, x, y)
+                point["screen_x"] = x
+                point["screen_y"] = y
                 profile = self.app.store.data["platforms"][self.platform]
                 if self.platform == "TradingView":
                     stable_title = r"/\s*常用$"
@@ -869,16 +871,35 @@ class CalibrationDialog(QDialog):
             QMessageBox.warning(self, "顯示位置", "這個項目尚未校準。")
             return
         try:
-            title_pattern = str(point.get("window_title", "")).strip()
-            if not title_pattern:
-                title_pattern = profile["window_title"]["internal"]
-            target_window = self.app.windows.find(title_pattern)
-            x, y = self.app.windows.screen_point(target_window, point)
+            x, y = self._marker_position(profile, point)
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
         self.app.windows.show_marker(x, y, duration_ms=5000)
         self.result.setText(f"正在顯示：{key}")
+
+    def _marker_position(
+        self,
+        profile: dict[str, Any],
+        point: dict[str, Any],
+    ) -> tuple[int, int]:
+        title_patterns = [
+            str(point.get("window_title", "")).strip(),
+            str(profile["window_title"].get("internal", "")).strip(),
+            str(profile["window_title"].get("external", "")).strip(),
+        ]
+        last_error: Exception | None = None
+        for title_pattern in dict.fromkeys(value for value in title_patterns if value):
+            try:
+                target_window = self.app.windows.find(title_pattern)
+                return self.app.windows.screen_point(target_window, point)
+            except Exception as exc:
+                last_error = exc
+        if "screen_x" in point and "screen_y" in point:
+            return int(point["screen_x"]), int(point["screen_y"])
+        if last_error is not None:
+            raise last_error
+        raise AutomationError("這個校準點沒有可用的視窗規則或螢幕座標。")
 
     def _finish_capture(self, key: str) -> None:
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
