@@ -160,10 +160,10 @@ class TradingHelperApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("交易流程輔助工具 - 第一版")
-        self.resize(1200, 445)
+        self.resize(1200, 545)
         self.setMinimumWidth(900)
-        self.setMinimumHeight(405)
-        self.setMaximumHeight(475)
+        self.setMinimumHeight(520)
+        self.setMaximumHeight(680)
         self.store = ConfigStore()
         self.profiles = ProfileStore(self.store.data)
         self.store.data = self.profiles.load_profile()
@@ -417,6 +417,8 @@ class TradingHelperApp(QMainWindow):
         main.addWidget(log_box, 5, 0, 1, 2)
         main.setColumnStretch(0, 3)
         main.setColumnStretch(1, 2)
+        main.setRowMinimumHeight(2, 120)
+        main.setRowMinimumHeight(4, 86)
 
     def _dock_top(self) -> None:
         screen = QApplication.primaryScreen()
@@ -424,7 +426,7 @@ class TradingHelperApp(QMainWindow):
             return
         area = screen.availableGeometry()
         width = min(1200, max(900, area.width() - 40))
-        self.resize(width, 445)
+        self.resize(width, 545)
         self.move(area.x() + (area.width() - width) // 2, area.y())
 
     def log(self, message: str) -> None:
