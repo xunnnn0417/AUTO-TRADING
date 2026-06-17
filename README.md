@@ -37,8 +37,11 @@ MT5 的新訂單 SL／TP 與持倉修改 SL／TP 使用不同校準位置。
 ## 功能
 
 - 中文 Windows 桌面介面
-- 平台選單分為 `GooeyTrade`、`cTrader`、`MT5`；GooeyTrade 視窗辨識
+- 平台選單分為 `GooeyTrade`、`cTrader`、`BYBIT MT5`、`原版MT5`；
+  GooeyTrade 視窗辨識
   不包含版本號，更新軟體後仍以 `GooeyTrade` 關鍵字尋找
+- 原本的 `MT5` 會自動遷移成 `BYBIT MT5`，並新增 `原版MT5`；兩個
+  MT5 使用相同面板座標，但依選單平台切換到不同視窗
 - 完整方案管理：選擇、建立、重新命名與刪除方案
 - 每個方案獨立保存試算表連結、GID、欄位、平台選擇、視窗規則及校準座標
 - 從 Google 試算表讀取指定儲存格

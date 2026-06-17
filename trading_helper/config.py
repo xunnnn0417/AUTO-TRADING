@@ -56,7 +56,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "points": {},
             "open_panel_before_fill": False,
         },
-        "MT5": {
+        "BYBIT MT5": {
+            "window_title": {"internal": "MetaTrader", "external": "MetaTrader"},
+            "points": {},
+            "open_panel_before_fill": False,
+        },
+        "原版MT5": {
             "window_title": {"internal": "MetaTrader", "external": "MetaTrader"},
             "points": {},
             "open_panel_before_fill": False,
@@ -69,7 +74,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "ui": {
         "internal_platform": "GooeyTrade",
-        "external_platform": "MT5",
+        "external_platform": "BYBIT MT5",
     },
 }
 
@@ -109,6 +114,31 @@ def _migrate_legacy_ctrader(config: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_legacy_mt5(config: dict[str, Any]) -> dict[str, Any]:
+    migrated = deepcopy(config)
+    platforms = migrated.setdefault("platforms", {})
+    if "MT5" in platforms:
+        legacy_mt5 = deepcopy(platforms.pop("MT5"))
+        platforms.setdefault("BYBIT MT5", legacy_mt5)
+        platforms.setdefault("原版MT5", deepcopy(legacy_mt5))
+        ui = migrated.setdefault("ui", {})
+        if ui.get("internal_platform") == "MT5":
+            ui["internal_platform"] = "BYBIT MT5"
+        if ui.get("external_platform") == "MT5":
+            ui["external_platform"] = "BYBIT MT5"
+    bybit_points = platforms.get("BYBIT MT5", {}).get("points", {})
+    original_points = platforms.get("原版MT5", {}).get("points", {})
+    if bybit_points and not original_points:
+        platforms["原版MT5"]["points"] = deepcopy(bybit_points)
+    elif original_points and not bybit_points:
+        platforms["BYBIT MT5"]["points"] = deepcopy(original_points)
+    return migrated
+
+
+def _migrate_config(config: dict[str, Any]) -> dict[str, Any]:
+    return _migrate_legacy_mt5(_migrate_legacy_ctrader(config))
+
+
 class ConfigStore:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
@@ -119,7 +149,7 @@ class ConfigStore:
             return deepcopy(DEFAULT_CONFIG)
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
-            return _merge(DEFAULT_CONFIG, _migrate_legacy_ctrader(loaded))
+            return _merge(DEFAULT_CONFIG, _migrate_config(loaded))
         except (OSError, json.JSONDecodeError):
             return deepcopy(DEFAULT_CONFIG)
 
@@ -206,6 +236,8 @@ class ProfileStore:
         target_platforms = (
             ("GooeyTrade", "cTrader")
             if platform in {"GooeyTrade", "cTrader"}
+            else ("BYBIT MT5", "原版MT5")
+            if platform in {"BYBIT MT5", "原版MT5"}
             else (platform,)
         )
         for config in self.data["profiles"].values():
@@ -242,7 +274,7 @@ class ProfileStore:
                         "profiles": {
                             str(name): _merge(
                                 DEFAULT_CONFIG,
-                                _migrate_legacy_ctrader(config),
+                                _migrate_config(config),
                             )
                             for name, config in profiles.items()
                             if isinstance(config, dict)

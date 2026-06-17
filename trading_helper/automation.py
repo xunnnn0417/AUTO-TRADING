@@ -24,7 +24,8 @@ REQUIRED_POINTS = {
         "tp_checkbox",
         "tp_input",
     ],
-    "MT5": ["lot_input", "sl_input", "tp_input"],
+    "BYBIT MT5": ["lot_input", "sl_input", "tp_input"],
+    "原版MT5": ["lot_input", "sl_input", "tp_input"],
 }
 
 TRADINGVIEW_REQUIRED_POINTS = [
@@ -71,7 +72,7 @@ class PlatformAutomation:
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
 
-        should_open_panel = platform == "MT5" or profile.get(
+        should_open_panel = _is_mt5(platform) or profile.get(
             "open_panel_before_fill"
         )
         if should_open_panel and "new_order_button" in points:
@@ -113,7 +114,7 @@ class PlatformAutomation:
                 profile, role, points[direction_point]
             )
             self.windows.click(direction_window, points[direction_point])
-        if platform == "MT5":
+        if _is_mt5(platform):
             self._fill_field(
                 profile,
                 role,
@@ -125,7 +126,7 @@ class PlatformAutomation:
                 _plain(side.lot),
             )
         current_price = None
-        if platform == "MT5":
+        if _is_mt5(platform):
             price_point_name = self._mt5_price_point(role, direction)
             if price_point_name in points:
                 price_window = self._window_for_point(
@@ -149,7 +150,7 @@ class PlatformAutomation:
         if _is_ctrader(platform):
             self._ensure_ctrader_risk_fields(profile, role, points)
         for point_name, label, value in values:
-            if platform == "MT5" and point_name == "lot_input":
+            if _is_mt5(platform) and point_name == "lot_input":
                 continue
             self._fill_field(
                 profile,
@@ -423,7 +424,7 @@ class PlatformAutomation:
 
         profile = self.config["platforms"][external_platform]
         points = profile.get("points", {})
-        if external_platform == "MT5":
+        if _is_mt5(external_platform):
             required = [
                 "position_sl_input",
                 "position_tp_input",
@@ -440,7 +441,7 @@ class PlatformAutomation:
                 f"{external_platform} 尚未完成以下校準：{', '.join(missing)}"
             )
 
-        if external_platform == "MT5":
+        if _is_mt5(external_platform):
             if not self.windows.point_window_exists(
                 profile, "external", points["position_sl_input"]
             ):
@@ -647,3 +648,7 @@ def _plain(value: Decimal) -> str:
 
 def _is_ctrader(platform: str) -> bool:
     return platform in {"GooeyTrade", "cTrader"}
+
+
+def _is_mt5(platform: str) -> bool:
+    return platform in {"BYBIT MT5", "原版MT5"}

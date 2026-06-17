@@ -45,7 +45,23 @@ from .windows import (
 )
 
 
-PLATFORMS = ("GooeyTrade", "cTrader", "MT5")
+PLATFORMS = ("GooeyTrade", "cTrader", "BYBIT MT5", "原版MT5")
+MT5_TARGETS = [
+    ("new_order_button", "主視窗的新訂單按鈕"),
+    ("lot_input", "交易量輸入欄"),
+    ("bid_price", "訂單視窗的 Bid 價格"),
+    ("ask_price", "訂單視窗的 Ask 價格"),
+    ("sl_input", "止損價格輸入欄"),
+    ("tp_input", "止盈價格輸入欄"),
+    ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
+    ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
+    ("buy_button", "買入按鈕（第二版使用）"),
+    ("sell_button", "賣出按鈕（第二版使用）"),
+    ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
+    ("position_order_lot", "場外已進場訂單手數（第一筆）"),
+    ("position_order_lot_next", "場外已進場訂單手數（下一筆，用於列距）"),
+    ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
+]
 CALIBRATION_TARGETS = {
     "GooeyTrade": [
         ("lot_input", "倉位／手數輸入欄"),
@@ -69,22 +85,8 @@ CALIBRATION_TARGETS = {
         ("positions_entry_price", "持倉成交價懸浮位置（第二版 OCR 使用）"),
         ("new_order_button", "新增訂單按鈕（選用）"),
     ],
-    "MT5": [
-        ("new_order_button", "主視窗的新訂單按鈕"),
-        ("lot_input", "交易量輸入欄"),
-        ("bid_price", "訂單視窗的 Bid 價格"),
-        ("ask_price", "訂單視窗的 Ask 價格"),
-        ("sl_input", "止損價格輸入欄"),
-        ("tp_input", "止盈價格輸入欄"),
-        ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
-        ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-        ("buy_button", "買入按鈕（第二版使用）"),
-        ("sell_button", "賣出按鈕（第二版使用）"),
-        ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
-        ("position_order_lot", "場外已進場訂單手數（第一筆）"),
-        ("position_order_lot_next", "場外已進場訂單手數（下一筆，用於列距）"),
-        ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
-    ],
+    "BYBIT MT5": MT5_TARGETS,
+    "原版MT5": MT5_TARGETS,
     "TradingView": [
         ("auto_scale_button", "自動適應價格按鈕"),
         ("long_tool", "多頭部位工具"),
@@ -319,7 +321,7 @@ class TradingHelperApp(QMainWindow):
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
             ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 0),
-            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 1),
+            ("校準 MT5", lambda: self.open_calibration("BYBIT MT5"), 1, 1),
             (
                 "校準 TradingView",
                 lambda: self.open_calibration("TradingView"),
@@ -757,11 +759,12 @@ class CalibrationDialog(QDialog):
                     f"精確像素 ({point['x_px']}, {point['y_px']})，"
                     f"螢幕座標 ({x}, {y})。"
                 )
-                sync_target = (
-                    "GooeyTrade、cTrader 與所有方案"
-                    if self.platform in {"GooeyTrade", "cTrader"}
-                    else f"{self.platform} 與所有方案"
-                )
+                if self.platform in {"GooeyTrade", "cTrader"}:
+                    sync_target = "GooeyTrade、cTrader 與所有方案"
+                elif self.platform in {"BYBIT MT5", "原版MT5"}:
+                    sync_target = "BYBIT MT5、原版MT5 與所有方案"
+                else:
+                    sync_target = f"{self.platform} 與所有方案"
                 self.app.log(f"已同步「{key}」到 {sync_target}。")
                 self.capture_finished.emit(key)
             except Exception as exc:
@@ -874,7 +877,13 @@ class SettingsDialog(QDialog):
     def _windows_tab(self) -> QWidget:
         tab = QWidget()
         form = QFormLayout(tab)
-        for platform in ("GooeyTrade", "cTrader", "MT5", "TradingView"):
+        for platform in (
+            "GooeyTrade",
+            "cTrader",
+            "BYBIT MT5",
+            "原版MT5",
+            "TradingView",
+        ):
             title = QLabel(platform)
             title.setStyleSheet("font-weight: 700; margin-top: 8px;")
             form.addRow(title)

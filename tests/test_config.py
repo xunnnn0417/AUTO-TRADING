@@ -72,17 +72,21 @@ class ProfileStoreTests(unittest.TestCase):
         store.create("第二方案", store.load_profile())
         point = {"x": 0.4, "y": 0.6, "window_title": "current"}
 
-        store.sync_calibration_point("MT5", "lot_input", point)
+        store.sync_calibration_point("BYBIT MT5", "lot_input", point)
 
-        active_point = store.load_profile("第二方案")["platforms"]["MT5"][
-            "points"
-        ]["lot_input"]
-        other_point = store.load_profile("預設方案")["platforms"]["MT5"][
-            "points"
-        ]["lot_input"]
+        active_point = store.load_profile("第二方案")["platforms"][
+            "BYBIT MT5"
+        ]["points"]["lot_input"]
+        other_point = store.load_profile("預設方案")["platforms"][
+            "BYBIT MT5"
+        ]["points"]["lot_input"]
         self.assertNotIn("window_title", active_point)
         self.assertNotIn("window_title", other_point)
         self.assertEqual(other_point["x"], 0.4)
+        original_point = store.load_profile("預設方案")["platforms"][
+            "原版MT5"
+        ]["points"]["lot_input"]
+        self.assertEqual(original_point["x"], 0.4)
 
     def test_ctrader_calibration_syncs_to_gooeytrade(self):
         store = ProfileStore(self.config, self.path)
@@ -118,7 +122,7 @@ class ProfileStoreTests(unittest.TestCase):
             },
             "ui": {
                 "internal_platform": "cTrader",
-                "external_platform": "MT5",
+                "external_platform": "BYBIT MT5",
             },
         }
         config_path = Path(self.temp_dir.name) / "config.json"
@@ -179,4 +183,40 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertEqual(
             loaded["platforms"]["cTrader"]["points"]["lot_input"]["x"],
             0.2,
+        )
+
+    def test_legacy_mt5_configuration_migrates_to_bybit_mt5(self):
+        legacy = {
+            "platforms": {
+                "MT5": {
+                    "window_title": {
+                        "internal": "7344549 - Bybit-Live",
+                        "external": "7344549 - Bybit-Live",
+                    },
+                    "points": {"lot_input": {"x": 0.7, "y": 0.2}},
+                    "open_panel_before_fill": True,
+                }
+            },
+            "ui": {
+                "internal_platform": "GooeyTrade",
+                "external_platform": "MT5",
+            },
+        }
+        config_path = Path(self.temp_dir.name) / "config.json"
+        config_path.write_text(
+            __import__("json").dumps(legacy),
+            encoding="utf-8",
+        )
+
+        loaded = ConfigStore(config_path).data
+
+        self.assertEqual(loaded["ui"]["external_platform"], "BYBIT MT5")
+        self.assertNotIn("MT5", loaded["platforms"])
+        self.assertEqual(
+            loaded["platforms"]["BYBIT MT5"]["points"]["lot_input"]["x"],
+            0.7,
+        )
+        self.assertEqual(
+            loaded["platforms"]["原版MT5"]["points"]["lot_input"]["x"],
+            0.7,
         )
