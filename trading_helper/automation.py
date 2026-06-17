@@ -133,10 +133,19 @@ class PlatformAutomation:
                 price_window = self._window_for_point(
                     profile, role, points[price_point_name]
                 )
-                current_price = self.windows.read_number(
-                    price_window, points[price_point_name]
-                )
-                self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
+                try:
+                    current_price = self.windows.read_number(
+                        price_window, points[price_point_name]
+                    )
+                    self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
+                except AutomationError as exc:
+                    if instruction.estimated_price is None:
+                        raise
+                    current_price = instruction.estimated_price
+                    self.log(
+                        f"{role_text} MT5 目前價格辨識失敗，"
+                        f"改用表格估算價格：{current_price}。原因：{exc}"
+                    )
             elif instruction.estimated_price is None:
                 raise AutomationError(
                     f"MT5 尚未校準 {price_point_name}，也沒有設定備用估算價格。"
