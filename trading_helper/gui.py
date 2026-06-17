@@ -45,7 +45,7 @@ from .windows import (
 )
 
 
-PLATFORMS = ("GooeyTrade", "cTrader", "BYBIT MT5", "原版MT5")
+PLATFORMS = ("cTrader", "MT5")
 MT5_TARGETS = [
     ("new_order_button", "主視窗的新訂單按鈕"),
     ("lot_input", "交易量輸入欄"),
@@ -85,6 +85,7 @@ CALIBRATION_TARGETS = {
         ("positions_entry_price", "持倉成交價懸浮位置（第二版 OCR 使用）"),
         ("new_order_button", "新增訂單按鈕（選用）"),
     ],
+    "MT5": MT5_TARGETS,
     "BYBIT MT5": MT5_TARGETS,
     "原版MT5": MT5_TARGETS,
     "TradingView": [
@@ -126,8 +127,10 @@ def _window_title_pattern(platform: str, title: str) -> str:
     if platform == "GooeyTrade":
         return "GooeyTrade"
     if platform == "cTrader":
+        if "GooeyTrade" in title:
+            return "GooeyTrade"
         return "cTrader"
-    if platform in {"BYBIT MT5", "原版MT5"}:
+    if platform in {"MT5", "BYBIT MT5", "原版MT5"}:
         parts = [part.strip() for part in title.split(" - ") if part.strip()]
         if len(parts) >= 2:
             return f"{re.escape(parts[0])}.*{re.escape(parts[1])}"
@@ -337,7 +340,7 @@ class TradingHelperApp(QMainWindow):
             ("綁定場內視窗", lambda: self.bind_role_window("internal"), 0, 2),
             ("綁定場外視窗", lambda: self.bind_role_window("external"), 1, 0),
             ("校準 cTrader", lambda: self.open_calibration("cTrader"), 1, 1),
-            ("校準 MT5", lambda: self.open_calibration("BYBIT MT5"), 1, 2),
+            ("校準 MT5", lambda: self.open_calibration("MT5"), 1, 2),
             (
                 "校準 TradingView",
                 lambda: self.open_calibration("TradingView"),
@@ -570,6 +573,39 @@ class TradingHelperApp(QMainWindow):
             else self.external_platform.currentText()
         )
         role_text = "場內" if role == "internal" else "場外"
+        current_pattern = (
+            self.store.data["platforms"]
+            .get(platform, {})
+            .get("window_title", {})
+            .get(role, "")
+        )
+        if current_pattern:
+            QMessageBox.information(
+                self,
+                f"{role_text}視窗綁定狀態",
+                "目前已綁定。\n"
+                f"平台：{platform}\n"
+                f"角色：{role_text}\n"
+                f"視窗規則：{current_pattern}",
+            )
+            question = "是否要修改這個綁定？"
+        else:
+            QMessageBox.information(
+                self,
+                f"{role_text}視窗綁定狀態",
+                f"目前未綁定 {role_text} {platform} 視窗。",
+            )
+            question = "是否要建立新的綁定？"
+        answer = QMessageBox.question(
+            self,
+            f"修改{role_text}視窗綁定",
+            question,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            self.log(f"已取消修改{role_text} {platform} 視窗綁定。")
+            return
 
         def task() -> None:
             self.log(
@@ -804,9 +840,9 @@ class CalibrationDialog(QDialog):
                     f"螢幕座標 ({x}, {y})。"
                 )
                 if self.platform in {"GooeyTrade", "cTrader"}:
-                    sync_target = "GooeyTrade、cTrader 與所有方案"
-                elif self.platform in {"BYBIT MT5", "原版MT5"}:
-                    sync_target = "BYBIT MT5、原版MT5 與所有方案"
+                    sync_target = "cTrader 與所有方案"
+                elif self.platform in {"MT5", "BYBIT MT5", "原版MT5"}:
+                    sync_target = "MT5 與所有方案"
                 else:
                     sync_target = f"{self.platform} 與所有方案"
                 self.app.log(f"已同步「{key}」到 {sync_target}。")
@@ -922,10 +958,8 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
         for platform in (
-            "GooeyTrade",
             "cTrader",
-            "BYBIT MT5",
-            "原版MT5",
+            "MT5",
             "TradingView",
         ):
             title = QLabel(platform)

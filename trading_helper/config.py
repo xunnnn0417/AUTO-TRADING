@@ -56,12 +56,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "points": {},
             "open_panel_before_fill": False,
         },
-        "BYBIT MT5": {
-            "window_title": {"internal": "MetaTrader", "external": "MetaTrader"},
-            "points": {},
-            "open_panel_before_fill": False,
-        },
-        "原版MT5": {
+        "MT5": {
             "window_title": {"internal": "MetaTrader", "external": "MetaTrader"},
             "points": {},
             "open_panel_before_fill": False,
@@ -73,8 +68,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "ui": {
-        "internal_platform": "GooeyTrade",
-        "external_platform": "BYBIT MT5",
+        "internal_platform": "cTrader",
+        "external_platform": "MT5",
     },
 }
 
@@ -89,49 +84,57 @@ def _merge(default: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _ensure_platform(platforms: dict[str, Any], platform: str) -> dict[str, Any]:
+    platforms.setdefault(platform, deepcopy(DEFAULT_CONFIG["platforms"][platform]))
+    return platforms[platform]
+
+
+def _copy_platform_data_if_empty(
+    platforms: dict[str, Any],
+    source: str,
+    target: str,
+) -> None:
+    if source not in platforms:
+        return
+    target_profile = _ensure_platform(platforms, target)
+    source_profile = platforms[source]
+    if source_profile.get("points") and not target_profile.get("points"):
+        target_profile["points"] = deepcopy(source_profile["points"])
+    source_titles = source_profile.get("window_title", {})
+    target_titles = target_profile.setdefault("window_title", {})
+    for role in ("internal", "external"):
+        if source_titles.get(role) and not target_titles.get(role):
+            target_titles[role] = source_titles[role]
+    if source_profile.get("open_panel_before_fill") and not target_profile.get(
+        "open_panel_before_fill"
+    ):
+        target_profile["open_panel_before_fill"] = True
+
+
 def _migrate_legacy_ctrader(config: dict[str, Any]) -> dict[str, Any]:
     migrated = deepcopy(config)
     platforms = migrated.setdefault("platforms", {})
-    if "GooeyTrade" not in platforms and "cTrader" in platforms:
-        gooey = deepcopy(platforms["cTrader"])
-        gooey["window_title"] = {
-            "internal": "GooeyTrade",
-            "external": "GooeyTrade",
-        }
-        platforms["GooeyTrade"] = gooey
-        platforms["cTrader"] = deepcopy(DEFAULT_CONFIG["platforms"]["cTrader"])
-        ui = migrated.setdefault("ui", {})
-        if ui.get("internal_platform") == "cTrader":
-            ui["internal_platform"] = "GooeyTrade"
-        if ui.get("external_platform") == "cTrader":
-            ui["external_platform"] = "GooeyTrade"
-    gooey_points = platforms.get("GooeyTrade", {}).get("points", {})
-    ctrader_points = platforms.get("cTrader", {}).get("points", {})
-    if gooey_points and not ctrader_points:
-        platforms["cTrader"]["points"] = deepcopy(gooey_points)
-    elif ctrader_points and not gooey_points:
-        platforms["GooeyTrade"]["points"] = deepcopy(ctrader_points)
+    _ensure_platform(platforms, "cTrader")
+    _copy_platform_data_if_empty(platforms, "GooeyTrade", "cTrader")
+    ui = migrated.setdefault("ui", {})
+    if ui.get("internal_platform") == "GooeyTrade":
+        ui["internal_platform"] = "cTrader"
+    if ui.get("external_platform") == "GooeyTrade":
+        ui["external_platform"] = "cTrader"
     return migrated
 
 
 def _migrate_legacy_mt5(config: dict[str, Any]) -> dict[str, Any]:
     migrated = deepcopy(config)
     platforms = migrated.setdefault("platforms", {})
-    if "MT5" in platforms:
-        legacy_mt5 = deepcopy(platforms.pop("MT5"))
-        platforms.setdefault("BYBIT MT5", legacy_mt5)
-        platforms.setdefault("原版MT5", deepcopy(legacy_mt5))
-        ui = migrated.setdefault("ui", {})
-        if ui.get("internal_platform") == "MT5":
-            ui["internal_platform"] = "BYBIT MT5"
-        if ui.get("external_platform") == "MT5":
-            ui["external_platform"] = "BYBIT MT5"
-    bybit_points = platforms.get("BYBIT MT5", {}).get("points", {})
-    original_points = platforms.get("原版MT5", {}).get("points", {})
-    if bybit_points and not original_points:
-        platforms["原版MT5"]["points"] = deepcopy(bybit_points)
-    elif original_points and not bybit_points:
-        platforms["BYBIT MT5"]["points"] = deepcopy(original_points)
+    _ensure_platform(platforms, "MT5")
+    _copy_platform_data_if_empty(platforms, "BYBIT MT5", "MT5")
+    _copy_platform_data_if_empty(platforms, "原版MT5", "MT5")
+    ui = migrated.setdefault("ui", {})
+    if ui.get("internal_platform") in {"BYBIT MT5", "原版MT5"}:
+        ui["internal_platform"] = "MT5"
+    if ui.get("external_platform") in {"BYBIT MT5", "原版MT5"}:
+        ui["external_platform"] = "MT5"
     return migrated
 
 
@@ -234,14 +237,23 @@ class ProfileStore:
         point: dict[str, Any],
     ) -> None:
         target_platforms = (
-            ("GooeyTrade", "cTrader")
+            ("cTrader", "GooeyTrade")
             if platform in {"GooeyTrade", "cTrader"}
-            else ("BYBIT MT5", "原版MT5")
-            if platform in {"BYBIT MT5", "原版MT5"}
+            else ("MT5", "BYBIT MT5", "原版MT5")
+            if platform in {"MT5", "BYBIT MT5", "原版MT5"}
             else (platform,)
         )
         for config in self.data["profiles"].values():
             for target_platform in target_platforms:
+                config["platforms"].setdefault(
+                    target_platform,
+                    deepcopy(
+                        DEFAULT_CONFIG["platforms"].get(
+                            target_platform,
+                            DEFAULT_CONFIG["platforms"]["MT5"],
+                        )
+                    ),
+                )
                 synced_point = deepcopy(point)
                 if target_platform != "TradingView":
                     synced_point.pop("window_title", None)

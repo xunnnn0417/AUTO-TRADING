@@ -72,13 +72,13 @@ class ProfileStoreTests(unittest.TestCase):
         store.create("第二方案", store.load_profile())
         point = {"x": 0.4, "y": 0.6, "window_title": "current"}
 
-        store.sync_calibration_point("BYBIT MT5", "lot_input", point)
+        store.sync_calibration_point("MT5", "lot_input", point)
 
         active_point = store.load_profile("第二方案")["platforms"][
-            "BYBIT MT5"
+            "MT5"
         ]["points"]["lot_input"]
         other_point = store.load_profile("預設方案")["platforms"][
-            "BYBIT MT5"
+            "MT5"
         ]["points"]["lot_input"]
         self.assertNotIn("window_title", active_point)
         self.assertNotIn("window_title", other_point)
@@ -108,7 +108,7 @@ class ProfileStoreTests(unittest.TestCase):
             profile["platforms"]["GooeyTrade"]["points"]["tp_input"],
         )
 
-    def test_legacy_ctrader_configuration_migrates_to_gooeytrade(self):
+    def test_legacy_ctrader_configuration_migrates_to_ctrader(self):
         legacy = {
             "platforms": {
                 "cTrader": {
@@ -122,7 +122,7 @@ class ProfileStoreTests(unittest.TestCase):
             },
             "ui": {
                 "internal_platform": "cTrader",
-                "external_platform": "BYBIT MT5",
+                "external_platform": "MT5",
             },
         }
         config_path = Path(self.temp_dir.name) / "config.json"
@@ -133,18 +133,14 @@ class ProfileStoreTests(unittest.TestCase):
 
         loaded = ConfigStore(config_path).data
 
-        self.assertEqual(loaded["ui"]["internal_platform"], "GooeyTrade")
+        self.assertEqual(loaded["ui"]["internal_platform"], "cTrader")
         self.assertIn(
             "lot_input",
-            loaded["platforms"]["GooeyTrade"]["points"],
-        )
-        self.assertEqual(
-            loaded["platforms"]["GooeyTrade"]["window_title"]["internal"],
-            "GooeyTrade",
+            loaded["platforms"]["cTrader"]["points"],
         )
         self.assertEqual(
             loaded["platforms"]["cTrader"]["window_title"]["internal"],
-            "cTrader",
+            "GooeyTrade Trader 5.7.10",
         )
         self.assertIn(
             "lot_input",
@@ -185,7 +181,7 @@ class ProfileStoreTests(unittest.TestCase):
             0.2,
         )
 
-    def test_legacy_mt5_configuration_migrates_to_bybit_mt5(self):
+    def test_legacy_mt5_configuration_migrates_to_mt5(self):
         legacy = {
             "platforms": {
                 "MT5": {
@@ -198,7 +194,7 @@ class ProfileStoreTests(unittest.TestCase):
                 }
             },
             "ui": {
-                "internal_platform": "GooeyTrade",
+                "internal_platform": "cTrader",
                 "external_platform": "MT5",
             },
         }
@@ -210,13 +206,9 @@ class ProfileStoreTests(unittest.TestCase):
 
         loaded = ConfigStore(config_path).data
 
-        self.assertEqual(loaded["ui"]["external_platform"], "BYBIT MT5")
-        self.assertNotIn("MT5", loaded["platforms"])
+        self.assertEqual(loaded["ui"]["external_platform"], "MT5")
         self.assertEqual(
-            loaded["platforms"]["BYBIT MT5"]["points"]["lot_input"]["x"],
+            loaded["platforms"]["MT5"]["points"]["lot_input"]["x"],
             0.7,
         )
-        self.assertEqual(
-            loaded["platforms"]["原版MT5"]["points"]["lot_input"]["x"],
-            0.7,
-        )
+        self.assertTrue(loaded["platforms"]["MT5"]["open_panel_before_fill"])

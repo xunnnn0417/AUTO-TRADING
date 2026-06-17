@@ -24,6 +24,7 @@ REQUIRED_POINTS = {
         "tp_checkbox",
         "tp_input",
     ],
+    "MT5": ["lot_input", "sl_input", "tp_input"],
     "BYBIT MT5": ["lot_input", "sl_input", "tp_input"],
     "原版MT5": ["lot_input", "sl_input", "tp_input"],
 }
@@ -651,4 +652,4 @@ def _is_ctrader(platform: str) -> bool:
 
 
 def _is_mt5(platform: str) -> bool:
-    return platform in {"BYBIT MT5", "原版MT5"}
+    return platform in {"MT5", "BYBIT MT5", "原版MT5"}
