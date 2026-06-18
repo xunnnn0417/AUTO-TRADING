@@ -999,7 +999,7 @@ class TradingHelperApp(QMainWindow):
               <li>如果需要寫回表格，讀取模式要用 <b>service_account</b>，並確認服務帳戶 JSON 路徑正確，試算表也要分享給服務帳戶信箱。</li>
               <li>選擇場內平台與場外平台。表格方向代表場內方向；場外方向會自動反向。</li>
               <li>點 <a href="action:bind_internal">綁定場內視窗</a>、<a href="action:bind_external">綁定場外視窗</a>，把目前要操作的 cTrader 或 MT5 視窗綁到這個方案。</li>
-              <li>依序校準 <a href="action:calibrate_ctrader">cTrader</a>、<a href="action:calibrate_mt5">MT5</a>、<a href="action:calibrate_tv">TradingView</a>。校準時選項目、按「擷取位置」，把滑鼠移到對應欄位或按鈕上等待倒數完成。</li>
+              <li>依序校準 <a href="action:calibrate_ctrader">cTrader</a>、<a href="action:calibrate_mt5">MT5</a>、<a href="action:calibrate_tv">TradingView</a>。校準時選項目、按「擷取位置」，把滑鼠移到對應欄位或按鈕上等待倒數完成；倒數期間請點一下校準視窗，確認它在最上層，避免其他視窗搶走焦點。</li>
             </ol>
 
             <h2 id="daily">二、日常進場前流程</h2>

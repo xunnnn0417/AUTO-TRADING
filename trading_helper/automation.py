@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -723,6 +724,7 @@ class PlatformAutomation:
             lot_window = self._window_for_point(
                 profile, "external", points["position_order_lot"]
             )
+            operation_points = points
             try:
                 detected_lot = self.windows.read_number_near(
                     lot_window,
@@ -759,12 +761,16 @@ class PlatformAutomation:
                 ),
                 points["position_order_row"],
             )
-            self.windows.wait_for_point_window(
-                profile,
-                "external",
-                points["position_sl_input"],
+            modify_window = self.windows.wait_for_active_window_change(
+                lot_window,
                 timeout=3.0,
             )
+            self.log(f"已偵測到 MT5 持倉修改視窗：{modify_window.title}")
+            operation_points = dict(points)
+            for point_name in ("position_sl_input", "position_tp_input"):
+                point = dict(points[point_name])
+                point["window_title"] = re.escape(modify_window.title)
+                operation_points[point_name] = point
             values = (
                 ("position_sl_input", "止損價格", instruction.format_price(sl_price)),
                 ("position_tp_input", "止盈價格", instruction.format_price(tp_price)),
@@ -800,12 +806,13 @@ class PlatformAutomation:
                     ),
                 ),
             )
+            operation_points = points
 
         for point_name, label, value in values:
             self._fill_field(
                 profile,
                 "external",
-                points,
+                operation_points,
                 "場外",
                 external_platform,
                 point_name,

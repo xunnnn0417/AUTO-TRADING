@@ -424,6 +424,30 @@ class WindowController:
             time.sleep(0.05)
         raise AutomationError("MT5 新訂單視窗未在期限內出現，已停止填入。")
 
+    def wait_for_active_window_change(
+        self,
+        previous_window: WindowInfo,
+        *,
+        timeout: float,
+    ) -> WindowInfo:
+        deadline = time.monotonic() + timeout
+        last_window = previous_window
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            try:
+                current = self.active_window()
+            except AutomationError:
+                time.sleep(0.05)
+                continue
+            last_window = current
+            if current.handle != previous_window.handle:
+                return current
+            time.sleep(0.05)
+        raise AutomationError(
+            "MT5 持倉修改視窗已要求開啟，但沒有切換到新的視窗；"
+            f"目前作用視窗：{last_window.title}"
+        )
+
     def ensure_checkbox_checked(
         self,
         window: WindowInfo,
