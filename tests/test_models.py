@@ -355,6 +355,86 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(fake.patterns, ["cTrader"])
 
+    def test_ctrader_window_lookup_skips_gooeytrade_when_bound_to_regular(self) -> None:
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "GooeyTrade": {
+                        "window_title": {
+                            "internal": "GooeyTrade",
+                            "external": "GooeyTrade",
+                        }
+                    },
+                    "cTrader": {
+                        "window_title": {
+                            "internal": "cTrader",
+                            "external": "cTrader",
+                        }
+                    },
+                }
+            },
+            None,
+            None,
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def find_all(self, pattern):
+                return [
+                    WindowInfo(1, "GooeyTrade cTrader 5.7.14", 0, 0, 100, 100),
+                    WindowInfo(2, "cTrader 5.7.14", 0, 0, 100, 100),
+                ]
+
+        automation.windows = FakeWindows()
+
+        selected = automation._window_for_point(
+            automation.config["platforms"]["cTrader"],
+            "internal",
+            {"window_title": "GooeyTrade old point title"},
+        )
+
+        self.assertEqual(selected.title, "cTrader 5.7.14")
+
+    def test_ctrader_window_lookup_uses_gooeytrade_when_role_is_bound_to_it(self) -> None:
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "GooeyTrade": {
+                        "window_title": {
+                            "internal": "GooeyTrade",
+                            "external": "GooeyTrade",
+                        }
+                    },
+                    "cTrader": {
+                        "window_title": {
+                            "internal": "GooeyTrade",
+                            "external": "cTrader",
+                        }
+                    },
+                }
+            },
+            None,
+            None,
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def find_all(self, pattern):
+                return [
+                    WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100),
+                    WindowInfo(2, "GooeyTrade cTrader 5.7.14", 0, 0, 100, 100),
+                ]
+
+        automation.windows = FakeWindows()
+
+        selected = automation._window_for_point(
+            automation.config["platforms"]["cTrader"],
+            "internal",
+            {},
+        )
+
+        self.assertEqual(selected.title, "GooeyTrade cTrader 5.7.14")
+
     def test_mt5_window_binding_uses_account_and_server_only(self) -> None:
         pattern = _window_title_pattern(
             "原版MT5",

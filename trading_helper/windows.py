@@ -266,6 +266,20 @@ class WindowController:
             raise AutomationError(f"找不到符合規則的可見視窗：{title_pattern}")
         return matches[0]
 
+    def find_all(self, title_pattern: str) -> list[WindowInfo]:
+        if not title_pattern.strip():
+            raise AutomationError("Window title pattern is empty.")
+        try:
+            pattern = re.compile(title_pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise AutomationError(f"Invalid window title pattern: {exc}") from exc
+        matches = [
+            window for window in self.list_windows() if pattern.search(window.title)
+        ]
+        if not matches:
+            raise AutomationError(f"No visible window matched: {title_pattern}")
+        return matches
+
     def try_find(self, title_pattern: str) -> WindowInfo | None:
         try:
             return self.find(title_pattern)

@@ -259,12 +259,41 @@ class PlatformAutomation:
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):
             try:
-                return self.windows.find(pattern)
+                matches = (
+                    self.windows.find_all(pattern)
+                    if hasattr(self.windows, "find_all")
+                    else [self.windows.find(pattern)]
+                )
+                for window in matches:
+                    if self._window_matches_role_binding(profile, role, window.title):
+                        return window
+                last_error = AutomationError(
+                    f"Window matched {pattern}, but not the bound role."
+                )
             except AutomationError as exc:
                 last_error = exc
         if last_error is not None:
             raise last_error
         raise AutomationError("視窗標題規則不可空白。")
+
+    def _window_matches_role_binding(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        title: str,
+    ) -> bool:
+        platforms = self.config.get("platforms", {})
+        if profile not in (
+            platforms.get("cTrader"),
+            platforms.get("GooeyTrade"),
+        ):
+            return True
+        role_pattern = str(profile.get("window_title", {}).get(role, "")).strip()
+        if "GooeyTrade" in role_pattern:
+            return "GooeyTrade" in title
+        if "cTrader" in role_pattern and "GooeyTrade" not in role_pattern:
+            return "GooeyTrade" not in title
+        return True
 
     def _field_values(
         self,
