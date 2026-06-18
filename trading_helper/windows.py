@@ -346,6 +346,18 @@ class WindowController:
             self._raise_size_mismatch(window, point)
         return x, y
 
+    def screen_point_for_display(
+        self, window: WindowInfo, point: dict[str, float]
+    ) -> tuple[int, int]:
+        try:
+            return self.screen_point(window, point)
+        except AutomationError:
+            if "x" not in point or "y" not in point:
+                raise
+            x = window.left + round(float(point["x"]) * window.width)
+            y = window.top + round(float(point["y"]) * window.height)
+            return x, y
+
     def click_and_type(
         self,
         window: WindowInfo,

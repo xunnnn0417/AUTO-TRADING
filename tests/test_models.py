@@ -509,6 +509,7 @@ class TradeInstructionTests(unittest.TestCase):
     def test_mt5_calibration_includes_internal_entry_price(self) -> None:
         keys = [key for key, _ in CALIBRATION_TARGETS["MT5"]]
         self.assertIn("positions_entry_price", keys)
+        self.assertIn("new_order_button", keys)
 
     def test_ctrader_calibration_includes_external_modify_points(self) -> None:
         keys = [key for key, _ in CALIBRATION_TARGETS["cTrader"]]
@@ -724,6 +725,23 @@ class TradeInstructionTests(unittest.TestCase):
     def test_ocr_price_parser_prefers_complete_price(self) -> None:
         values = _extract_decimal_candidates(["0.18", "4180.92", "18"])
         self.assertEqual(values[0], Decimal("4180.92"))
+
+    def test_display_point_falls_back_to_relative_position(self) -> None:
+        controller = WindowController(FakeEmergency())
+        window = WindowInfo(1, "target", 100, 200, 300, 400)
+        point = {
+            "x": 0.25,
+            "y": 0.5,
+            "x_px": 80,
+            "y_px": 120,
+            "window_width": 800,
+            "window_height": 600,
+        }
+
+        self.assertEqual(
+            controller.screen_point_for_display(window, point),
+            (150, 300),
+        )
 
     def test_alt_shift_right_holds_both_modifiers(self) -> None:
         events = _alt_shift_right_events()

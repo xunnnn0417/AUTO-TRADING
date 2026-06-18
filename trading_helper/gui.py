@@ -55,6 +55,7 @@ APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)
 APP_ICON = APP_BASE / "assets" / "app.ico"
 MT5_TARGETS = [
     ("positions_entry_price", "MT5 場內持倉進場價（OCR 使用）"),
+    ("new_order_button", "新訂單按鈕（選用）"),
     ("lot_input", "交易量輸入欄"),
     ("ask_price", "訂單視窗的 Ask 價格"),
     ("trade_tab", "MT5 交易欄位 / 交易分頁"),
@@ -1340,41 +1341,27 @@ class CalibrationDialog(QDialog):
             QMessageBox.warning(self, "顯示位置", "這個項目尚未校準。")
             return
         try:
-            patterns: list[str] = []
-            point_pattern = str(point.get("window_title", "")).strip()
-            if point_pattern:
-                patterns.append(point_pattern)
-            calibration_pattern = str(point.get("calibration_window_title", "")).strip()
-            if calibration_pattern:
-                patterns.append(calibration_pattern)
-            if self.app.internal_platform.currentText() == self.platform:
-                patterns.append(str(profile["window_title"]["internal"]).strip())
-            if self.app.external_platform.currentText() == self.platform:
-                patterns.append(str(profile["window_title"]["external"]).strip())
-            patterns.extend(
-                [
-                    str(profile["window_title"]["internal"]).strip(),
-                    str(profile["window_title"]["external"]).strip(),
-                ]
+            role = self._display_role(key)
+            target_window = self.app.automation._window_for_point(
+                profile, role, point
             )
-            target_window = None
-            last_error: Exception | None = None
-            for title_pattern in dict.fromkeys(value for value in patterns if value):
-                try:
-                    target_window = self.app.windows.find(title_pattern)
-                    break
-                except Exception as exc:
-                    last_error = exc
-            if target_window is None:
-                if last_error is not None:
-                    raise last_error
-                raise AutomationError("視窗標題規則不可空白。")
-            x, y = self.app.windows.screen_point(target_window, point)
+            x, y = self.app.windows.screen_point_for_display(
+                target_window, point
+            )
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
         self.app.windows.show_marker(x, y, duration_ms=5000)
         self.result.setText(f"正在顯示：{key}")
+
+    def _display_role(self, key: str) -> str:
+        if key.startswith("position_"):
+            return "external"
+        if key == "positions_entry_price":
+            return "internal"
+        if self.app.internal_platform.currentText() == self.platform:
+            return "internal"
+        return "external"
 
     def _finish_capture(self, key: str) -> None:
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
