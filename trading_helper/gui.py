@@ -56,6 +56,7 @@ APP_ICON = APP_BASE / "assets" / "app.ico"
 MT5_TARGETS = [
     ("lot_input", "交易量輸入欄"),
     ("ask_price", "訂單視窗的 Ask 價格"),
+    ("trade_tab", "MT5 交易欄位 / 交易分頁"),
     ("sl_input", "止損價格輸入欄"),
     ("tp_input", "止盈價格輸入欄"),
     ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),

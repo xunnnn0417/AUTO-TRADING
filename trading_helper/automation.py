@@ -721,6 +721,7 @@ class PlatformAutomation:
             )
 
         if _is_mt5(external_platform):
+            self._activate_mt5_trade_tab(profile, "external", points)
             lot_window = self._window_for_point(
                 profile, "external", points["position_order_lot"]
             )
@@ -844,6 +845,19 @@ class PlatformAutomation:
                 f"止盈 {_plain(instruction.external.tp_points)} 點。"
             )
         return None
+
+    def _activate_mt5_trade_tab(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        points: dict[str, dict[str, Any]],
+    ) -> None:
+        point = points.get("trade_tab")
+        if point is None:
+            return
+        self.log("正在切到 MT5 交易欄位。")
+        self._click_profile_point(profile, role, point)
+        self.windows.wait(0.2)
 
     def _find_mt5_position_row(
         self,
