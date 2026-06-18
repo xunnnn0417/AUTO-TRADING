@@ -3,13 +3,14 @@
 from PyInstaller.utils.hooks import collect_data_files
 
 rapidocr_datas = collect_data_files('rapidocr_onnxruntime')
+certifi_datas = collect_data_files('certifi')
 app_datas = [('assets\\app.ico', 'assets')]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=rapidocr_datas + app_datas,
+    datas=rapidocr_datas + certifi_datas + app_datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

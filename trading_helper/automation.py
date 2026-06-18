@@ -761,10 +761,22 @@ class PlatformAutomation:
                 ),
                 points["position_order_row"],
             )
-            modify_window = self.windows.wait_for_active_window_change(
-                lot_window,
-                timeout=3.0,
-            )
+            try:
+                modify_window = self.windows.wait_for_active_window_change(
+                    lot_window,
+                    timeout=3.0,
+                )
+            except AutomationError:
+                self.log(
+                    "MT5 修改視窗沒有自動切到最上層，改用校準尺寸尋找並點擊輸入欄。"
+                )
+                modify_window = self.windows.wait_for_window_matching_point_size(
+                    points["position_sl_input"],
+                    timeout=3.0,
+                    exclude_handles={lot_window.handle},
+                )
+                self.windows.click(modify_window, points["position_sl_input"])
+                modify_window = self.windows.active_window()
             self.log(f"已偵測到 MT5 持倉修改視窗：{modify_window.title}")
             operation_points = dict(points)
             for point_name in ("position_sl_input", "position_tp_input"):

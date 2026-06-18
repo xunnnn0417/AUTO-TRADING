@@ -448,6 +448,44 @@ class WindowController:
             f"目前作用視窗：{last_window.title}"
         )
 
+    def wait_for_window_matching_point_size(
+        self,
+        point: dict[str, float],
+        *,
+        timeout: float,
+        exclude_handles: set[int] | None = None,
+    ) -> WindowInfo:
+        required = {"window_width", "window_height"}
+        if not required.issubset(point):
+            raise AutomationError("校準資料缺少視窗尺寸，無法用尺寸尋找修改視窗。")
+        calibrated_width = int(point.get("window_width", 0))
+        calibrated_height = int(point.get("window_height", 0))
+        if calibrated_width <= 0 or calibrated_height <= 0:
+            raise AutomationError("校準視窗尺寸無效，無法用尺寸尋找修改視窗。")
+
+        excluded = exclude_handles or set()
+        deadline = time.monotonic() + timeout
+        last_titles: list[str] = []
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            candidates = [
+                window
+                for window in self.list_windows()
+                if window.handle not in excluded
+                and abs(window.width - calibrated_width) <= 2
+                and abs(window.height - calibrated_height) <= 2
+            ]
+            if candidates:
+                return candidates[0]
+            last_titles = [window.title for window in self.list_windows()[:5]]
+            time.sleep(0.05)
+
+        raise AutomationError(
+            "找不到尺寸符合校準資料的修改視窗；"
+            f"校準尺寸：{calibrated_width}x{calibrated_height}；"
+            f"目前前幾個視窗：{', '.join(last_titles)}"
+        )
+
     def ensure_checkbox_checked(
         self,
         window: WindowInfo,
