@@ -54,6 +54,7 @@ PLATFORMS = ("cTrader", "MT5")
 APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 APP_ICON = APP_BASE / "assets" / "app.ico"
 MT5_TARGETS = [
+    ("positions_entry_price", "MT5 場內持倉進場價（OCR 使用）"),
     ("lot_input", "交易量輸入欄"),
     ("ask_price", "訂單視窗的 Ask 價格"),
     ("trade_tab", "MT5 交易欄位 / 交易分頁"),

@@ -16,7 +16,7 @@ from trading_helper.windows import (
     _extract_decimal_candidates,
 )
 from trading_helper.automation import PlatformAutomation, _decimal_close, _plain
-from trading_helper.gui import _window_title_pattern
+from trading_helper.gui import CALIBRATION_TARGETS, _window_title_pattern
 
 
 def valid_values() -> dict[str, str]:
@@ -500,6 +500,57 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(moved["y"], 0.5)
         self.assertEqual(moved["y_px"], 500)
+
+    def test_mt5_calibration_includes_internal_entry_price(self) -> None:
+        keys = [key for key, _ in CALIBRATION_TARGETS["MT5"]]
+        self.assertIn("positions_entry_price", keys)
+
+    def test_mt5_internal_entry_price_reads_ocr_number(self) -> None:
+        item = TradeInstruction.from_mapping(2, valid_values())
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "MT5": {
+                        "window_title": {
+                            "internal": "MT5 Main",
+                            "external": "MT5 Main",
+                        },
+                        "points": {
+                            "positions_entry_price": {
+                                "x": 0.5,
+                                "y": 0.5,
+                                "x_px": 500,
+                                "y_px": 500,
+                            }
+                        },
+                    }
+                }
+            },
+            None,
+            None,
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            hover_called = False
+
+            def find_all(self, pattern):
+                return [WindowInfo(1, pattern, 0, 0, 100, 100)]
+
+            def read_number(self, window, point):
+                return Decimal("4174.64")
+
+            def read_hover_number(self, window, point):
+                self.hover_called = True
+                return Decimal("0")
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        price = automation._read_internal_entry_price(item, "MT5")
+
+        self.assertEqual(price, Decimal("4174.64"))
+        self.assertFalse(fake.hover_called)
 
     def test_ocr_price_parser_prefers_complete_price(self) -> None:
         values = _extract_decimal_candidates(["0.18", "4180.92", "18"])
