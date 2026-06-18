@@ -103,6 +103,7 @@ class SheetReader:
                     "final_external_tp_price",
                     "daily_pnl",
                     "internal_balance",
+                    "original_sl_points",
                     "expected_sl_points",
                     "expected_sl_percent",
                 }:
@@ -127,6 +128,7 @@ class SheetReader:
             "final_external_tp_price",
             "daily_pnl",
             "internal_balance",
+            "original_sl_points",
             "expected_sl_points",
             "expected_sl_percent",
         }

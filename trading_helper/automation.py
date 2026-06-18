@@ -970,26 +970,7 @@ class PlatformAutomation:
         role: str,
         points: dict[str, dict[str, Any]],
     ) -> bool:
-        if platform == "GooeyTrade":
-            return True
-        if platform != "cTrader":
-            return False
-        texts: list[str] = [str(profile.get("window_title", {}).get(role, ""))]
-        for point_name in (
-            "lot_input",
-            "sl_input",
-            "tp_input",
-            "sl_checkbox",
-            "tp_checkbox",
-        ):
-            point = points.get(point_name, {})
-            texts.extend(
-                [
-                    str(point.get("window_title", "")),
-                    str(point.get("calibration_window_title", "")),
-                ]
-            )
-        return any("GooeyTrade" in text for text in texts)
+        return platform == "GooeyTrade"
 
 def _plain(value: Decimal) -> str:
     text = format(value, "f")

@@ -41,6 +41,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "final_external_tp_price": "Final External TP price",
             "daily_pnl": "Daily PnL",
             "internal_balance": "Internal Balance",
+            "original_sl_points": "E4",
             "expected_sl_points": "Expected SL points",
             "expected_sl_percent": "Expected SL %",
         },

@@ -50,6 +50,7 @@ class TradeInstruction:
     final_external_tp_price: Decimal | None = None
     daily_pnl: Decimal | None = None
     internal_balance: Decimal | None = None
+    original_sl_points: Decimal | None = None
     expected_sl_points: Decimal | None = None
     expected_sl_percent: Decimal | None = None
 
@@ -93,6 +94,7 @@ class TradeInstruction:
         final_tp_raw = str(values.get("final_external_tp_price", "")).strip()
         daily_pnl_raw = str(values.get("daily_pnl", "")).strip()
         balance_raw = str(values.get("internal_balance", "")).strip()
+        original_sl_points_raw = str(values.get("original_sl_points", "")).strip()
         expected_sl_points_raw = str(values.get("expected_sl_points", "")).strip()
         expected_sl_percent_raw = str(values.get("expected_sl_percent", "")).strip()
         point_size_raw = values.get("point_size", "0.0001")
@@ -138,6 +140,12 @@ class TradeInstruction:
                 "場內餘額",
                 allow_zero=True,
             ) if balance_raw else None,
+            original_sl_points=_decimal(
+                original_sl_points_raw,
+                "原本止損點數",
+                allow_zero=True,
+                allow_negative=True,
+            ) if original_sl_points_raw else None,
             expected_sl_points=_decimal(
                 expected_sl_points_raw,
                 "預期止損點",

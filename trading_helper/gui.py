@@ -118,6 +118,7 @@ FIELD_LABELS = {
     "final_external_tp_price": "場外最終止盈價",
     "daily_pnl": "每日獲利/虧損",
     "internal_balance": "場內餘額",
+    "original_sl_points": "原本止損點數",
     "expected_sl_points": "預期止損點/%數",
     "expected_sl_percent": "預期止損%",
 }
@@ -318,6 +319,7 @@ class TradingHelperApp(QMainWindow):
             ("場內手數", "internal_lot"), ("場外手數", "external_lot"),
             ("場內止盈點數", "internal_tp"), ("場外止盈點數", "external_tp"),
             ("場內止損點數", "internal_sl"), ("場外止損點數", "external_sl"),
+            ("原本止損點數", "original_sl_points"),
         ]
         for index, (text, key) in enumerate(labels):
             row, section = divmod(index, 2)
@@ -328,25 +330,8 @@ class TradingHelperApp(QMainWindow):
             data_layout.addWidget(QLabel(text), row, base)
             data_layout.addWidget(value, row, base + 1)
         self.entry_price_input = QLineEdit()
-        self.entry_price_input.setPlaceholderText("例如 4174.64")
-        self.entry_price_input.setFixedHeight(24)
-        self.entry_price_input.returnPressed.connect(
-            self.update_manual_entry_price
-        )
+        self.entry_price_input.returnPressed.connect(self.update_manual_entry_price)
         self.entry_price_value = QLabel("")
-        self.entry_price_value.setStyleSheet("font-weight: 700;")
-        update_entry_price = QPushButton("更新")
-        update_entry_price.setFixedHeight(24)
-        update_entry_price.clicked.connect(self.update_manual_entry_price)
-        entry_editor = QWidget()
-        entry_editor_layout = QHBoxLayout(entry_editor)
-        entry_editor_layout.setContentsMargins(0, 0, 0, 0)
-        entry_editor_layout.setSpacing(8)
-        entry_editor_layout.addWidget(self.entry_price_input, 1)
-        entry_editor_layout.addWidget(update_entry_price)
-        data_layout.addWidget(QLabel("場內實際進場價"), 5, 0)
-        data_layout.addWidget(self.entry_price_value, 5, 1)
-        data_layout.addWidget(entry_editor, 5, 2, 1, 2)
         data_layout.setColumnMinimumWidth(0, 110)
         data_layout.setColumnMinimumWidth(2, 110)
         data_layout.setColumnStretch(1, 1)
@@ -570,6 +555,9 @@ class TradingHelperApp(QMainWindow):
             "external_lot": str(item.external.lot),
             "external_sl": str(item.external.sl_points),
             "external_tp": str(item.external.tp_points),
+            "original_sl_points": ""
+            if item.original_sl_points is None
+            else str(item.original_sl_points),
         }
         for key, value in values.items():
             self.data_labels[key].setText(value)
@@ -1008,7 +996,6 @@ class TradingHelperApp(QMainWindow):
               <li>打開 cTrader、MT5、TradingView，確認商品與帳戶正確。</li>
               <li>按「讀取試算表」。畫面會顯示商品、場內/場外方向、手數、止盈點數、止損點數。</li>
               <li>如需調整交易參數，可改「場內多空」「每日獲利/虧損」「場內餘額」「預期止損點/%數」。按 Enter 後會寫回試算表並重讀。</li>
-              <li>如果平台成交價需要手動指定，在「場內實際進場價」輸入數字後按 Enter 或「更新」。</li>
             </ol>
 
             <h2 id="fill">三、填入平台</h2>
@@ -1021,7 +1008,6 @@ class TradingHelperApp(QMainWindow):
 
             <h2 id="after">四、進場後流程</h2>
             <ol>
-              <li>場內實際成交後，如果自動讀取不準，可直接在「場內實際進場價」手動輸入並更新。</li>
               <li>按「同步場外止盈止損」會依場內實際進場價重新計算場外正式止盈/止損，並修改場外 MT5 訂單。</li>
               <li>修改場外訂單前，程式會用校準的手數位置確認是不是目標訂單；手數不合會往下一列找。</li>
             </ol>

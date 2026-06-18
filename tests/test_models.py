@@ -110,6 +110,7 @@ class TradeInstructionTests(unittest.TestCase):
             {
                 "daily_pnl": "-123.45",
                 "internal_balance": "50000",
+                "original_sl_points": "-15.39",
                 "expected_sl_points": "-6.81",
                 "expected_sl_percent": "-1.2",
             }
@@ -119,6 +120,7 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(item.daily_pnl, Decimal("-123.45"))
         self.assertEqual(item.internal_balance, Decimal("50000"))
+        self.assertEqual(item.original_sl_points, Decimal("-15.39"))
         self.assertEqual(item.expected_sl_points, Decimal("-6.81"))
         self.assertEqual(item.expected_sl_percent, Decimal("-1.2"))
 
@@ -286,7 +288,7 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(fields[1][2], "-7.11")
         self.assertEqual(fields[2][2], "44.1")
 
-    def test_bound_gooeytrade_ctrader_uses_point_size(self) -> None:
+    def test_bound_ctrader_keeps_sheet_points_even_with_gooeytrade_title(self) -> None:
         values = valid_values()
         values["internal_sl_points"] = "-7.11"
         values["internal_tp_points"] = "44.10"
@@ -308,8 +310,8 @@ class TradeInstructionTests(unittest.TestCase):
             ctrader_uses_point_size=uses_point_size,
         )
 
-        self.assertEqual(fields[1][2], "-711")
-        self.assertEqual(fields[2][2], "4410")
+        self.assertEqual(fields[1][2], "-7.11")
+        self.assertEqual(fields[2][2], "44.1")
 
     def test_window_lookup_uses_selected_platform_title(self) -> None:
         automation = PlatformAutomation(
