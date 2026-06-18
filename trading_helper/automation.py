@@ -683,6 +683,150 @@ class PlatformAutomation:
             f"止盈 {_plain(instruction.external.tp_points)} 點。"
         )
 
+    def sync_external_sl_tp(
+        self,
+        instruction: TradeInstruction,
+        *,
+        internal_platform: str,
+        external_platform: str,
+        entry_price_override: Decimal | None = None,
+    ) -> dict[str, str] | None:
+        self.emergency.guard()
+        entry_price = (
+            entry_price_override
+            if entry_price_override is not None
+            else self._read_internal_entry_price(instruction, internal_platform)
+        )
+        sl_price, tp_price = instruction.estimated_prices(
+            instruction.external_direction,
+            instruction.external,
+            entry_price,
+        )
+        profile = self.config["platforms"][external_platform]
+        points = profile.get("points", {})
+
+        if _is_mt5(external_platform):
+            required = [
+                "position_sl_input",
+                "position_tp_input",
+                "position_order_lot",
+                "position_order_row",
+            ]
+        else:
+            required = ["sl_input", "tp_input", "sl_checkbox", "tp_checkbox"]
+        missing = [name for name in required if name not in points]
+        if missing:
+            raise AutomationError(
+                f"{external_platform} missing calibration points: {', '.join(missing)}"
+            )
+
+        if _is_mt5(external_platform):
+            lot_window = self._window_for_point(
+                profile, "external", points["position_order_lot"]
+            )
+            try:
+                detected_lot = self.windows.read_number_near(
+                    lot_window,
+                    points["position_order_lot"],
+                    instruction.external.lot,
+                )
+            except AutomationError:
+                detected_lot = None
+
+            if not (
+                detected_lot is not None
+                and _decimal_close(
+                    detected_lot, instruction.external.lot, Decimal("0.001")
+                )
+            ):
+                self.log(
+                    "MT5 第一筆場外訂單手數不符合，未開啟修改視窗；"
+                    "已計算場外止盈止損價格供手動複製。"
+                )
+                return {
+                    "entry": instruction.format_price(entry_price),
+                    "sl": instruction.format_price(sl_price),
+                    "tp": instruction.format_price(tp_price),
+                    "expected_lot": _plain(instruction.external.lot),
+                    "detected_lot": ""
+                    if detected_lot is None
+                    else _plain(detected_lot),
+                }
+
+            self.log("MT5 第一筆場外訂單手數符合，正在開啟持倉修改視窗。")
+            self.windows.double_click(
+                self._window_for_point(
+                    profile, "external", points["position_order_row"]
+                ),
+                points["position_order_row"],
+            )
+            self.windows.wait_for_point_window(
+                profile,
+                "external",
+                points["position_sl_input"],
+                timeout=3.0,
+            )
+            values = (
+                ("position_sl_input", "止損價格", instruction.format_price(sl_price)),
+                ("position_tp_input", "止盈價格", instruction.format_price(tp_price)),
+            )
+        else:
+            self._ensure_ctrader_risk_fields(profile, "external", points)
+            external_values = self._field_values(
+                external_platform,
+                instruction.external_direction,
+                instruction.external,
+                instruction,
+                ctrader_uses_point_size=self._ctrader_uses_point_size(
+                    external_platform, profile, "external", points
+                ),
+            )
+            values = (
+                (
+                    "sl_input",
+                    "止損點數",
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "sl_input"
+                    ),
+                ),
+                (
+                    "tp_input",
+                    "止盈點數",
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "tp_input"
+                    ),
+                ),
+            )
+
+        for point_name, label, value in values:
+            self._fill_field(
+                profile,
+                "external",
+                points,
+                "場外",
+                external_platform,
+                point_name,
+                label,
+                value,
+            )
+        if _is_mt5(external_platform):
+            self.log(
+                f"場外 {external_platform} 止盈止損價格已填入："
+                f"止損 {instruction.format_price(sl_price)}，"
+                f"止盈 {instruction.format_price(tp_price)}。"
+            )
+        else:
+            self.log(
+                f"場外 {external_platform} 止盈止損已填入："
+                f"止損 {_plain(instruction.external.sl_points)} 點，"
+                f"止盈 {_plain(instruction.external.tp_points)} 點。"
+            )
+        return None
+
     def _find_mt5_position_row(
         self,
         profile: dict[str, Any],

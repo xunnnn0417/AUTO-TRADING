@@ -4,3 +4,4 @@ __pycache__/
 config.json
 *.json
 !config.example.json
+TradingWorkflowHelper.lnk

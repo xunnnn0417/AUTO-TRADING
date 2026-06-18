@@ -52,7 +52,6 @@ from .windows import (
 PLATFORMS = ("cTrader", "MT5")
 APP_ICON = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
 MT5_TARGETS = [
-    ("new_order_button", "主視窗的新訂單按鈕"),
     ("lot_input", "交易量輸入欄"),
     ("bid_price", "訂單視窗的 Bid 價格"),
     ("ask_price", "訂單視窗的 Ask 價格"),
@@ -64,7 +63,6 @@ MT5_TARGETS = [
     ("sell_button", "賣出按鈕（第二版使用）"),
     ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
     ("position_order_lot", "場外已進場訂單手數（第一筆）"),
-    ("position_order_lot_next", "場外已進場訂單手數（下一筆，用於列距）"),
     ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
 ]
 CALIBRATION_TARGETS = {
@@ -77,7 +75,6 @@ CALIBRATION_TARGETS = {
         ("buy_button", "買入方向按鈕"),
         ("sell_button", "賣出方向按鈕"),
         ("positions_entry_price", "持倉成交價懸浮位置（OCR 使用）"),
-        ("new_order_button", "新增訂單按鈕（選用）"),
     ],
     "cTrader": [
         ("lot_input", "倉位／手數輸入欄"),
@@ -88,7 +85,6 @@ CALIBRATION_TARGETS = {
         ("buy_button", "買入方向按鈕"),
         ("sell_button", "賣出方向按鈕"),
         ("positions_entry_price", "持倉成交價懸浮位置（第二版 OCR 使用）"),
-        ("new_order_button", "新增訂單按鈕（選用）"),
     ],
     "MT5": MT5_TARGETS,
     "BYBIT MT5": MT5_TARGETS,
@@ -158,6 +154,7 @@ class UiSignals(QObject):
     operation_minimized = Signal()
     entry_price_reset = Signal()
     parameter_inputs_reset = Signal(object)
+    external_price_result = Signal(object)
 
 
 class TradingHelperApp(QMainWindow):
@@ -196,6 +193,7 @@ class TradingHelperApp(QMainWindow):
         self.signals.entry_price_reset.connect(self.entry_price_input.clear)
         self.signals.entry_price_reset.connect(self.entry_price_value.clear)
         self.signals.parameter_inputs_reset.connect(self._clear_parameter_inputs)
+        self.signals.external_price_result.connect(self._show_external_price_result)
         self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
@@ -458,6 +456,36 @@ class TradingHelperApp(QMainWindow):
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "交易流程輔助工具", message)
 
+    def _show_external_price_result(self, result: dict[str, str]) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("場外止盈止損")
+        layout = QGridLayout(dialog)
+        lot_text = result.get("detected_lot") or "無法辨識"
+        message = (
+            f"第一筆場外訂單手數不符合。預期 {result.get('expected_lot', '')}，"
+            f"讀到 {lot_text}。\n未開啟訂單，請手動確認後複製下列價格。"
+        )
+        layout.addWidget(QLabel(message), 0, 0, 1, 3)
+        rows = [
+            ("場內進場價", result.get("entry", "")),
+            ("場外止損價", result.get("sl", "")),
+            ("場外止盈價", result.get("tp", "")),
+        ]
+        for row, (label, value) in enumerate(rows, start=1):
+            value_input = QLineEdit(value)
+            value_input.setReadOnly(True)
+            copy_button = QPushButton("複製")
+            copy_button.clicked.connect(
+                lambda checked=False, text=value: QApplication.clipboard().setText(text)
+            )
+            layout.addWidget(QLabel(label), row, 0)
+            layout.addWidget(value_input, row, 1)
+            layout.addWidget(copy_button, row, 2)
+        close_button = QPushButton("關閉")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, len(rows) + 1, 2)
+        dialog.exec()
+
     def set_always_on_top(self, enabled: bool) -> None:
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         self.show()
@@ -621,12 +649,14 @@ class TradingHelperApp(QMainWindow):
 
         def task() -> None:
             item = self._require_instruction()
-            self.automation.sync_external_sl_tp(
+            result = self.automation.sync_external_sl_tp(
                 item,
                 internal_platform=internal_platform,
                 external_platform=external_platform,
                 entry_price_override=self.manual_entry_price,
             )
+            if result:
+                self.signals.external_price_result.emit(result)
 
         self._start("同步場外止盈止損", task)
 
