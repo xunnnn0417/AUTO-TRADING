@@ -329,8 +329,7 @@ class WindowController:
             x = window.left + int(point["x_px"])
             y = window.top + int(point["y_px"])
         else:
-            x = window.left + round(window.width * float(point["x"]))
-            y = window.top + round(window.height * float(point["y"]))
+            self._raise_size_mismatch(window, point)
         return x, y
 
     def click_and_type(
@@ -798,6 +797,24 @@ class WindowController:
             raise AutomationError(
                 "這個欄位使用舊版校準資料。請在目前視窗配置下重新校準。"
             )
+        calibrated_width = int(point.get("window_width", 0))
+        calibrated_height = int(point.get("window_height", 0))
+        if (
+            abs(window.width - calibrated_width) > 2
+            or abs(window.height - calibrated_height) > 2
+        ):
+            self._raise_size_mismatch(window, point)
+
+    def _raise_size_mismatch(
+        self, window: WindowInfo, point: dict[str, float]
+    ) -> None:
+        calibrated_width = int(point.get("window_width", 0))
+        calibrated_height = int(point.get("window_height", 0))
+        raise AutomationError(
+            "平台視窗尺寸和校準時不同，為避免點錯位置已停止操作。"
+            f"校準尺寸：{calibrated_width}×{calibrated_height}，"
+            f"目前尺寸：{window.width}×{window.height}。請重新校準。"
+        )
 
     def _refresh(self, handle: int) -> WindowInfo:
         for window in self.list_windows():

@@ -203,7 +203,7 @@ class PlatformAutomation:
         if calibrated_size != current_size:
             self.log(
                 f"{label}校準尺寸為 {calibrated_size[0]}×{calibrated_size[1]}，"
-                f"目前為 {current_size[0]}×{current_size[1]}，將使用比例位置。"
+                f"目前為 {current_size[0]}×{current_size[1]}。"
             )
         self.windows.click_and_type(field_window, point, value)
 
@@ -238,15 +238,18 @@ class PlatformAutomation:
         point: dict[str, Any],
     ):
         point_pattern = str(point.get("window_title", "")).strip()
+        calibration_pattern = str(point.get("calibration_window_title", "")).strip()
         if profile is self.config["platforms"].get("TradingView"):
             patterns = [
                 point_pattern,
+                calibration_pattern,
                 str(profile["window_title"][role]).strip(),
                 r"/\s*常用$",
             ]
         elif profile is self.config["platforms"].get("MT5"):
             patterns = [
                 point_pattern,
+                calibration_pattern,
                 str(profile["window_title"][role]).strip(),
             ]
         else:

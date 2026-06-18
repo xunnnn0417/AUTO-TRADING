@@ -53,14 +53,11 @@ PLATFORMS = ("cTrader", "MT5")
 APP_ICON = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
 MT5_TARGETS = [
     ("lot_input", "交易量輸入欄"),
-    ("bid_price", "訂單視窗的 Bid 價格"),
     ("ask_price", "訂單視窗的 Ask 價格"),
     ("sl_input", "止損價格輸入欄"),
     ("tp_input", "止盈價格輸入欄"),
     ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
     ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-    ("buy_button", "買入按鈕（第二版使用）"),
-    ("sell_button", "賣出按鈕（第二版使用）"),
     ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
     ("position_order_lot", "場外已進場訂單手數（第一筆）"),
     ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
@@ -1283,6 +1280,7 @@ class CalibrationDialog(QDialog):
                 active = self.app.windows.window_at_cursor()
                 x, y = self.app.windows.cursor_position()
                 point = self.app.windows.relative_point(active, x, y)
+                point["window_title"] = re.escape(active.title)
                 point["calibration_window_title"] = re.escape(active.title)
                 profile = self.app.store.data["platforms"][self.platform]
                 if self.platform == "TradingView":
@@ -1290,8 +1288,6 @@ class CalibrationDialog(QDialog):
                     point["window_title"] = stable_title
                     profile["window_title"]["internal"] = stable_title
                     profile["window_title"]["external"] = stable_title
-                else:
-                    point.pop("window_title", None)
                 profile["points"][key] = point
                 if (
                     self.platform != "TradingView"
@@ -1339,6 +1335,9 @@ class CalibrationDialog(QDialog):
             point_pattern = str(point.get("window_title", "")).strip()
             if point_pattern:
                 patterns.append(point_pattern)
+            calibration_pattern = str(point.get("calibration_window_title", "")).strip()
+            if calibration_pattern:
+                patterns.append(calibration_pattern)
             if self.app.internal_platform.currentText() == self.platform:
                 patterns.append(str(profile["window_title"]["internal"]).strip())
             if self.app.external_platform.currentText() == self.platform:

@@ -260,8 +260,9 @@ class ProfileStore:
                     ),
                 )
                 synced_point = deepcopy(point)
-                if target_platform != "TradingView":
+                if target_platform not in {"MT5", "BYBIT MT5", "原版MT5", "TradingView"}:
                     synced_point.pop("window_title", None)
+                    synced_point.pop("calibration_window_title", None)
                 config["platforms"][target_platform].setdefault("points", {})[
                     point_name
                 ] = synced_point

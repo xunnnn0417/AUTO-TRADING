@@ -80,8 +80,8 @@ class ProfileStoreTests(unittest.TestCase):
         other_point = store.load_profile("預設方案")["platforms"][
             "MT5"
         ]["points"]["lot_input"]
-        self.assertNotIn("window_title", active_point)
-        self.assertNotIn("window_title", other_point)
+        self.assertEqual(active_point["window_title"], "current")
+        self.assertEqual(other_point["window_title"], "current")
         self.assertEqual(other_point["x"], 0.4)
         original_point = store.load_profile("預設方案")["platforms"][
             "原版MT5"
