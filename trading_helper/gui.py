@@ -916,9 +916,7 @@ class TradingHelperApp(QMainWindow):
                 time.sleep(1)
             active = self.windows.window_at_cursor()
             pattern = _window_title_pattern(platform, active.title)
-            self.store.data["platforms"][platform]["window_title"][role] = pattern
-            self.save_config()
-            self.automation.config = self.store.data
+            self._save_bound_window(platform, role, pattern)
             self.log(
                 f"已綁定{role_text} {platform} 視窗：{active.title}；"
                 f"規則：{pattern}"
@@ -1085,6 +1083,20 @@ class TradingHelperApp(QMainWindow):
     def save_config(self) -> None:
         self.store.save()
         self.profiles.save_profile(self.profiles.active_name, self.store.data)
+
+    def _save_bound_window(self, platform: str, role: str, pattern: str) -> None:
+        self.store.data["platforms"][platform]["window_title"][role] = pattern
+        self.store.save()
+        self.profiles.save_profile(self.profiles.active_name, self.store.data)
+        persisted = self.profiles.load_profile(self.profiles.active_name)
+        saved_pattern = persisted["platforms"][platform]["window_title"][role]
+        if saved_pattern != pattern:
+            raise RuntimeError(
+                "Window binding was not saved to the active profile."
+            )
+        self.store.data = persisted
+        self.store.save()
+        self.automation.config = self.store.data
 
     def save_ui_state(self) -> None:
         self.store.data["ui"].update(
