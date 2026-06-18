@@ -616,6 +616,39 @@ class WindowController:
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"
         )
 
+    def read_number_near(
+        self,
+        window: WindowInfo,
+        point: dict[str, float],
+        expected: Decimal,
+    ) -> Decimal:
+        self.emergency.guard()
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        attempts = [
+            (x, y, 120, 55),
+            (x, y, 150, 70),
+            (x, y + 12, 160, 75),
+        ]
+        last_error: AutomationError | None = None
+        for target_x, target_y, width, height in attempts:
+            try:
+                candidates = self._read_number_candidates_ocr(
+                    target_x,
+                    target_y,
+                    width=width,
+                    height=height,
+                )
+            except AutomationError as exc:
+                last_error = exc
+                continue
+            if candidates:
+                return min(candidates, key=lambda value: abs(value - expected))
+        if last_error is not None:
+            raise last_error
+        raise AutomationError("Could not read a number near the expected value.")
+
     def read_hover_number(
         self, window: WindowInfo, point: dict[str, float]
     ) -> Decimal:
@@ -651,6 +684,21 @@ class WindowController:
         width: int = 150,
         height: int = 70,
     ) -> Decimal:
+        return self._read_number_candidates_ocr(
+            x,
+            y,
+            width=width,
+            height=height,
+        )[0]
+
+    def _read_number_candidates_ocr(
+        self,
+        x: int,
+        y: int,
+        *,
+        width: int = 150,
+        height: int = 70,
+    ) -> list[Decimal]:
         try:
             import cv2
             import numpy as np
@@ -689,7 +737,7 @@ class WindowController:
                 )
                 parsed = _extract_decimal_candidates(candidates)
                 if parsed:
-                    return parsed[0]
+                    return parsed
         raise AutomationError(
             "無法從校準區域辨識價格。"
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"

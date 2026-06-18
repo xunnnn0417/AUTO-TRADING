@@ -15,7 +15,7 @@ from trading_helper.windows import (
     _alt_shift_right_events,
     _extract_decimal_candidates,
 )
-from trading_helper.automation import PlatformAutomation, _plain
+from trading_helper.automation import PlatformAutomation, _decimal_close, _plain
 from trading_helper.gui import _window_title_pattern
 
 
@@ -246,6 +246,17 @@ class TradeInstructionTests(unittest.TestCase):
     def test_plain_number_keeps_integer_trailing_zeroes(self) -> None:
         self.assertEqual(_plain(Decimal("4410")), "4410")
         self.assertEqual(_plain(Decimal("0.5700")), "0.57")
+
+    def test_lot_match_accepts_equivalent_decimal_formats(self) -> None:
+        self.assertTrue(
+            _decimal_close(Decimal("0.40"), Decimal("0.4"), Decimal("0.001"))
+        )
+        self.assertTrue(
+            _decimal_close(Decimal("0.400"), Decimal("0.4"), Decimal("0.001"))
+        )
+        self.assertFalse(
+            _decimal_close(Decimal("0.45"), Decimal("0.4"), Decimal("0.001"))
+        )
 
     def test_ctrader_points_apply_point_size(self) -> None:
         values = valid_values()

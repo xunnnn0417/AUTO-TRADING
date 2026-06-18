@@ -590,7 +590,9 @@ class PlatformAutomation:
                 profile, "external", lot_point
             )
             try:
-                detected_lot = self.windows.read_number(lot_window, lot_point)
+                detected_lot = self.windows.read_number_near(
+                    lot_window, lot_point, expected_lot
+                )
             except AutomationError:
                 self.log(
                     f"MT5 場外第 {row_index + 1} 筆無法辨識手數，"
@@ -601,7 +603,7 @@ class PlatformAutomation:
                 f"MT5 場外第 {row_index + 1} 筆手數："
                 f"{detected_lot}，預期 {expected_lot}。"
             )
-            if detected_lot == expected_lot:
+            if _decimal_close(detected_lot, expected_lot, Decimal("0.001")):
                 return row_index
         return None
 
@@ -706,6 +708,14 @@ def _plain(value: Decimal) -> str:
     if "." not in text:
         return text
     return text.rstrip("0").rstrip(".")
+
+
+def _decimal_close(
+    actual: Decimal,
+    expected: Decimal,
+    tolerance: Decimal,
+) -> bool:
+    return abs(actual - expected) <= tolerance
 
 
 def _is_ctrader(platform: str) -> bool:
