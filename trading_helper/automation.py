@@ -431,7 +431,7 @@ class PlatformAutomation:
             f"止盈 {instruction.format_price(tp_price)}。"
         )
 
-    def sync_external_sl_tp(
+    def _legacy_sync_external_sl_tp(
         self,
         instruction: TradeInstruction,
         *,
@@ -569,6 +569,118 @@ class PlatformAutomation:
             f"止損 {instruction.format_price(sl_price)}，"
             f"止盈 {instruction.format_price(tp_price)}。"
             "程式沒有按下最後確認按鈕。"
+        )
+
+    def sync_external_sl_tp(
+        self,
+        instruction: TradeInstruction,
+        *,
+        internal_platform: str,
+        external_platform: str,
+        entry_price_override: Decimal | None = None,
+    ) -> None:
+        self.emergency.guard()
+        profile = self.config["platforms"][external_platform]
+        points = profile.get("points", {})
+        if _is_mt5(external_platform):
+            required = [
+                "position_sl_input",
+                "position_tp_input",
+                "position_order_lot",
+                "position_order_lot_next",
+                "position_order_row",
+            ]
+        else:
+            required = ["sl_input", "tp_input", "sl_checkbox", "tp_checkbox"]
+        missing = [name for name in required if name not in points]
+        if missing:
+            raise AutomationError(
+                f"{external_platform} missing calibration points: {', '.join(missing)}"
+            )
+
+        if _is_mt5(external_platform):
+            matched_row = self._find_mt5_position_row(
+                profile,
+                points,
+                instruction.external.lot,
+                max_rows=30,
+            )
+            if matched_row is None:
+                raise AutomationError(
+                    "找不到手數符合的 MT5 場外訂單，已停止修改。"
+                    f"試算表要求 {instruction.external.lot}。"
+                )
+            position_point = self._offset_position_point(
+                points["position_order_row"],
+                points["position_order_lot"],
+                points["position_order_lot_next"],
+                matched_row,
+            )
+            self.log(
+                f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
+                "正在雙擊開啟持倉修改視窗。"
+            )
+            self.windows.double_click(
+                self._window_for_point(profile, "external", position_point),
+                position_point,
+            )
+            self.windows.wait_for_point_window(
+                profile,
+                "external",
+                points["position_sl_input"],
+                timeout=3.0,
+            )
+            values = (
+                ("position_sl_input", "止損點數", _plain(instruction.external.sl_points)),
+                ("position_tp_input", "止盈點數", _plain(instruction.external.tp_points)),
+            )
+        else:
+            self._ensure_ctrader_risk_fields(profile, "external", points)
+            external_values = self._field_values(
+                external_platform,
+                instruction.external_direction,
+                instruction.external,
+                instruction,
+                ctrader_uses_point_size=self._ctrader_uses_point_size(
+                    external_platform, profile, "external", points
+                ),
+            )
+            values = (
+                (
+                    "sl_input",
+                    "止損點數",
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "sl_input"
+                    ),
+                ),
+                (
+                    "tp_input",
+                    "止盈點數",
+                    next(
+                        value
+                        for point_name, _, value in external_values
+                        if point_name == "tp_input"
+                    ),
+                ),
+            )
+
+        for point_name, label, value in values:
+            self._fill_field(
+                profile,
+                "external",
+                points,
+                "場外",
+                external_platform,
+                point_name,
+                label,
+                value,
+            )
+        self.log(
+            f"場外 {external_platform} 止盈止損已填入："
+            f"止損 {_plain(instruction.external.sl_points)} 點，"
+            f"止盈 {_plain(instruction.external.tp_points)} 點。"
         )
 
     def _find_mt5_position_row(
