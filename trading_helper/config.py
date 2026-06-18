@@ -116,11 +116,67 @@ def _copy_platform_data_if_empty(
         target_profile["open_panel_before_fill"] = True
 
 
+def _is_generic_title(platform: str, title: str | None) -> bool:
+    if not title:
+        return True
+    default_titles = DEFAULT_CONFIG["platforms"].get(platform, {}).get(
+        "window_title", {}
+    )
+    return title in set(default_titles.values())
+
+
+def _is_bad_title(title: str | None) -> bool:
+    if not title:
+        return True
+    return "交易流程輔助工具" in title
+
+
+def _restore_legacy_role_titles(
+    platforms: dict[str, Any],
+    source: str,
+    target: str,
+    *,
+    prefer_roles: dict[str, str] | None = None,
+) -> None:
+    if source not in platforms:
+        return
+    source_profile = platforms[source]
+    target_profile = _ensure_platform(platforms, target)
+    source_titles = source_profile.get("window_title", {})
+    target_titles = target_profile.setdefault("window_title", {})
+    prefer_roles = prefer_roles or {}
+    for role in ("internal", "external"):
+        source_role = prefer_roles.get(role, role)
+        source_title = source_titles.get(source_role)
+        target_title = target_titles.get(role)
+        if source_title and (_is_generic_title(target, target_title) or _is_bad_title(target_title)):
+            target_titles[role] = source_title
+
+
+def _restore_legacy_points(
+    platforms: dict[str, Any],
+    source: str,
+    target: str,
+) -> None:
+    if source not in platforms:
+        return
+    source_points = platforms[source].get("points", {})
+    if not source_points:
+        return
+    target_profile = _ensure_platform(platforms, target)
+    target_points = target_profile.setdefault("points", {})
+    for point_name, point in source_points.items():
+        if point_name not in target_points:
+            target_points[point_name] = deepcopy(point)
+
+
 def _migrate_legacy_ctrader(config: dict[str, Any]) -> dict[str, Any]:
     migrated = deepcopy(config)
     platforms = migrated.setdefault("platforms", {})
     _ensure_platform(platforms, "cTrader")
     _copy_platform_data_if_empty(platforms, "GooeyTrade", "cTrader")
+    _restore_legacy_role_titles(platforms, "GooeyTrade", "cTrader")
+    _restore_legacy_points(platforms, "GooeyTrade", "cTrader")
     ui = migrated.setdefault("ui", {})
     if ui.get("internal_platform") == "GooeyTrade":
         ui["internal_platform"] = "cTrader"
@@ -135,6 +191,10 @@ def _migrate_legacy_mt5(config: dict[str, Any]) -> dict[str, Any]:
     _ensure_platform(platforms, "MT5")
     _copy_platform_data_if_empty(platforms, "BYBIT MT5", "MT5")
     _copy_platform_data_if_empty(platforms, "原版MT5", "MT5")
+    _restore_legacy_role_titles(platforms, "BYBIT MT5", "MT5")
+    _restore_legacy_role_titles(platforms, "原版MT5", "MT5")
+    _restore_legacy_points(platforms, "BYBIT MT5", "MT5")
+    _restore_legacy_points(platforms, "原版MT5", "MT5")
     ui = migrated.setdefault("ui", {})
     if ui.get("internal_platform") in {"BYBIT MT5", "原版MT5"}:
         ui["internal_platform"] = "MT5"
@@ -190,10 +250,16 @@ class ProfileStore:
 
     def load_profile(self, name: str | None = None) -> dict[str, Any]:
         profile_name = name or self.active_name
-        return _merge(DEFAULT_CONFIG, deepcopy(self.data["profiles"][profile_name]))
+        return _merge(
+            DEFAULT_CONFIG,
+            _migrate_config(deepcopy(self.data["profiles"][profile_name])),
+        )
 
     def save_profile(self, name: str, config: dict[str, Any]) -> None:
-        self.data["profiles"][name] = deepcopy(config)
+        self.data["profiles"][name] = _merge(
+            DEFAULT_CONFIG,
+            _migrate_config(deepcopy(config)),
+        )
         self.data["active"] = name
         self.save()
 

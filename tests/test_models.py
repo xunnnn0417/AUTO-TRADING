@@ -266,7 +266,7 @@ class TradeInstructionTests(unittest.TestCase):
         item = TradeInstruction.from_mapping(2, values)
         automation = PlatformAutomation({}, None, None, lambda _: None)
         fields = automation._field_values(
-            "GooeyTrade", "BUY", item.internal, item
+            "GooeyTrade", "BUY", item.internal, item, ctrader_uses_point_size=True
         )
         self.assertEqual(fields[1][2], "-711")
         self.assertEqual(fields[2][2], "4410")
@@ -286,7 +286,7 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(fields[1][2], "-7.11")
         self.assertEqual(fields[2][2], "44.1")
 
-    def test_ctrader_does_not_convert_just_because_title_has_gooeytrade(self) -> None:
+    def test_bound_gooeytrade_ctrader_uses_point_size(self) -> None:
         values = valid_values()
         values["internal_sl_points"] = "-7.11"
         values["internal_tp_points"] = "44.10"
@@ -308,8 +308,8 @@ class TradeInstructionTests(unittest.TestCase):
             ctrader_uses_point_size=uses_point_size,
         )
 
-        self.assertEqual(fields[1][2], "-7.11")
-        self.assertEqual(fields[2][2], "44.1")
+        self.assertEqual(fields[1][2], "-711")
+        self.assertEqual(fields[2][2], "4410")
 
     def test_window_lookup_uses_selected_platform_title(self) -> None:
         automation = PlatformAutomation(
