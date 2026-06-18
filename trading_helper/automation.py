@@ -275,17 +275,13 @@ class PlatformAutomation:
         ctrader_uses_point_size: bool = False,
     ) -> list[tuple[str, str, str]]:
         if _is_ctrader(platform):
-            uses_point_size = platform == "GooeyTrade" or ctrader_uses_point_size
-            sl_value = (
-                side.sl_points / instruction.point_size
-                if uses_point_size
-                else side.sl_points
-            )
-            tp_value = (
-                side.tp_points / instruction.point_size
-                if uses_point_size
-                else side.tp_points
-            )
+            uses_gooeytrade_points = platform == "GooeyTrade"
+            if uses_gooeytrade_points:
+                sl_value = side.sl_points / instruction.point_size
+                tp_value = side.tp_points / instruction.point_size
+            else:
+                sl_value = side.sl_points
+                tp_value = side.tp_points
             return [
                 ("lot_input", "手數", _plain(side.lot)),
                 ("sl_input", "止損點數", _plain(sl_value)),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+import sys
 import threading
 import time
 import webbrowser
@@ -50,7 +51,8 @@ from .windows import (
 
 
 PLATFORMS = ("cTrader", "MT5")
-APP_ICON = Path(__file__).resolve().parent.parent / "assets" / "app.ico"
+APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+APP_ICON = APP_BASE / "assets" / "app.ico"
 MT5_TARGETS = [
     ("lot_input", "交易量輸入欄"),
     ("ask_price", "訂單視窗的 Ask 價格"),
@@ -58,7 +60,6 @@ MT5_TARGETS = [
     ("tp_input", "止盈價格輸入欄"),
     ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
     ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-    ("positions_entry_price", "場內持倉成交價位置（OCR 使用）"),
     ("position_order_lot", "場外已進場訂單手數（第一筆）"),
     ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
 ]

@@ -286,7 +286,7 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(fields[1][2], "-7.11")
         self.assertEqual(fields[2][2], "44.1")
 
-    def test_ctrader_auto_converts_gooeytrade_points(self) -> None:
+    def test_ctrader_does_not_convert_just_because_title_has_gooeytrade(self) -> None:
         values = valid_values()
         values["internal_sl_points"] = "-7.11"
         values["internal_tp_points"] = "44.10"
@@ -308,8 +308,8 @@ class TradeInstructionTests(unittest.TestCase):
             ctrader_uses_point_size=uses_point_size,
         )
 
-        self.assertEqual(fields[1][2], "-711")
-        self.assertEqual(fields[2][2], "4410")
+        self.assertEqual(fields[1][2], "-7.11")
+        self.assertEqual(fields[2][2], "44.1")
 
     def test_window_lookup_uses_selected_platform_title(self) -> None:
         automation = PlatformAutomation(
