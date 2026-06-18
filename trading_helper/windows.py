@@ -446,6 +446,36 @@ class WindowController:
             return False
         pyautogui.click(x, y)
         time.sleep(0.08)
+        return True
+
+    def refresh_checkbox_checked(
+        self,
+        window: WindowInfo,
+        point: dict[str, float],
+    ) -> int:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError("尚未安裝 pyautogui，請先執行 install.bat。") from exc
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        self.emergency.guard()
+        image = pyautogui.screenshot(
+            region=(max(0, x - 7), max(0, y - 7), 15, 15)
+        ).convert("L")
+        bright_pixels = sum(pixel >= 150 for pixel in image.getdata())
+        if bright_pixels >= 5:
+            pyautogui.click(x, y)
+            time.sleep(0.08)
+            self.emergency.guard()
+            pyautogui.click(x, y)
+            time.sleep(0.08)
+            return 2
+        pyautogui.click(x, y)
+        time.sleep(0.08)
+        return 1
 
     def hotkey(
         self,

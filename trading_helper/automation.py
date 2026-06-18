@@ -224,12 +224,13 @@ class PlatformAutomation:
             checkbox_window = self._window_for_point(
                 profile, role, points[point_name]
             )
-            if self.windows.ensure_checkbox_checked(
+            clicks = self.windows.refresh_checkbox_checked(
                 checkbox_window, points[point_name]
-            ):
-                self.log(f"已自動勾選 cTrader {label}。")
+            )
+            if clicks == 2:
+                self.log(f"cTrader {label}原本已勾選，已關閉後重新打開。")
             else:
-                self.log(f"cTrader {label}已勾選。")
+                self.log(f"cTrader {label}原本未勾選，已打開。")
 
     def _window_for_point(
         self,
