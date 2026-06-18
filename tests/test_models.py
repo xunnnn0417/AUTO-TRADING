@@ -19,6 +19,11 @@ from trading_helper.automation import PlatformAutomation, _decimal_close, _plain
 from trading_helper.gui import CALIBRATION_TARGETS, _window_title_pattern
 
 
+class FakeEmergency:
+    def guard(self):
+        return None
+
+
 def valid_values() -> dict[str, str]:
     return {
         "status": "READY",
@@ -332,7 +337,7 @@ class TradeInstructionTests(unittest.TestCase):
                 }
             },
             None,
-            None,
+            FakeEmergency(),
             lambda _: None,
         )
 
@@ -374,7 +379,7 @@ class TradeInstructionTests(unittest.TestCase):
                 }
             },
             None,
-            None,
+            FakeEmergency(),
             lambda _: None,
         )
 
@@ -414,7 +419,7 @@ class TradeInstructionTests(unittest.TestCase):
                 }
             },
             None,
-            None,
+            FakeEmergency(),
             lambda _: None,
         )
 
@@ -456,7 +461,7 @@ class TradeInstructionTests(unittest.TestCase):
                 }
             },
             None,
-            None,
+            FakeEmergency(),
             lambda _: None,
         )
 
@@ -505,6 +510,13 @@ class TradeInstructionTests(unittest.TestCase):
         keys = [key for key, _ in CALIBRATION_TARGETS["MT5"]]
         self.assertIn("positions_entry_price", keys)
 
+    def test_ctrader_calibration_includes_external_modify_points(self) -> None:
+        keys = [key for key, _ in CALIBRATION_TARGETS["cTrader"]]
+        self.assertIn("position_order_lot", keys)
+        self.assertIn("position_order_row", keys)
+        self.assertIn("position_sl_input", keys)
+        self.assertIn("position_tp_input", keys)
+
     def test_mt5_internal_entry_price_reads_ocr_number(self) -> None:
         item = TradeInstruction.from_mapping(2, valid_values())
         automation = PlatformAutomation(
@@ -527,7 +539,7 @@ class TradeInstructionTests(unittest.TestCase):
                 }
             },
             None,
-            None,
+            FakeEmergency(),
             lambda _: None,
         )
 
@@ -551,6 +563,163 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(price, Decimal("4174.64"))
         self.assertFalse(fake.hover_called)
+
+    def test_ctrader_external_sync_modifies_open_position_prices(self) -> None:
+        values = valid_values()
+        values.update(
+            {
+                "symbol": "GOLD",
+                "direction": "BUY",
+                "external_lot": "0.8",
+                "external_sl_points": "-6",
+                "external_tp_points": "5",
+                "point_size": "0.01",
+                "price_digits": "2",
+            }
+        )
+        item = TradeInstruction.from_mapping(2, values)
+        points = {
+            "positions_entry_price": {"id": "entry"},
+            "position_order_lot": {"id": "lot"},
+            "position_order_row": {"id": "row"},
+            "position_sl_input": {"id": "sl"},
+            "position_tp_input": {"id": "tp"},
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "cTrader": {
+                        "window_title": {
+                            "internal": "cTrader",
+                            "external": "cTrader",
+                        },
+                        "points": points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.typed = []
+                self.double_clicked = False
+
+            def find_all(self, pattern):
+                return [WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)]
+
+            def read_hover_number(self, window, point):
+                return Decimal("4174.64")
+
+            def read_number_near(self, window, point, expected):
+                return Decimal("0.8")
+
+            def double_click(self, window, point):
+                self.double_clicked = True
+
+            def wait_for_active_window_change(self, window, timeout):
+                return WindowInfo(2, "Modify Position", 0, 0, 100, 100)
+
+            def click_and_type(self, window, point, value):
+                self.typed.append((window.title, point["id"], value))
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        result = automation.sync_external_sl_tp(
+            item,
+            internal_platform="cTrader",
+            external_platform="cTrader",
+        )
+
+        self.assertIsNone(result)
+        self.assertTrue(fake.double_clicked)
+        self.assertEqual(
+            fake.typed,
+            [
+                ("Modify Position", "sl", "4180.64"),
+                ("Modify Position", "tp", "4169.64"),
+            ],
+        )
+
+    def test_tradingview_draw_internal_uses_internal_direction(self) -> None:
+        values = valid_values()
+        values.update(
+            {
+                "direction": "BUY",
+                "internal_sl_points": "-6",
+                "internal_tp_points": "5",
+                "point_size": "0.01",
+                "price_digits": "2",
+            }
+        )
+        item = TradeInstruction.from_mapping(2, values)
+        tv_points = {
+            "auto_scale_button": {"id": "auto_scale_button"},
+            "long_tool": {"id": "long_tool"},
+            "short_tool": {"id": "short_tool"},
+            "position_placement": {"id": "position_placement"},
+            "entry_input": {"id": "entry_input"},
+            "sl_input": {"id": "sl_input"},
+            "tp_input": {"id": "tp_input"},
+            "confirm_button": {"id": "confirm_button"},
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "TradingView": {
+                        "window_title": {
+                            "internal": "TradingView",
+                            "external": "TradingView",
+                        },
+                        "points": tv_points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.clicked = []
+
+            def find_all(self, pattern):
+                return [WindowInfo(1, "TradingView", 0, 0, 100, 100)]
+
+            def click(self, window, point):
+                self.clicked.append(point["id"])
+
+            def hotkey(self, *args, **kwargs):
+                return None
+
+            def wait(self, seconds):
+                return None
+
+            def double_click(self, window, point):
+                return None
+
+            def read_number(self, window, point):
+                return Decimal("4174.64")
+
+            def click_and_type(self, window, point, value):
+                self.clicked.append(point["id"])
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        automation.draw_tradingview(
+            item,
+            internal_platform="cTrader",
+            entry_price_override=Decimal("4174.64"),
+            draw_internal=True,
+        )
+
+        self.assertIn("long_tool", fake.clicked)
+        self.assertNotIn("short_tool", fake.clicked)
 
     def test_ocr_price_parser_prefers_complete_price(self) -> None:
         values = _extract_decimal_candidates(["0.18", "4180.92", "18"])

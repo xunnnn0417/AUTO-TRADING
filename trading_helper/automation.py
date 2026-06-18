@@ -734,7 +734,8 @@ class PlatformAutomation:
         profile = self.config["platforms"][external_platform]
         points = profile.get("points", {})
 
-        if _is_mt5(external_platform):
+        use_position_modify_flow = _uses_position_modify_flow(external_platform)
+        if use_position_modify_flow:
             required = [
                 "position_sl_input",
                 "position_tp_input",
@@ -749,8 +750,10 @@ class PlatformAutomation:
                 f"{external_platform} missing calibration points: {', '.join(missing)}"
             )
 
-        if _is_mt5(external_platform):
-            self._activate_mt5_trade_tab(profile, "external", points)
+        modify_window = None
+        if use_position_modify_flow:
+            if _is_mt5(external_platform):
+                self._activate_mt5_trade_tab(profile, "external", points)
             lot_window = self._window_for_point(
                 profile, "external", points["position_order_lot"]
             )
@@ -771,7 +774,8 @@ class PlatformAutomation:
                 )
             ):
                 self.log(
-                    "MT5 第一筆場外訂單手數不符合，未開啟修改視窗；"
+                    f"{external_platform} 第一筆場外訂單手數不符合，"
+                    "未開啟修改視窗；"
                     "已計算場外止盈止損價格供手動複製。"
                 )
                 return {
@@ -784,35 +788,38 @@ class PlatformAutomation:
                     else _plain(detected_lot),
                 }
 
-            self.log("MT5 第一筆場外訂單手數符合，正在開啟持倉修改視窗。")
+            self.log(
+                f"{external_platform} 第一筆場外訂單手數符合，"
+                "正在開啟持倉修改視窗。"
+            )
+            row_window = self._window_for_point(
+                profile, "external", points["position_order_row"]
+            )
             self.windows.double_click(
-                self._window_for_point(
-                    profile, "external", points["position_order_row"]
-                ),
+                row_window,
                 points["position_order_row"],
             )
             try:
                 modify_window = self.windows.wait_for_active_window_change(
-                    lot_window,
+                    row_window,
                     timeout=3.0,
                 )
             except AutomationError:
                 self.log(
-                    "MT5 修改視窗沒有自動切到最上層，改用校準尺寸尋找並點擊輸入欄。"
+                    f"{external_platform} 修改視窗沒有自動切到最上層，"
+                    "改用校準尺寸尋找並點擊輸入欄。"
                 )
                 modify_window = self.windows.wait_for_window_matching_point_size(
                     points["position_sl_input"],
                     timeout=3.0,
-                    exclude_handles={lot_window.handle},
+                    exclude_handles={row_window.handle},
                 )
                 self.windows.click(modify_window, points["position_sl_input"])
                 modify_window = self.windows.active_window()
-            self.log(f"已偵測到 MT5 持倉修改視窗：{modify_window.title}")
-            operation_points = dict(points)
-            for point_name in ("position_sl_input", "position_tp_input"):
-                point = dict(points[point_name])
-                point["window_title"] = re.escape(modify_window.title)
-                operation_points[point_name] = point
+            self.log(
+                f"已偵測到 {external_platform} 持倉修改視窗："
+                f"{modify_window.title}"
+            )
             values = (
                 ("position_sl_input", "止損價格", instruction.format_price(sl_price)),
                 ("position_tp_input", "止盈價格", instruction.format_price(tp_price)),
@@ -851,19 +858,28 @@ class PlatformAutomation:
             operation_points = points
 
         for point_name, label, value in values:
-            self._fill_field(
-                profile,
-                "external",
-                operation_points,
-                "場外",
-                external_platform,
-                point_name,
-                label,
-                value,
-            )
-        if _is_mt5(external_platform):
+            if modify_window is not None:
+                self.emergency.guard()
+                self.log(f"正在填入場外 {external_platform} 的{label}：{value}")
+                self.windows.click_and_type(
+                    modify_window,
+                    operation_points[point_name],
+                    value,
+                )
+            else:
+                self._fill_field(
+                    profile,
+                    "external",
+                    operation_points,
+                    "場外",
+                    external_platform,
+                    point_name,
+                    label,
+                    value,
+                )
+        if use_position_modify_flow:
             self.log(
-                f"場外 {external_platform} 止盈止損價格已填入："
+                f"場外 {external_platform} 持倉止盈止損價格已填入："
                 f"止損 {instruction.format_price(sl_price)}，"
                 f"止盈 {instruction.format_price(tp_price)}。"
             )
@@ -1025,3 +1041,7 @@ def _is_ctrader(platform: str) -> bool:
 
 def _is_mt5(platform: str) -> bool:
     return platform in {"MT5", "BYBIT MT5", "原版MT5"}
+
+
+def _uses_position_modify_flow(platform: str) -> bool:
+    return _is_mt5(platform) or _is_ctrader(platform)
