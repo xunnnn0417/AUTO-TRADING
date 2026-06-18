@@ -6,4 +6,4 @@ if not exist ".venv\Scripts\pythonw.exe" (
   pause
   exit /b 1
 )
-start "" ".venv\Scripts\pythonw.exe" main.py
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $s=$ws.CreateShortcut('%TEMP%\\TradingWorkflowHelper.lnk'); $s.TargetPath='%CD%\\.venv\\Scripts\\pythonw.exe'; $s.Arguments='main.py'; $s.WorkingDirectory='%CD%'; $s.IconLocation='%CD%\\assets\\app.ico'; $s.Save(); Start-Process $s.FullName"

@@ -476,41 +476,38 @@ class PlatformAutomation:
             )
 
         if _is_mt5(external_platform):
-            if not self.windows.point_window_exists(
-                profile, "external", points["position_sl_input"]
-            ):
-                expected_lot = instruction.external.lot
-                matched_row = self._find_mt5_position_row(
-                    profile,
-                    points,
-                    expected_lot,
-                    max_rows=30,
+            expected_lot = instruction.external.lot
+            matched_row = self._find_mt5_position_row(
+                profile,
+                points,
+                expected_lot,
+                max_rows=30,
+            )
+            if matched_row is None:
+                raise AutomationError(
+                    "找不到手數符合的 MT5 場外訂單，已停止修改。"
+                    f"試算表要求 {expected_lot}。"
                 )
-                if matched_row is None:
-                    raise AutomationError(
-                        "找不到手數符合的 MT5 場外訂單，已停止修改。"
-                        f"試算表要求 {expected_lot}。"
-                    )
-                position_point = self._offset_position_point(
-                    points["position_order_row"],
-                    points["position_order_lot"],
-                    points["position_order_lot_next"],
-                    matched_row,
-                )
-                self.log(
-                    f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
-                    "正在雙擊開啟修改視窗。"
-                )
-                position_window = self._window_for_point(
-                    profile, "external", position_point
-                )
-                self.windows.double_click(position_window, position_point)
-                self.windows.wait_for_point_window(
-                    profile,
-                    "external",
-                    points["position_sl_input"],
-                    timeout=3.0,
-                )
+            position_point = self._offset_position_point(
+                points["position_order_row"],
+                points["position_order_lot"],
+                points["position_order_lot_next"],
+                matched_row,
+            )
+            self.log(
+                f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
+                "正在雙擊開啟修改視窗。"
+            )
+            position_window = self._window_for_point(
+                profile, "external", position_point
+            )
+            self.windows.double_click(position_window, position_point)
+            self.windows.wait_for_point_window(
+                profile,
+                "external",
+                points["position_sl_input"],
+                timeout=3.0,
+            )
             values = (
                 (
                     "position_sl_input",
