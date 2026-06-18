@@ -999,7 +999,10 @@ class PlatformAutomation:
         role: str,
         points: dict[str, dict[str, Any]],
     ) -> bool:
-        return platform == "GooeyTrade"
+        if platform == "GooeyTrade":
+            return True
+        role_pattern = str(profile.get("window_title", {}).get(role, ""))
+        return "GooeyTrade" in role_pattern
 
 def _plain(value: Decimal) -> str:
     text = format(value, "f")
