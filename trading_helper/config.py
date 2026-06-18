@@ -150,7 +150,11 @@ def _restore_legacy_role_titles(
         source_role = prefer_roles.get(role, role)
         source_title = source_titles.get(source_role)
         target_title = target_titles.get(role)
-        if source_title and (_is_generic_title(target, target_title) or _is_bad_title(target_title)):
+        source_is_specific = not _is_generic_title(source, source_title)
+        target_needs_restore = _is_bad_title(target_title) or (
+            _is_generic_title(target, target_title) and source_is_specific
+        )
+        if source_title and target_needs_restore:
             target_titles[role] = source_title
 
 

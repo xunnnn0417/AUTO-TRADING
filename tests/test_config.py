@@ -181,6 +181,40 @@ class ProfileStoreTests(unittest.TestCase):
             0.2,
         )
 
+    def test_default_gooeytrade_title_does_not_overwrite_ctrader_binding(self):
+        current = {
+            "platforms": {
+                "GooeyTrade": {
+                    "window_title": {
+                        "internal": "GooeyTrade",
+                        "external": "GooeyTrade",
+                    },
+                    "points": {},
+                    "open_panel_before_fill": False,
+                },
+                "cTrader": {
+                    "window_title": {
+                        "internal": "cTrader",
+                        "external": "cTrader",
+                    },
+                    "points": {},
+                    "open_panel_before_fill": False,
+                },
+            }
+        }
+        config_path = Path(self.temp_dir.name) / "config.json"
+        config_path.write_text(
+            __import__("json").dumps(current),
+            encoding="utf-8",
+        )
+
+        loaded = ConfigStore(config_path).data
+
+        self.assertEqual(
+            loaded["platforms"]["cTrader"]["window_title"]["internal"],
+            "cTrader",
+        )
+
     def test_legacy_mt5_configuration_migrates_to_mt5(self):
         legacy = {
             "platforms": {
