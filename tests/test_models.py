@@ -484,6 +484,91 @@ class TradeInstructionTests(unittest.TestCase):
 
         self.assertEqual(fake.patterns, ["Order Window"])
 
+    def test_mt5_fill_uses_bound_role_window_before_stale_point_titles(self) -> None:
+        values = valid_values()
+        values.update(
+            {
+                "direction": "BUY",
+                "external_lot": "0.44",
+                "external_sl_points": "-10",
+                "external_tp_points": "8",
+                "point_size": "0.01",
+                "price_digits": "2",
+            }
+        )
+        item = TradeInstruction.from_mapping(2, values)
+        stale_point = {
+            "x": 0.5,
+            "y": 0.5,
+            "window_title": "Wrong MT5",
+            "window_width": 100,
+            "window_height": 100,
+        }
+        points = {
+            "new_order_button": dict(stale_point, id="new_order"),
+            "lot_input": dict(stale_point, id="lot"),
+            "ask_price": dict(stale_point, id="ask"),
+            "sl_input": dict(stale_point, id="sl"),
+            "tp_input": dict(stale_point, id="tp"),
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "MT5": {
+                        "window_title": {
+                            "internal": "Right MT5",
+                            "external": "Right MT5",
+                        },
+                        "points": points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.clicked = []
+                self.typed = []
+                self.read_from = []
+
+            def find(self, pattern):
+                if pattern == "Right MT5":
+                    return WindowInfo(1, "Right MT5", 0, 0, 100, 100)
+                return WindowInfo(9, pattern, 0, 0, 100, 100)
+
+            def click(self, window, point):
+                self.clicked.append((window.title, point["id"]))
+
+            def wait_for_active_window_change(self, window, timeout):
+                if window.title != "Right MT5":
+                    raise AssertionError(window.title)
+                return WindowInfo(2, "Order opened from Right MT5", 0, 0, 100, 100)
+
+            def wait_for_point_window(self, profile, role, point, timeout):
+                raise AssertionError("stale point window fallback should not be used")
+
+            def read_number(self, window, point):
+                self.read_from.append(window.title)
+                return Decimal("100")
+
+            def click_and_type(self, window, point, value):
+                self.typed.append((window.title, point["id"], value))
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        automation.fill("MT5", "external", item)
+
+        self.assertEqual(fake.clicked, [("Right MT5", "new_order")])
+        self.assertEqual(fake.read_from, ["Order opened from Right MT5"])
+        self.assertTrue(fake.typed)
+        self.assertTrue(
+            all(title == "Order opened from Right MT5" for title, _, _ in fake.typed)
+        )
+
     def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
         self.assertEqual(
             _window_title_pattern("GooeyTrade", "GooeyTrade cTrader 5.7.10"),

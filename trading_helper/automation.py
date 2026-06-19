@@ -71,13 +71,30 @@ class PlatformAutomation:
             )
         pattern = profile["window_title"][role]
         window = self.windows.find(pattern)
+        bound_window = window
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
 
+        mt5_order_window = None
         should_open_panel = _is_mt5(platform) or profile.get(
             "open_panel_before_fill"
         )
-        if should_open_panel and "new_order_button" in points:
+        if _is_mt5(platform) and "new_order_button" in points:
+            self.windows.click(bound_window, points["new_order_button"])
+            try:
+                mt5_order_window = self.windows.wait_for_active_window_change(
+                    bound_window,
+                    timeout=2.5,
+                )
+            except AutomationError:
+                mt5_order_window = self.windows.wait_for_point_window(
+                    profile,
+                    role,
+                    points["lot_input"],
+                    timeout=2.5,
+                )
+            self.log(f"{role_text} {platform} 訂單視窗：{mt5_order_window.title}")
+        elif should_open_panel and "new_order_button" in points:
             panel_is_open = self.windows.point_window_exists(
                 profile, role, points["lot_input"]
             )
@@ -126,12 +143,13 @@ class PlatformAutomation:
                 "lot_input",
                 "手數",
                 _plain(side.lot),
+                forced_window=mt5_order_window,
             )
         current_price = None
         if _is_mt5(platform):
             price_point_name = self._mt5_price_point(role, direction)
             if price_point_name in points:
-                price_window = self._window_for_point(
+                price_window = mt5_order_window or self._window_for_point(
                     profile, role, points[price_point_name]
                 )
                 try:
@@ -178,6 +196,7 @@ class PlatformAutomation:
                 point_name,
                 label,
                 value,
+                forced_window=mt5_order_window if _is_mt5(platform) else None,
             )
         self.log(f"{role_text} {platform} 欄位已填妥，沒有送出訂單。")
 
@@ -191,10 +210,14 @@ class PlatformAutomation:
         point_name: str,
         label: str,
         value: str,
+        *,
+        forced_window=None,
     ) -> None:
         self.emergency.guard()
         self.log(f"正在填入{role_text} {platform} 的{label}：{value}")
-        field_window = self._window_for_point(profile, role, points[point_name])
+        field_window = forced_window or self._window_for_point(
+            profile, role, points[point_name]
+        )
         point = points[point_name]
         calibrated_size = (
             int(point.get("window_width", field_window.width)),
