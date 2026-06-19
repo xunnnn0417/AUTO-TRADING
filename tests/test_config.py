@@ -6,6 +6,7 @@ from trading_helper.config import (
     ConfigStore,
     DEFAULT_CONFIG,
     ProfileStore,
+    _migrate_config,
 )
 
 
@@ -31,6 +32,28 @@ class ProfileStoreTests(unittest.TestCase):
         self.assertEqual(
             store.load_profile()["sheet"]["spreadsheet_url"],
             "https://docs.google.com/example",
+        )
+
+    def test_internal_entry_price_defaults_to_d6(self):
+        self.assertEqual(
+            DEFAULT_CONFIG["sheet"]["columns"]["internal_entry_price"],
+            "D6",
+        )
+
+    def test_legacy_internal_entry_price_header_migrates_to_d6(self):
+        migrated = _migrate_config(
+            {
+                "sheet": {
+                    "columns": {
+                        "internal_entry_price": "Internal Entry Price",
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            migrated["sheet"]["columns"]["internal_entry_price"],
+            "D6",
         )
 
     def test_create_rename_and_delete_profiles(self):

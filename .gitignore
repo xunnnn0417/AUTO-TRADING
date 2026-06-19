@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 build/
 dist/
+build_next/
+dist_next/
 config.json
 *.json
 !config.example.json

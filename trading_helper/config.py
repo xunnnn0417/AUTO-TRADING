@@ -36,7 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "estimated_price": "Estimated Price",
             "point_size": "Point Size",
             "price_digits": "Price Digits",
-            "internal_entry_price": "Internal Entry Price",
+            "internal_entry_price": "D6",
             "final_external_sl_price": "Final External SL price",
             "final_external_tp_price": "Final External TP price",
             "daily_pnl": "Daily PnL",
@@ -209,7 +209,14 @@ def _migrate_legacy_mt5(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _migrate_config(config: dict[str, Any]) -> dict[str, Any]:
-    return _migrate_legacy_mt5(_migrate_legacy_ctrader(config))
+    migrated = _migrate_legacy_mt5(_migrate_legacy_ctrader(config))
+    columns = migrated.setdefault("sheet", {}).setdefault("columns", {})
+    if str(columns.get("internal_entry_price", "")).strip() in {
+        "",
+        "Internal Entry Price",
+    }:
+        columns["internal_entry_price"] = "D6"
+    return migrated
 
 
 class ConfigStore:

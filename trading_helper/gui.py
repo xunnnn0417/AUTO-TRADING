@@ -123,7 +123,7 @@ FIELD_LABELS = {
     "estimated_price": "估算價格",
     "point_size": "每點價格",
     "price_digits": "價格小數位數",
-    "internal_entry_price": "場內成交價",
+    "internal_entry_price": "場內進場點位",
     "final_external_sl_price": "場外最終止損價",
     "final_external_tp_price": "場外最終止盈價",
     "daily_pnl": "每日獲利/虧損",
@@ -164,6 +164,7 @@ class UiSignals(QObject):
     operation_minimized = Signal()
     entry_price_reset = Signal()
     parameter_inputs_reset = Signal(object)
+    parameter_write_busy = Signal(bool)
     external_price_result = Signal(object)
 
 
@@ -203,6 +204,7 @@ class TradingHelperApp(QMainWindow):
         self.signals.entry_price_reset.connect(self.entry_price_input.clear)
         self.signals.entry_price_reset.connect(self.entry_price_value.clear)
         self.signals.parameter_inputs_reset.connect(self._clear_parameter_inputs)
+        self.signals.parameter_write_busy.connect(self._set_parameter_write_busy)
         self.signals.external_price_result.connect(self._show_external_price_result)
         self._build_operation_hint()
         self._dock_top()
@@ -357,23 +359,28 @@ class TradingHelperApp(QMainWindow):
             self.update_trade_direction
         )
         self.parameter_inputs: dict[str, QLineEdit] = {}
+        self.parameter_update_button = QPushButton("更新")
+        self.parameter_update_button.clicked.connect(self.update_all_trade_parameters)
+        self.preview_sl_tp_button = QPushButton("查看場內外止盈止損")
+        self.preview_sl_tp_button.clicked.connect(self.show_internal_external_sl_tp)
         parameter_layout.addWidget(QLabel("場內多空"), 0, 0)
         parameter_layout.addWidget(self.internal_direction_input, 0, 1)
         parameter_fields = [
             ("每日獲利/虧損", "daily_pnl"),
             ("場內餘額", "internal_balance"),
             ("預期止損點/%數", "expected_sl_combined"),
+            ("場內進場點位", "internal_entry_price"),
         ]
-        positions = [(0, 2), (0, 4), (1, 0)]
+        positions = [(0, 2), (0, 4), (1, 0), (1, 2)]
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(24)
-            entry.returnPressed.connect(
-                lambda key=key: self.update_trade_parameter(key)
-            )
+            entry.returnPressed.connect(self.update_all_trade_parameters)
             self.parameter_inputs[key] = entry
             parameter_layout.addWidget(QLabel(label), row, column)
             parameter_layout.addWidget(entry, row, column + 1)
+        parameter_layout.addWidget(self.preview_sl_tp_button, 1, 4)
+        parameter_layout.addWidget(self.parameter_update_button, 1, 5)
         parameter_layout.setColumnStretch(1, 1)
         parameter_layout.setColumnStretch(3, 1)
         parameter_layout.setColumnStretch(5, 1)
@@ -381,6 +388,7 @@ class TradingHelperApp(QMainWindow):
 
         actions = QGroupBox("操作")
         action_layout = QGridLayout(actions)
+        self.parameter_locked_buttons: list[QPushButton] = []
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
@@ -402,6 +410,8 @@ class TradingHelperApp(QMainWindow):
             button = QPushButton(text)
             button.clicked.connect(callback)
             action_layout.addWidget(button, row, column)
+            if text in {"填入場內", "填入場外", "填入兩邊"}:
+                self.parameter_locked_buttons.append(button)
         main.addWidget(actions, 1, 1, 3, 1)
 
         future = QGroupBox("進場後操作")
@@ -409,9 +419,11 @@ class TradingHelperApp(QMainWindow):
         sync_sl_tp_button = QPushButton("同步場外止盈止損")
         sync_sl_tp_button.clicked.connect(self.sync_external_sl_tp)
         future_layout.addWidget(sync_sl_tp_button)
+        self.parameter_locked_buttons.append(sync_sl_tp_button)
         tradingview_button = QPushButton("繪製 TradingView 部位")
         tradingview_button.clicked.connect(self.draw_tradingview)
         future_layout.addWidget(tradingview_button)
+        self.parameter_locked_buttons.append(tradingview_button)
         main.addWidget(future, 4, 1)
 
         log_box = QGroupBox("操作紀錄")
@@ -449,6 +461,12 @@ class TradingHelperApp(QMainWindow):
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, "交易流程輔助工具", message)
+
+    def _set_parameter_write_busy(self, busy: bool) -> None:
+        for button in self.parameter_locked_buttons:
+            button.setEnabled(not busy)
+        self.parameter_update_button.setEnabled(not busy)
+        self.preview_sl_tp_button.setEnabled(not busy)
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = QDialog(self)
@@ -580,6 +598,7 @@ class TradingHelperApp(QMainWindow):
             "daily_pnl": item.daily_pnl,
             "internal_balance": item.internal_balance,
             "expected_sl_combined": self._format_expected_sl_placeholder(item),
+            "internal_entry_price": item.internal_entry_price,
         }
         for key, value in parameter_values.items():
             self.parameter_inputs[key].setPlaceholderText("" if value is None else str(value))
@@ -683,35 +702,53 @@ class TradingHelperApp(QMainWindow):
         value = "多" if self.internal_direction_input.currentData() == "BUY" else "空"
         self._write_trade_parameter_values({"direction": value}, "場內多空")
 
-    def update_trade_parameter(self, key: str) -> None:
-        if key not in self.parameter_inputs:
-            return
-        raw = self.parameter_inputs[key].text().replace(",", "").strip()
-        if key == "expected_sl_combined":
+    def update_trade_parameter(self, key: str | None = None) -> None:
+        self.update_all_trade_parameters()
+
+    def update_all_trade_parameters(self) -> None:
+        values: dict[str, object] = {}
+        labels: list[str] = []
+        current_direction = str(self.internal_direction_input.currentData())
+        if self.instruction is not None and current_direction != self.instruction.sheet_direction:
+            values["direction"] = "多" if current_direction == "BUY" else "空"
+            labels.append("場內多空")
+        for key, entry in self.parameter_inputs.items():
+            raw = entry.text().replace(",", "").strip()
+            if not raw:
+                continue
             try:
-                points, _ = (
-                    self._parse_expected_sl_combined(raw)
-                    if raw
-                    else (None, None)
-                )
+                if key == "expected_sl_combined":
+                    points, _ = self._parse_expected_sl_combined(raw)
+                    values["expected_sl_points"] = "" if points is None else format(points, "f")
+                    labels.append("預期止損點/%數")
+                    continue
+                value = Decimal(raw)
+            except InvalidOperation:
+                label = {
+                    "daily_pnl": "每日獲利/虧損",
+                    "internal_balance": "場內餘額",
+                    "internal_entry_price": "場內進場點位",
+                }.get(key, key)
+                QMessageBox.warning(self, "交易參數", f"{label} 必須是數字。")
+                return
             except AutomationError as exc:
                 QMessageBox.warning(self, "交易參數", str(exc))
                 return
-            values = {"expected_sl_points": "" if points is None else format(points, "f")}
-            self._write_trade_parameter_values(values, "預期止損點/%數")
-            return
-        label = {
-            "daily_pnl": "每日獲利/虧損",
-            "internal_balance": "場內餘額",
-        }.get(key, key)
-        if raw:
-            try:
-                value = Decimal(raw)
-            except InvalidOperation:
-                QMessageBox.warning(self, "交易參數", f"{label} 必須是數字。")
+            if key == "internal_entry_price" and value <= 0:
+                QMessageBox.warning(self, "交易參數", "場內進場點位必須大於 0。")
                 return
-            raw = format(value, "f")
-        self._write_trade_parameter_values({key: raw}, label)
+            values[key] = format(value, "f")
+            labels.append(
+                {
+                    "daily_pnl": "每日獲利/虧損",
+                    "internal_balance": "場內餘額",
+                    "internal_entry_price": "場內進場點位",
+                }.get(key, key)
+            )
+        if not values:
+            self.log("沒有交易參數需要寫回。")
+            return
+        self._write_trade_parameter_values(values, "、".join(labels))
 
     def _write_trade_parameter_values(
         self, values: dict[str, object], label: str
@@ -757,10 +794,18 @@ class TradingHelperApp(QMainWindow):
                 )
                 self._read_sheet_task(retries=3)
                 return
-            self.signals.parameter_inputs_reset.emit(list(values))
             self._read_sheet_task(retries=3)
+            self.signals.parameter_inputs_reset.emit(list(values))
 
-        self._start(f"寫回{label}", task, hide_during=False)
+        self.signals.parameter_write_busy.emit(True)
+
+        def wrapped_task() -> None:
+            try:
+                task()
+            finally:
+                self.signals.parameter_write_busy.emit(False)
+
+        self._start(f"寫回{label}", wrapped_task, hide_during=False)
 
     def _dedupe_same_sheet_targets(
         self, values: dict[str, object]
@@ -792,6 +837,54 @@ class TradingHelperApp(QMainWindow):
         if {"expected_sl_points", "expected_sl_percent"} & set(field_list):
             self.parameter_inputs["expected_sl_combined"].clear()
 
+    def show_internal_external_sl_tp(self) -> None:
+        try:
+            item = self._require_instruction()
+            raw_entry = self.parameter_inputs["internal_entry_price"].text().replace(",", "").strip()
+            if raw_entry:
+                entry_price = Decimal(raw_entry)
+            else:
+                entry_price = item.internal_entry_price
+            if entry_price is None:
+                QMessageBox.warning(
+                    self,
+                    "查看場內外止盈止損",
+                    "請先輸入或讀取場內進場點位。",
+                )
+                return
+            internal_sl, internal_tp = item.estimated_prices(
+                item.internal_direction,
+                item.internal,
+                entry_price,
+            )
+            external_sl, external_tp = item.estimated_prices(
+                item.external_direction,
+                item.external,
+                entry_price,
+            )
+        except (AutomationError, ValidationError, InvalidOperation) as exc:
+            QMessageBox.warning(self, "查看場內外止盈止損", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("場內外止盈止損")
+        layout = QGridLayout(dialog)
+        layout.addWidget(QLabel(""), 0, 0)
+        layout.addWidget(QLabel("場內"), 0, 1)
+        layout.addWidget(QLabel("場外"), 0, 2)
+        rows = [
+            ("止盈", internal_tp, external_tp),
+            ("止損", internal_sl, external_sl),
+        ]
+        for row, (label, internal_value, external_value) in enumerate(rows, start=1):
+            layout.addWidget(QLabel(label), row, 0)
+            layout.addWidget(QLabel(item.format_price(internal_value)), row, 1)
+            layout.addWidget(QLabel(item.format_price(external_value)), row, 2)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons, len(rows) + 1, 0, 1, 3)
+        dialog.exec()
+
     def _write_internal_entry_price(self, value: Decimal) -> None:
         if self.instruction is None:
             return
@@ -820,6 +913,7 @@ class TradingHelperApp(QMainWindow):
             "daily_pnl": "每日獲利/虧損",
             "internal_balance": "場內餘額",
             "expected_sl_combined": "預期止損點/%數",
+            "internal_entry_price": "場內進場點位",
         }
         for key, entry in self.parameter_inputs.items():
             raw = entry.text().replace(",", "").strip()
@@ -833,6 +927,8 @@ class TradingHelperApp(QMainWindow):
                 values[key] = Decimal(raw)
             except InvalidOperation:
                 raise AutomationError(f"{labels[key]} 必須是數字。") from None
+            if key == "internal_entry_price" and values[key] <= 0:
+                raise AutomationError("場內進場點位必須大於 0。")
         expected_points = values.get(
             "expected_sl_points", instruction.expected_sl_points
         )
@@ -841,6 +937,9 @@ class TradingHelperApp(QMainWindow):
             sheet_direction=str(self.internal_direction_input.currentData()),
             daily_pnl=values.get("daily_pnl", instruction.daily_pnl),
             internal_balance=values.get("internal_balance", instruction.internal_balance),
+            internal_entry_price=values.get(
+                "internal_entry_price", instruction.internal_entry_price
+            ),
             expected_sl_points=expected_points,
         )
 
@@ -1003,7 +1102,7 @@ class TradingHelperApp(QMainWindow):
             <ol>
               <li>打開 cTrader、MT5、TradingView，確認商品與帳戶正確。</li>
               <li>按「讀取試算表」。畫面會顯示商品、場內/場外方向、手數、止盈點數、止損點數。</li>
-              <li>如需調整交易參數，可改「場內多空」「每日獲利/虧損」「場內餘額」「預期止損點/%數」。按 Enter 後會寫回試算表並重讀。</li>
+              <li>如需調整交易參數，可改「場內多空」「每日獲利/虧損」「場內餘額」「預期止損點/%數」「場內進場點位」。在任一輸入欄按 Enter 或點「更新」，會一次寫回所有已輸入的欄位；寫回期間進場與同步按鈕會暫時鎖住，成功重讀後才清空輸入欄。</li>
             </ol>
 
             <h2 id="fill">三、填入平台</h2>
