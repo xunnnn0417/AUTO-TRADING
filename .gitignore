@@ -19,6 +19,8 @@ build_daily_history/
 dist_daily_history/
 build_param_layout/
 dist_param_layout/
+build_hedge_helper_name/
+dist_hedge_helper_name/
 config.json
 *.json
 !config.example.json

@@ -373,32 +373,46 @@ class TradingHelperApp(QMainWindow):
         self.daily_pnl_history_button.clicked.connect(self.show_daily_pnl_history)
         self.preview_sl_tp_button = QPushButton("查看場內外止盈止損")
         self.preview_sl_tp_button.clicked.connect(self.show_internal_external_sl_tp)
-        parameter_layout.addWidget(QLabel("場內多空"), 0, 0)
-        parameter_layout.addWidget(self.internal_direction_input, 0, 1)
+        def parameter_cell(label_text: str, widget: QWidget) -> QWidget:
+            cell = QWidget()
+            layout = QHBoxLayout(cell)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+            label = QLabel(label_text)
+            label.setMinimumWidth(92)
+            layout.addWidget(label)
+            layout.addWidget(widget, 1)
+            return cell
+
+        parameter_layout.addWidget(
+            parameter_cell("場內多空", self.internal_direction_input),
+            0,
+            0,
+        )
         parameter_fields = [
             ("每日獲利/虧損", "daily_pnl"),
             ("場內餘額", "internal_balance"),
             ("預期止損點/%數", "expected_sl_combined"),
             ("場內進場點位", "internal_entry_price"),
         ]
-        positions = [(0, 2), (0, 4), (1, 0), (1, 2)]
+        positions = [(0, 1), (0, 2), (1, 0), (1, 1)]
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(24)
             entry.returnPressed.connect(self.update_all_trade_parameters)
             self.parameter_inputs[key] = entry
-            parameter_layout.addWidget(QLabel(label), row, column)
-            parameter_layout.addWidget(entry, row, column + 1)
-        parameter_actions = QHBoxLayout()
+            parameter_layout.addWidget(parameter_cell(label, entry), row, column)
+        parameter_actions = QGridLayout()
         parameter_actions.setContentsMargins(0, 0, 0, 0)
-        parameter_actions.setSpacing(6)
-        parameter_actions.addWidget(self.preview_sl_tp_button)
-        parameter_actions.addWidget(self.daily_pnl_history_button)
-        parameter_actions.addWidget(self.parameter_update_button)
-        parameter_layout.addLayout(parameter_actions, 1, 4, 1, 2)
-        parameter_layout.setColumnStretch(1, 1)
-        parameter_layout.setColumnStretch(3, 1)
-        parameter_layout.setColumnStretch(5, 1)
+        parameter_actions.setHorizontalSpacing(6)
+        parameter_actions.addWidget(self.preview_sl_tp_button, 0, 0)
+        parameter_actions.addWidget(self.daily_pnl_history_button, 0, 1)
+        parameter_actions.addWidget(self.parameter_update_button, 0, 2)
+        for column in range(3):
+            parameter_actions.setColumnStretch(column, 1)
+        parameter_layout.addLayout(parameter_actions, 1, 2)
+        for column in range(3):
+            parameter_layout.setColumnStretch(column, 1)
         main.addWidget(parameter_box, 4, 0)
 
         actions = QGroupBox("操作")
