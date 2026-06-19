@@ -178,7 +178,7 @@ class UiSignals(QObject):
 class TradingHelperApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("交易流程輔助工具 - 第一版")
+        self.setWindowTitle("對沖小幫手")
         if APP_ICON.exists():
             self.setWindowIcon(QIcon(str(APP_ICON)))
         self.resize(1200, 545)
@@ -216,7 +216,7 @@ class TradingHelperApp(QMainWindow):
         self._build_operation_hint()
         self._dock_top()
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
-        self.log("第一版已啟動。目前禁止程式送出訂單。")
+        self.log("對沖小幫手已啟動。目前禁止程式送出訂單。")
         QTimer.singleShot(350, self.read_sheet)
 
     def _build_operation_hint(self) -> None:
@@ -272,7 +272,7 @@ class TradingHelperApp(QMainWindow):
         main.setVerticalSpacing(5)
 
         header = QHBoxLayout()
-        title = QLabel("交易流程輔助工具")
+        title = QLabel("對沖小幫手")
         title.setStyleSheet("font-size: 20px; font-weight: 700;")
         self.always_on_top = QCheckBox("保持最上層")
         self.always_on_top.setChecked(False)
@@ -467,7 +467,7 @@ class TradingHelperApp(QMainWindow):
         return
 
     def _show_error(self, message: str) -> None:
-        QMessageBox.critical(self, "交易流程輔助工具", message)
+        QMessageBox.critical(self, "對沖小幫手", message)
 
     def _set_parameter_write_busy(self, busy: bool) -> None:
         for button in self.parameter_locked_buttons:
@@ -682,6 +682,23 @@ class TradingHelperApp(QMainWindow):
                 self.signals.external_price_result.emit(result)
 
         self._start("同步場外止盈止損", task, restore_after=False)
+
+    def sync_external_sl_tp_with_entry_price(self, entry_price: Decimal) -> None:
+        internal_platform = self.internal_platform.currentText()
+        external_platform = self.external_platform.currentText()
+
+        def task() -> None:
+            item = self._require_instruction()
+            result = self.automation.sync_external_sl_tp(
+                item,
+                internal_platform=internal_platform,
+                external_platform=external_platform,
+                entry_price_override=entry_price,
+            )
+            if result:
+                self.signals.external_price_result.emit(result)
+
+        self._start("同步到場外", task, restore_after=False)
 
     def update_manual_entry_price(self) -> None:
         raw = self.entry_price_input.text().replace(",", "").strip()
@@ -898,9 +915,14 @@ class TradingHelperApp(QMainWindow):
             layout.addWidget(QLabel(label), row, 0)
             layout.addWidget(self._copyable_value_widget(internal_text), row, 1)
             layout.addWidget(self._copyable_value_widget(external_text), row, 2)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons, len(rows) + 1, 0, 1, 3)
+        sync_button = QPushButton("同步到場外")
+        sync_button.clicked.connect(
+            lambda checked=False, value=entry_price: (
+                dialog.accept(),
+                self.sync_external_sl_tp_with_entry_price(value),
+            )
+        )
+        layout.addWidget(sync_button, len(rows) + 1, 2)
         dialog.exec()
 
     def _copyable_value_widget(self, value: str) -> QWidget:
@@ -1115,7 +1137,7 @@ class TradingHelperApp(QMainWindow):
               li { margin-bottom: 4px; }
               code { color: #ffd27a; }
             </style>
-            <h1>交易流程輔助工具 Help</h1>
+            <h1>對沖小幫手 Help</h1>
             <p>這個工具只負責讀取 Google Sheet、填入交易平台欄位與繪製 TradingView 部位；不判斷行情，也不會替你決定是否交易。</p>
 
             <p class="quick">

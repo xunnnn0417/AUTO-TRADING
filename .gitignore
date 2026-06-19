@@ -11,6 +11,8 @@ build_help/
 dist_help/
 build_public/
 dist_public/
+build_preview_sync/
+dist_preview_sync/
 config.json
 *.json
 !config.example.json

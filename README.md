@@ -1,4 +1,4 @@
-# Trading Workflow Helper
+# 對沖小幫手
 
 Windows desktop helper for reading a user-owned Google Sheet and assisting with cTrader, MT5, and TradingView workflows.
 

@@ -53,7 +53,7 @@ def main() -> None:
     if not is_first:
         QMessageBox.warning(
             None,
-            "交易流程輔助工具",
+            "對沖小幫手",
             "工具已經在執行中。請先關閉舊視窗，再重新開啟新版。",
         )
         sys.exit(0)

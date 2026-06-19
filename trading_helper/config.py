@@ -129,7 +129,7 @@ def _is_generic_title(platform: str, title: str | None) -> bool:
 def _is_bad_title(title: str | None) -> bool:
     if not title:
         return True
-    return "交易流程輔助工具" in title
+    return "交易流程輔助工具" in title or "對沖小幫手" in title
 
 
 def _restore_legacy_role_titles(
