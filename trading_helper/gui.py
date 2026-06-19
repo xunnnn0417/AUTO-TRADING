@@ -44,6 +44,7 @@ from .automation import PlatformAutomation
 from .config import ConfigStore, ProfileStore
 from .models import TradeInstruction, ValidationError
 from .sheets import SheetReader
+from .trading_day import trading_day_key
 from .windows import (
     AutomationError,
     EmergencyController,
@@ -195,6 +196,7 @@ class TradingHelperApp(QMainWindow):
         self.reader = SheetReader()
         self.instruction: TradeInstruction | None = None
         self.manual_entry_price: Decimal | None = None
+        self._last_log_trading_day: str | None = None
         self.signals = UiSignals()
         self.signals.log.connect(self._append_log)
         self.signals.status.connect(self._set_status)
@@ -498,7 +500,30 @@ class TradingHelperApp(QMainWindow):
     def _append_log(self, message: str) -> None:
         line = f"[{time.strftime('%H:%M:%S')}] {message}"
         current = self.log_text.toPlainText()
-        self.log_text.setPlainText(f"{line}\n{current}" if current else line)
+        divider = self._trading_day_divider()
+        if divider and current:
+            self.log_text.setPlainText(f"{line}\n{divider}\n{current}")
+        elif divider:
+            self.log_text.setPlainText(f"{divider}\n{line}")
+        else:
+            self.log_text.setPlainText(f"{line}\n{current}" if current else line)
+
+    def _trading_day_divider(self) -> str:
+        settings = self.store.data.get("ui", {}).get("trading_day_separator", {})
+        if not settings or not settings.get("enabled", True):
+            return ""
+        day, season, reset_hour = trading_day_key(
+            datetime.now().astimezone(),
+            summer_reset_hour=int(settings.get("summer_reset_hour", 6)),
+            winter_reset_hour=int(settings.get("winter_reset_hour", 7)),
+        )
+        if self._last_log_trading_day == day:
+            return ""
+        previous = self._last_log_trading_day
+        self._last_log_trading_day = day
+        if previous is None:
+            return ""
+        return f"──── 交易日 {day} 開始（{season}，{reset_hour:02d}:00）────"
 
     def _set_status(self, value: str) -> None:
         return
@@ -1281,6 +1306,7 @@ class TradingHelperApp(QMainWindow):
               <li>「每日獲利/虧損」可直接覆蓋，例如 <code>30</code>；也可輸入 <code>=+30</code> 在原值上加 30，或 <code>=-30</code> 從原值扣 30。</li>
               <li>如果表格檢查格出現提示，程式會跳出確認視窗；確認前會取消剛剛的寫回，避免留下錯誤數值。</li>
               <li>「查看場內外止盈止損」會用目前資料試算結果，旁邊的「複製」可直接複製價格。</li>
+              <li>操作紀錄會依交易日自動插入分隔線；預設夏令 06:00、冬令 07:00 換日。</li>
             </ol>
 
             <h2 id="workflow">日常流程</h2>

@@ -23,6 +23,8 @@ build_hedge_helper_name/
 dist_hedge_helper_name/
 build_equal_param_layout/
 dist_equal_param_layout/
+build_trading_day_separator/
+dist_trading_day_separator/
 config.json
 *.json
 !config.example.json

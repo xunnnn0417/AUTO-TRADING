@@ -77,6 +77,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "external_platform": "MT5",
         "tv_draw_internal": False,
         "daily_pnl_history": [],
+        "trading_day_separator": {
+            "enabled": True,
+            "summer_reset_hour": 6,
+            "winter_reset_hour": 7,
+        },
     },
 }
 
