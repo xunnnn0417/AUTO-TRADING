@@ -16,7 +16,11 @@ from trading_helper.windows import (
     _extract_decimal_candidates,
 )
 from trading_helper.automation import PlatformAutomation, _decimal_close, _plain
-from trading_helper.gui import CALIBRATION_TARGETS, _window_title_pattern
+from trading_helper.gui import (
+    CALIBRATION_TARGETS,
+    _resolve_relative_decimal,
+    _window_title_pattern,
+)
 
 
 class FakeEmergency:
@@ -128,6 +132,11 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(item.original_sl_points, Decimal("-15.39"))
         self.assertEqual(item.expected_sl_points, Decimal("-6.81"))
         self.assertEqual(item.expected_sl_percent, Decimal("-1.2"))
+
+    def test_relative_daily_pnl_input_adds_or_subtracts_from_base(self) -> None:
+        self.assertEqual(_resolve_relative_decimal("=+30", Decimal("100")), Decimal("130"))
+        self.assertEqual(_resolve_relative_decimal("=-30", Decimal("100")), Decimal("70"))
+        self.assertEqual(_resolve_relative_decimal("30", Decimal("100")), Decimal("30"))
 
     def test_negative_stop_points_are_preserved_for_ctrader(self) -> None:
         values = valid_values()

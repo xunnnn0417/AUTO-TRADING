@@ -134,6 +134,13 @@ FIELD_LABELS = {
 }
 
 
+def _resolve_relative_decimal(raw: str, base: Decimal | None) -> Decimal:
+    text = raw.replace(",", "").strip()
+    if text.startswith(("=+", "=-")):
+        return (base or Decimal("0")) + Decimal(text[1:])
+    return Decimal(text)
+
+
 def direction_text(value: str) -> str:
     return {"BUY": "買入", "SELL": "賣出"}.get(value, value)
 
@@ -674,7 +681,7 @@ class TradingHelperApp(QMainWindow):
             if result:
                 self.signals.external_price_result.emit(result)
 
-        self._start("同步場外止盈止損", task)
+        self._start("同步場外止盈止損", task, restore_after=False)
 
     def update_manual_entry_price(self) -> None:
         raw = self.entry_price_input.text().replace(",", "").strip()
@@ -721,6 +728,11 @@ class TradingHelperApp(QMainWindow):
                     points, _ = self._parse_expected_sl_combined(raw)
                     values["expected_sl_points"] = "" if points is None else format(points, "f")
                     labels.append("預期止損點/%數")
+                    continue
+                if key == "daily_pnl":
+                    value = self._resolve_daily_pnl_input(raw)
+                    values[key] = format(value, "f")
+                    labels.append("每日獲利/虧損")
                     continue
                 value = Decimal(raw)
             except InvalidOperation:
@@ -868,22 +880,45 @@ class TradingHelperApp(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("場內外止盈止損")
+        dialog.resize(560, 220)
         layout = QGridLayout(dialog)
+        layout.setHorizontalSpacing(14)
+        layout.setVerticalSpacing(10)
+        layout.setContentsMargins(18, 18, 18, 18)
         layout.addWidget(QLabel(""), 0, 0)
-        layout.addWidget(QLabel("場內"), 0, 1)
-        layout.addWidget(QLabel("場外"), 0, 2)
+        layout.addWidget(QLabel("場內"), 0, 1, alignment=Qt.AlignCenter)
+        layout.addWidget(QLabel("場外"), 0, 2, alignment=Qt.AlignCenter)
         rows = [
             ("止盈", internal_tp, external_tp),
             ("止損", internal_sl, external_sl),
         ]
         for row, (label, internal_value, external_value) in enumerate(rows, start=1):
+            internal_text = item.format_price(internal_value)
+            external_text = item.format_price(external_value)
             layout.addWidget(QLabel(label), row, 0)
-            layout.addWidget(QLabel(item.format_price(internal_value)), row, 1)
-            layout.addWidget(QLabel(item.format_price(external_value)), row, 2)
+            layout.addWidget(self._copyable_value_widget(internal_text), row, 1)
+            layout.addWidget(self._copyable_value_widget(external_text), row, 2)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons, len(rows) + 1, 0, 1, 3)
         dialog.exec()
+
+    def _copyable_value_widget(self, value: str) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        value_input = QLineEdit(value)
+        value_input.setReadOnly(True)
+        value_input.setMinimumWidth(120)
+        copy_button = QPushButton("複製")
+        copy_button.setFixedWidth(58)
+        copy_button.clicked.connect(
+            lambda checked=False, text=value: QApplication.clipboard().setText(text)
+        )
+        layout.addWidget(value_input)
+        layout.addWidget(copy_button)
+        return widget
 
     def _write_internal_entry_price(self, value: Decimal) -> None:
         if self.instruction is None:
@@ -924,7 +959,10 @@ class TradingHelperApp(QMainWindow):
                 values["expected_sl_points"] = points
                 continue
             try:
-                values[key] = Decimal(raw)
+                if key == "daily_pnl":
+                    values[key] = self._resolve_daily_pnl_input(raw)
+                else:
+                    values[key] = Decimal(raw)
             except InvalidOperation:
                 raise AutomationError(f"{labels[key]} 必須是數字。") from None
             if key == "internal_entry_price" and values[key] <= 0:
@@ -962,6 +1000,16 @@ class TradingHelperApp(QMainWindow):
         except InvalidOperation:
             raise AutomationError("預期止損點/%數 必須是數字，例如 -6.81 / -1.2。") from None
         return points, percent
+
+    def _resolve_daily_pnl_input(self, raw: str) -> Decimal:
+        text = raw.replace(",", "").strip()
+        if text.startswith(("=+", "=-")):
+            if self.instruction is None or self.instruction.daily_pnl is None:
+                base = Decimal("0")
+            else:
+                base = self.instruction.daily_pnl
+            return _resolve_relative_decimal(text, base)
+        return _resolve_relative_decimal(text, None)
 
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
@@ -1060,25 +1108,23 @@ class TradingHelperApp(QMainWindow):
             """
             <style>
               body { font-size: 13px; line-height: 1.45; }
-              h2 { margin-top: 18px; }
+              h2 { margin: 16px 0 8px; }
               a { color: #4da3ff; text-decoration: underline; }
               .quick a { margin-right: 12px; white-space: nowrap; }
-              .note { color: #bbbbbb; }
-              li { margin-bottom: 5px; }
+              li { margin-bottom: 4px; }
+              code { color: #ffd27a; }
             </style>
-            <h1>交易流程輔助工具使用流程</h1>
+            <h1>交易流程輔助工具</h1>
             <p class="quick">
-              快速跳轉：
-              <a href="#setup">第一次設定</a>
-              <a href="#daily">日常流程</a>
-              <a href="#fill">填入平台</a>
+              <a href="#setup">設定</a>
+              <a href="#params">交易參數</a>
+              <a href="#fill">填入</a>
               <a href="#after">進場後</a>
               <a href="#tv">TradingView</a>
-              <a href="#safety">急停安全</a>
-              <a href="#faq">常見問題</a>
+              <a href="#safety">安全</a>
             </p>
             <p class="quick">
-              直接開啟：
+              常用：
               <a href="action:settings">試算表設定</a>
               <a href="action:bind_internal">綁定場內視窗</a>
               <a href="action:bind_external">綁定場外視窗</a>
@@ -1088,57 +1134,52 @@ class TradingHelperApp(QMainWindow):
               <a href="action:sheet_url">表格網址</a>
             </p>
 
-            <h2 id="setup">一、第一次設定</h2>
+            <h2 id="setup">設定</h2>
             <ol>
-              <li>先選擇或建立方案。不同表格、不同帳戶或不同視窗配置，建議各自建立一個方案。</li>
-              <li>點 <a href="action:settings">試算表設定</a>，填入 Google 試算表網址、工作表名稱/GID、欄位或儲存格位置。</li>
-              <li>如果需要寫回表格，讀取模式要用 <b>service_account</b>，並確認服務帳戶 JSON 路徑正確，試算表也要分享給服務帳戶信箱。</li>
-              <li>選擇場內平台與場外平台。表格方向代表場內方向；場外方向會自動反向。</li>
-              <li>點 <a href="action:bind_internal">綁定場內視窗</a>、<a href="action:bind_external">綁定場外視窗</a>，把目前要操作的 cTrader 或 MT5 視窗綁到這個方案。</li>
-              <li>依序校準 <a href="action:calibrate_ctrader">cTrader</a>、<a href="action:calibrate_mt5">MT5</a>、<a href="action:calibrate_tv">TradingView</a>。校準時選項目、按「擷取位置」，把滑鼠移到對應欄位或按鈕上等待倒數完成；倒數期間請點一下校準視窗，確認它在最上層，避免其他視窗搶走焦點。</li>
+              <li>每個方案會記住表格網址、欄位、平台選擇、綁定視窗與校準位置。</li>
+              <li>先到 <a href="action:settings">試算表設定</a> 填表格網址、工作表/GID、欄位或儲存格。</li>
+              <li>要寫回表格時，讀取模式用 <b>service_account</b>，並把表格分享給服務帳戶信箱。</li>
+              <li>選場內/場外平台後，按 <a href="action:bind_internal">綁定場內視窗</a>、<a href="action:bind_external">綁定場外視窗</a>。有多個 MT5 時，這一步很重要。</li>
+              <li>校準平台位置。倒數時點一下校準視窗，確保校準視窗在最上層。</li>
             </ol>
 
-            <h2 id="daily">二、日常進場前流程</h2>
+            <h2 id="params">交易參數</h2>
             <ol>
-              <li>打開 cTrader、MT5、TradingView，確認商品與帳戶正確。</li>
-              <li>按「讀取試算表」。畫面會顯示商品、場內/場外方向、手數、止盈點數、止損點數。</li>
-              <li>如需調整交易參數，可改「場內多空」「每日獲利/虧損」「場內餘額」「預期止損點/%數」「場內進場點位」。在任一輸入欄按 Enter 或點「更新」，會一次寫回所有已輸入的欄位；寫回期間進場與同步按鈕會暫時鎖住，成功重讀後才清空輸入欄。</li>
+              <li>「場內多空」會寫回表格方向，場外方向會自動反向。</li>
+              <li>「每日獲利/虧損」「場內餘額」「預期止損點/%數」「場內進場點位」輸入後，按 Enter 或「更新」會一次寫回所有已填欄位。</li>
+              <li>每日獲利/虧損可直接覆蓋，例如 <code>30</code>；也可用 <code>=+30</code> 在原本數字上加 30，或用 <code>=-30</code> 扣 30。</li>
+              <li>寫回時操作按鈕會暫時鎖住；確認表格已更新並重讀成功後，輸入欄才會清空。</li>
+              <li>若表格的 A20 或 E12 出現警告文字，本次寫回會取消並顯示原因。</li>
             </ol>
 
-            <h2 id="fill">三、填入平台</h2>
+            <h2 id="fill">填入</h2>
             <ol>
-              <li>「填入場內」只填場內平台；「填入場外」只填場外平台；「填入兩邊」會依序填兩邊。</li>
-              <li>cTrader 會填手數、止損點數、止盈點數，並依平台版本自動判斷點數是否需要換算。</li>
-              <li>MT5 會先開 New Order 視窗，讀取價格，再把止盈/止損點數換算成價格填入。</li>
-              <li>目前程式不會替你真正點擊下單；填完後請自行確認畫面數值再進場。</li>
+              <li>「填入場內」「填入場外」「填入兩邊」只填欄位，不會送出訂單。</li>
+              <li>cTrader 填手數、止盈/止損點數；GooeyTrade 會依 point size 換算，原版 cTrader 不換算。</li>
+              <li>MT5 會從已綁定的 MT5 主視窗開 New Order，後續只填這次開出的訂單視窗。</li>
+              <li>如果視窗位置或大小變了，請重新校準。</li>
             </ol>
 
-            <h2 id="after">四、進場後流程</h2>
+            <h2 id="after">進場後</h2>
             <ol>
-              <li>按「同步場外止盈止損」會依場內實際進場價重新計算場外正式止盈/止損，並修改場外 MT5 訂單。</li>
-              <li>修改場外訂單前，程式會用校準的手數位置確認是不是目標訂單；手數不合會往下一列找。</li>
+              <li>先確認或輸入場內實際進場價。</li>
+              <li>「查看場內外止盈止損」會用場內進場價計算四個價格，旁邊可直接複製。</li>
+              <li>「同步場外止盈止損」會用場內進場價重新計算場外止盈/止損，再嘗試修改場外訂單。</li>
+              <li>若手數不符合或無法定位訂單，程式會顯示可複製的價格，改由手動處理。</li>
             </ol>
 
-            <h2 id="tv">五、TradingView</h2>
+            <h2 id="tv">TradingView</h2>
             <ol>
-              <li>預設 TradingView 畫的是場外方向；勾選「TV 顯示場內」後改畫場內方向。</li>
-              <li>按「繪製 TradingView 部位」會切到 TradingView，移到最新價格區，建立多頭或空頭部位，並填入進場價、止盈、止損。</li>
-              <li>如果 TradingView 工具或價格軸位置有變，請重新校準 TradingView。</li>
+              <li>預設畫場外方向；勾「TV 顯示場內」則畫場內方向。</li>
+              <li>「繪製 TradingView 部位」會前往最近價格、放置多/空部位，輸入進場、止盈、止損。</li>
+              <li>若沒有點進設定或位置不準，重新校準 TradingView。</li>
             </ol>
 
-            <h2 id="safety">六、急停與安全</h2>
+            <h2 id="safety">安全</h2>
             <ol>
-              <li>任何自動滑鼠鍵盤流程中，按 ESC 會立刻停止後續動作。</li>
-              <li>找不到視窗、資料不完整、方向不是買入/賣出、手數或止盈止損不合法時，程式會停止並顯示錯誤。</li>
-              <li>每次視窗大小、位置、平台版面或縮放比例大幅改變後，建議重新綁定或校準。</li>
-            </ol>
-
-            <h2 id="faq">七、常見問題</h2>
-            <ol>
-              <li>寫回表格後跳錯：通常是欄位對應重複、表格公式尚未更新，或讀取到空值。先確認 <a href="action:settings">試算表設定</a>。</li>
-              <li>顯示位置不準：通常是綁定到錯誤視窗、視窗大小改變，或校準時滑鼠放錯位置。</li>
-              <li>MT5 沒輸入：確認 New Order 視窗有開，校準的是訂單視窗內的欄位，不是主圖表。</li>
-              <li>cTrader 點數不對：確認方案綁定的是正確 cTrader 視窗；不同版本點數規則會自動判斷，但版面不同仍需重校準。</li>
+              <li>任何流程中按 ESC 會停止滑鼠鍵盤操作。</li>
+              <li>找不到視窗、資料不完整、方向/手數/止盈止損不合法時，流程會停止。</li>
+              <li>這個工具只搬資料與點擊，不判斷行情，也不替你確認是否該進場。</li>
             </ol>
             """
         )
