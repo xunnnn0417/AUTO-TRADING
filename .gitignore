@@ -17,6 +17,8 @@ build_bound_sync/
 dist_bound_sync/
 build_daily_history/
 dist_daily_history/
+build_param_layout/
+dist_param_layout/
 config.json
 *.json
 !config.example.json

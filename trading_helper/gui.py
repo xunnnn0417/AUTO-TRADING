@@ -389,18 +389,23 @@ class TradingHelperApp(QMainWindow):
             self.parameter_inputs[key] = entry
             parameter_layout.addWidget(QLabel(label), row, column)
             parameter_layout.addWidget(entry, row, column + 1)
-        parameter_layout.addWidget(self.preview_sl_tp_button, 1, 4)
-        parameter_layout.addWidget(self.daily_pnl_history_button, 1, 5)
-        parameter_layout.addWidget(self.parameter_update_button, 1, 6)
+        parameter_actions = QHBoxLayout()
+        parameter_actions.setContentsMargins(0, 0, 0, 0)
+        parameter_actions.setSpacing(6)
+        parameter_actions.addWidget(self.preview_sl_tp_button)
+        parameter_actions.addWidget(self.daily_pnl_history_button)
+        parameter_actions.addWidget(self.parameter_update_button)
+        parameter_layout.addLayout(parameter_actions, 1, 4, 1, 2)
         parameter_layout.setColumnStretch(1, 1)
         parameter_layout.setColumnStretch(3, 1)
         parameter_layout.setColumnStretch(5, 1)
-        parameter_layout.setColumnStretch(6, 1)
         main.addWidget(parameter_box, 4, 0)
 
         actions = QGroupBox("操作")
         action_layout = QGridLayout(actions)
-        self.parameter_locked_buttons: list[QPushButton] = []
+        self.parameter_locked_buttons: list[QPushButton] = [
+            self.daily_pnl_history_button
+        ]
         definitions: list[tuple[str, Callable[[], None], int, int]] = [
             ("讀取試算表", self.read_sheet, 0, 0),
             ("試算表設定", self.open_settings, 0, 1),
