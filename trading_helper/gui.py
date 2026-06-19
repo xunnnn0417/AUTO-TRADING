@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -369,9 +370,11 @@ class TradingHelperApp(QMainWindow):
         self.parameter_inputs: dict[str, QLineEdit] = {}
         self.parameter_update_button = QPushButton("更新")
         self.parameter_update_button.clicked.connect(self.update_all_trade_parameters)
-        self.daily_pnl_history_button = QPushButton("每日獲利/虧損紀錄")
+        self.daily_pnl_history_button = QPushButton("盈虧紀錄")
+        self.daily_pnl_history_button.setToolTip("每日獲利/虧損紀錄")
         self.daily_pnl_history_button.clicked.connect(self.show_daily_pnl_history)
-        self.preview_sl_tp_button = QPushButton("查看場內外止盈止損")
+        self.preview_sl_tp_button = QPushButton("查看止盈/損")
+        self.preview_sl_tp_button.setToolTip("查看場內外止盈止損")
         self.preview_sl_tp_button.clicked.connect(self.show_internal_external_sl_tp)
         def parameter_cell(label_text: str, widget: QWidget) -> QWidget:
             cell = QWidget()
@@ -390,8 +393,8 @@ class TradingHelperApp(QMainWindow):
             0,
         )
         parameter_fields = [
-            ("每日獲利/虧損", "daily_pnl"),
             ("場內餘額", "internal_balance"),
+            ("每日獲利/虧損", "daily_pnl"),
             ("預期止損點/%數", "expected_sl_combined"),
             ("場內進場點位", "internal_entry_price"),
         ]
@@ -405,6 +408,13 @@ class TradingHelperApp(QMainWindow):
         parameter_actions = QGridLayout()
         parameter_actions.setContentsMargins(0, 0, 0, 0)
         parameter_actions.setHorizontalSpacing(6)
+        for action_button in (
+            self.preview_sl_tp_button,
+            self.daily_pnl_history_button,
+            self.parameter_update_button,
+        ):
+            action_button.setMinimumWidth(0)
+            action_button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         parameter_actions.addWidget(self.preview_sl_tp_button, 0, 0)
         parameter_actions.addWidget(self.daily_pnl_history_button, 0, 1)
         parameter_actions.addWidget(self.parameter_update_button, 0, 2)
@@ -412,6 +422,7 @@ class TradingHelperApp(QMainWindow):
             parameter_actions.setColumnStretch(column, 1)
         parameter_layout.addLayout(parameter_actions, 1, 2)
         for column in range(3):
+            parameter_layout.setColumnMinimumWidth(column, 0)
             parameter_layout.setColumnStretch(column, 1)
         main.addWidget(parameter_box, 4, 0)
 
