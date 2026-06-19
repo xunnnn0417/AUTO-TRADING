@@ -1107,24 +1107,28 @@ class TradingHelperApp(QMainWindow):
         text.setHtml(
             """
             <style>
-              body { font-size: 13px; line-height: 1.45; }
+              body { font-size: 13px; line-height: 1.5; }
               h2 { margin: 16px 0 8px; }
+              h3 { margin: 10px 0 4px; }
               a { color: #4da3ff; text-decoration: underline; }
               .quick a { margin-right: 12px; white-space: nowrap; }
               li { margin-bottom: 4px; }
               code { color: #ffd27a; }
             </style>
-            <h1>交易流程輔助工具</h1>
+            <h1>交易流程輔助工具 Help</h1>
+            <p>這個工具只負責讀取 Google Sheet、填入交易平台欄位與繪製 TradingView 部位；不判斷行情，也不會替你決定是否交易。</p>
+
             <p class="quick">
-              <a href="#setup">設定</a>
+              <a href="#setup">首次設定</a>
+              <a href="#sheet">試算表</a>
+              <a href="#calibration">綁定與校準</a>
               <a href="#params">交易參數</a>
-              <a href="#fill">填入</a>
-              <a href="#after">進場後</a>
-              <a href="#tv">TradingView</a>
-              <a href="#safety">安全</a>
+              <a href="#workflow">日常流程</a>
+              <a href="#share">給其他人使用</a>
+              <a href="#safety">安全注意</a>
             </p>
             <p class="quick">
-              常用：
+              快速前往：
               <a href="action:settings">試算表設定</a>
               <a href="action:bind_internal">綁定場內視窗</a>
               <a href="action:bind_external">綁定場外視窗</a>
@@ -1134,52 +1138,60 @@ class TradingHelperApp(QMainWindow):
               <a href="action:sheet_url">表格網址</a>
             </p>
 
-            <h2 id="setup">設定</h2>
+            <h2 id="setup">首次設定</h2>
             <ol>
-              <li>每個方案會記住表格網址、欄位、平台選擇、綁定視窗與校準位置。</li>
-              <li>先到 <a href="action:settings">試算表設定</a> 填表格網址、工作表/GID、欄位或儲存格。</li>
-              <li>要寫回表格時，讀取模式用 <b>service_account</b>，並把表格分享給服務帳戶信箱。</li>
-              <li>選場內/場外平台後，按 <a href="action:bind_internal">綁定場內視窗</a>、<a href="action:bind_external">綁定場外視窗</a>。有多個 MT5 時，這一步很重要。</li>
-              <li>校準平台位置。倒數時點一下校準視窗，確保校準視窗在最上層。</li>
+              <li>準備一張自己的 Google Sheet，欄位或儲存格要放商品、方向、手數、止盈止損點數等資料。</li>
+              <li>到 Google Cloud 啟用 Google Sheets API，建立 Service Account，下載自己的 JSON 金鑰。</li>
+              <li>把 Google Sheet 分享給 Service Account 的 email；只讀可用 CSV，若要寫回表格請用 <b>service_account</b>。</li>
+              <li>在 <a href="action:settings">試算表設定</a> 填入表格網址、工作表名稱/GID、JSON 路徑與欄位/儲存格位置。</li>
+              <li>選擇場內/場外平台，再綁定各自的視窗並完成校準。</li>
+            </ol>
+
+            <h2 id="sheet">試算表</h2>
+            <ol>
+              <li>程式不附表格範本，也不要求固定格式；你可以用欄位標題、欄號或直接儲存格位置，例如 <code>C4</code>、<code>E8</code>。</li>
+              <li>方向可用中文或英文；場內方向由表格讀取，場外方向會自動反向。</li>
+              <li>手數、止盈、止損由表格提供，程式只搬資料，不重新計算風險。</li>
+              <li>需要寫回表格的功能必須使用 <b>service_account</b> 模式。</li>
+            </ol>
+
+            <h2 id="calibration">綁定與校準</h2>
+            <ol>
+              <li>先按「綁定場內視窗」與「綁定場外視窗」，確認程式抓到正確平台視窗。</li>
+              <li>校準時選擇項目，按「擷取位置」，把滑鼠移到目標欄位或按鈕，倒數結束後會儲存位置。</li>
+              <li>等待校準倒數時，建議點一下校準視窗，確保它在最上層。</li>
+              <li>換螢幕、縮放比例、平台版面或視窗大小後，請重新校準。</li>
             </ol>
 
             <h2 id="params">交易參數</h2>
             <ol>
-              <li>「場內多空」會寫回表格方向，場外方向會自動反向。</li>
-              <li>「每日獲利/虧損」「場內餘額」「預期止損點/%數」「場內進場點位」輸入後，按 Enter 或「更新」會一次寫回所有已填欄位。</li>
-              <li>每日獲利/虧損可直接覆蓋，例如 <code>30</code>；也可用 <code>=+30</code> 在原本數字上加 30，或用 <code>=-30</code> 扣 30。</li>
-              <li>寫回時操作按鈕會暫時鎖住；確認表格已更新並重讀成功後，輸入欄才會清空。</li>
-              <li>若表格的 A20 或 E12 出現警告文字，本次寫回會取消並顯示原因。</li>
+              <li>下方交易參數可手動改表格值，輸入後按 Enter 或「更新」。</li>
+              <li>「每日獲利/虧損」可直接覆蓋，例如 <code>30</code>；也可輸入 <code>=+30</code> 在原值上加 30，或 <code>=-30</code> 從原值扣 30。</li>
+              <li>如果表格檢查格出現提示，程式會跳出確認視窗；確認前會取消剛剛的寫回，避免留下錯誤數值。</li>
+              <li>「查看場內外止盈止損」會用目前資料試算結果，旁邊的「複製」可直接複製價格。</li>
             </ol>
 
-            <h2 id="fill">填入</h2>
+            <h2 id="workflow">日常流程</h2>
             <ol>
-              <li>「填入場內」「填入場外」「填入兩邊」只填欄位，不會送出訂單。</li>
-              <li>cTrader 填手數、止盈/止損點數；GooeyTrade 會依 point size 換算，原版 cTrader 不換算。</li>
-              <li>MT5 會從已綁定的 MT5 主視窗開 New Order，後續只填這次開出的訂單視窗。</li>
-              <li>如果視窗位置或大小變了，請重新校準。</li>
+              <li>按「讀取試算表」，確認商品、方向、手數、止盈止損都正確。</li>
+              <li>按「填入場內」、「填入場外」或「填入兩邊」。目前版本只填欄位，不點進場。</li>
+              <li>自己確認並手動進場後，可輸入場內實際進場價，再同步場外止盈止損或繪製 TradingView 部位。</li>
+              <li>TradingView 預設畫場外方向；勾選「TV 顯示場內」時改畫場內方向。</li>
             </ol>
 
-            <h2 id="after">進場後</h2>
+            <h2 id="share">給其他人使用</h2>
             <ol>
-              <li>先確認或輸入場內實際進場價。</li>
-              <li>「查看場內外止盈止損」會用場內進場價計算四個價格，旁邊可直接複製。</li>
-              <li>「同步場外止盈止損」會用場內進場價重新計算場外止盈/止損，再嘗試修改場外訂單。</li>
-              <li>若手數不符合或無法定位訂單，程式會顯示可複製的價格，改由手動處理。</li>
+              <li>GitHub 只放程式碼、README、範例設定與打包好的 Release；不要放你的表格網址、JSON 金鑰、方案設定或校準資料。</li>
+              <li>其他人下載後，需要建立自己的 Google Cloud 專案、Service Account 和 Google Sheet 權限。</li>
+              <li>每台電腦都要自行綁定視窗與校準位置，因為平台視窗、解析度和版面都不同。</li>
+              <li>如果要給不會 Python 的人使用，請從 GitHub Releases 下載打包好的 exe。</li>
             </ol>
 
-            <h2 id="tv">TradingView</h2>
+            <h2 id="safety">安全注意</h2>
             <ol>
-              <li>預設畫場外方向；勾「TV 顯示場內」則畫場內方向。</li>
-              <li>「繪製 TradingView 部位」會前往最近價格、放置多/空部位，輸入進場、止盈、止損。</li>
-              <li>若沒有點進設定或位置不準，重新校準 TradingView。</li>
-            </ol>
-
-            <h2 id="safety">安全</h2>
-            <ol>
-              <li>任何流程中按 ESC 會停止滑鼠鍵盤操作。</li>
-              <li>找不到視窗、資料不完整、方向/手數/止盈止損不合法時，流程會停止。</li>
-              <li>這個工具只搬資料與點擊，不判斷行情，也不替你確認是否該進場。</li>
+              <li>任何流程中按 ESC 會停止後續滑鼠鍵盤操作。</li>
+              <li>找不到視窗、讀不到表格、方向或數值不合法時，程式會停止，不會亂點。</li>
+              <li>實際進場前仍要人工確認平台、方向、手數、止盈止損與帳戶是否正確。</li>
             </ol>
             """
         )

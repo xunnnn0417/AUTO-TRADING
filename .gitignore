@@ -5,6 +5,8 @@ build/
 dist/
 build_next/
 dist_next/
+build_working/
+dist_working/
 config.json
 *.json
 !config.example.json

@@ -1,133 +1,114 @@
-# Trading Workflow Helper MVP
+# Trading Workflow Helper
 
-Windows always-on-top helper for reading a Google Sheet and filling cTrader or
-MT5 order panels. This version never clicks Buy or Sell.
+Windows desktop helper for reading a user-owned Google Sheet and assisting with cTrader, MT5, and TradingView workflows.
 
-後續開發範圍只保留 TradingView 場外部位繪製；自動下單、成交價
-寫回與 MT5 成交後二次修正止盈止損不再開發。
+This tool does not decide market direction, calculate risk, or click live entry buttons. It only moves data from your sheet into calibrated UI fields and helps draw or update related position information.
 
-TradingView 流程會用 Alt + Shift + → 前往最新價格、依場外方向選擇 Long／Short Position、
-放置並雙擊部位，接著以場內持倉的實際進場價填入進場、止損與止盈價格。
-cTrader 會停留在已校準的持倉位置辨識浮動價格；MT5 直接辨識持倉成交價。
-TradingView 會先辨識部位設定中的原始進場價。多頭止盈高於原始進場價，
-或空頭止盈低於原始進場價時，依序填入止盈、進場、止損；否則依序填入
-止損、進場、止盈，最後點擊確認按鈕。
-前往最新價格後會先點擊已校準的自動適應價格按鈕，完成部位設定後再點
-一次關閉自動適應模式。
-「同步場外止盈止損」會在手動進場後讀取場內實際成交價，重新計算並
-填入場外 SL／TP；程式不會按下最後確認按鈕。
-MT5 的新訂單 SL／TP 與持倉修改 SL／TP 使用不同校準位置。
-場外 MT5 同步止盈止損時，會雙擊獨立校準的「已進場訂單列」開啟
-持倉修改視窗。雙擊前會先 OCR 辨識該列手數；若第一筆不符，會依
-校準的下一筆列距逐列往下搜尋，找到與試算表場外手數相同的訂單才
-會雙擊，最多檢查 30 筆。場外流程不讀成交價位置。
-同一平台的校準位置會同步到所有方案，不論該方案將平台設為場內或
-場外；各方案的試算表連結、欄位與其他設定維持獨立。
-`GooeyTrade` 與 `cTrader` 使用相同面板座標，校準任一方時會同步
-更新另一方及所有方案，但兩者仍使用各自的視窗標題規則。
-主畫面只保留一個「校準 cTrader」入口。
-`GooeyTrade` 的止盈止損會依表格的每點價格換算；真正的 `cTrader`
-直接使用表格點數，例如 `-7.11` 就輸入 `-7.11`，不再除以 `0.01`。
-也可在主畫面輸入場內實際進場價並按「更新」；手動值會優先於 OCR。
-在場內實際進場價欄位按 Enter 或點擊「更新」後，會立即使用該價格
-繪製 TradingView 部位。
-讀取試算表時工具保持顯示；三個填入操作完成後工具保持縮小。
-程式啟動後會自動讀取一次試算表。
+## What Is Included
 
-## 功能
+- Python / PySide6 desktop app
+- Google Sheet reader
+- Optional Google Sheet write-back through a service account
+- cTrader and MT5 window binding
+- cTrader, MT5, and TradingView calibration
+- Fill Internal, Fill External, and Fill Both helpers
+- TradingView position helper
+- ESC emergency stop
 
-- 中文 Windows 桌面介面
-- 平台選單分為 `GooeyTrade`、`cTrader`、`BYBIT MT5`、`原版MT5`；
-  GooeyTrade 視窗辨識
-  不包含版本號，更新軟體後仍以 `GooeyTrade` 關鍵字尋找
-- 原本的 `MT5` 會自動遷移成 `BYBIT MT5`，並新增 `原版MT5`；兩個
-  MT5 使用相同面板座標，但依選單平台切換到不同視窗
-- 完整方案管理：選擇、建立、重新命名與刪除方案
-- 每個方案獨立保存試算表連結、GID、欄位、平台選擇、視窗規則及校準座標
-- 從 Google 試算表讀取指定儲存格
-- cTrader 填入前會先選擇買入或賣出方向，但不會點擊 Place order
-- 自動反轉場內／場外方向
-- cTrader 倉位、止損點數、止盈點數填入
-- cTrader 止損／止盈勾選框狀態偵測與自動啟用
-- MT5 新訂單視窗、Bid／Ask OCR、交易量與止盈止損價格填入
-- MT5 訂單視窗就緒偵測，視窗出現後立即填入
-- MT5 視窗出現後先填手數，Ask OCR 在背景預載並於首次成功辨識後停止
-- 所有 MT5 第一次止盈止損一律以 Ask 作為預估進場價，再直接加減表格提供的價格距離
-- 主控制視窗預設置頂並停靠在螢幕正上方
-- 自動操作期間隱藏主視窗，只保留上方 ESC 暫停提示，結束後恢復
-- 每個平台獨立校準，支援視窗相對座標
-- `ESC` 緊急停止
-- 第一版不會點擊買入或賣出按鈕
+## What Is Not Included
 
-個人的 `config.json` 包含試算表網址、視窗名稱與校準座標，已由
-`.gitignore` 排除。分享專案時請使用 `config.example.json` 作為範例。
+- No private Google Sheet URL
+- No Google API key or service-account JSON
+- No personal profile, calibration, or account configuration
+- No spreadsheet template
+- No trading strategy or market judgment
 
-## Safety boundary
+Each user must create their own Google Sheet, Google Cloud credentials, platform bindings, and calibration data.
 
-- `Execute Entry` is a dry-run confirmation.
-- `Run Full Flow` stops before entry.
-- `Simultaneous Entry` is displayed and saved, but does not submit orders.
-- Press `ESC` at any time to set the app to `STOPPED`.
-- Every mouse or keyboard action checks the emergency-stop flag.
+## Download And Run
 
-## Install
+For non-technical users, use the packaged Windows exe from GitHub Releases if one is provided.
 
-1. Install Python 3.11 or newer from python.org and enable `Add Python to PATH`.
-2. Run `install.bat`.
-3. Run `run.bat`.
+For Python users:
 
-## Google Sheet
+1. Install Python 3.11 or newer.
+2. Clone or download this repository.
+3. Run `install.bat`.
+4. Run `run.bat`.
 
-Open `Sheet Settings` and choose one mode:
+## Google Sheet Setup
 
-- `csv`: paste the Google Sheet URL, enter its `gid`, and share the sheet for
-  link access.
-- `service_account`: install requirements, provide the service-account JSON
-  path, and share the sheet with the service-account email.
+1. Create your own Google Sheet.
+2. Put the values the app needs somewhere in the sheet, such as symbol, direction, lot size, SL/TP points, estimated price, point size, and price digits.
+3. Open the app and click `試算表設定`.
+4. Paste your spreadsheet URL.
+5. Set the worksheet name or GID.
+6. In the field mapping page, enter either column names, column letters, or direct cell references such as `C4`, `E8`, and `H6`.
 
-Column mappings accept an exact header, an Excel column letter, or a 1-based
-column number. The app selects the first row whose Status matches
-`Status value to select`. Clear that setting to use the configured row number.
+The app does not require a fixed spreadsheet format. If your layout changes, update the mappings.
 
-Set `Data layout` to `cells` to read values from independent cells on an
-existing worksheet. In Column Mapping, enter cell references such as `B5`,
-`D8`, and `F12`. Status filtering and the fallback row are ignored in this
-mode.
+## Google API Setup
 
-MT5 needs `Estimated Price`, `Point Size`, and `Price Digits` so the app can
-convert the sheet-provided SL/TP points into estimated prices. It does not
-recalculate lot size or risk.
+CSV mode can read a publicly accessible sheet, but write-back features require `service_account` mode.
 
-## Calibration
+To use `service_account` mode:
 
-1. Open the relevant order panel.
-2. Click `Calibrate cTrader` or `Calibrate MT5`.
-3. Select a target and click `Capture`.
-4. Move the mouse over that exact control in the platform window.
-5. Keep it there until the 3-second countdown finishes.
+1. Open Google Cloud Console.
+2. Enable Google Sheets API.
+3. Create a Service Account.
+4. Download the JSON key file.
+5. Share your Google Sheet with the Service Account email.
+6. In the app, set read mode to `service_account`.
+7. Select the JSON file path in `試算表設定`.
 
-Coordinates are stored as a ratio of the target window size, not as fixed
-screen coordinates. Configuration is saved at:
+Do not commit the JSON key file to GitHub.
+
+## Platform Setup
+
+1. Open your cTrader / MT5 / TradingView windows.
+2. In the app, choose Internal Platform and External Platform.
+3. Click `綁定場內視窗` and `綁定場外視窗`.
+4. Confirm that the app selected the correct windows.
+5. Use `校準 cTrader`, `校準 MT5`, and `校準 TradingView` to capture required input fields and buttons.
+
+Calibration is saved per user on the local machine. If monitor scaling, platform layout, or window size changes, recalibrate.
+
+During calibration, click the calibration window once while waiting for the countdown to make sure it stays on top.
+
+## Daily Use
+
+1. Click `讀取試算表`.
+2. Confirm symbol, direction, lot size, and SL/TP values.
+3. Click `填入場內`, `填入場外`, or `填入兩邊`.
+4. Confirm the platform fields manually before entry.
+5. After manual entry, use the entry-price and SL/TP helper actions when needed.
+6. Press `ESC` at any time to stop pending mouse and keyboard actions.
+
+## Manual Trade Parameters
+
+The lower trade-parameter fields can write values back to the sheet.
+
+For `每日獲利/虧損`:
+
+- `30` overwrites the current value with `30`.
+- `=+30` adds `30` to the current sheet value.
+- `=-30` subtracts `30` from the current sheet value.
+
+If the sheet returns a warning/check message after an update, the app shows it and restores the previous values.
+
+## Sharing Safely
+
+When publishing this project:
+
+- Commit source code and public documentation only.
+- Use `config.example.json` for non-private examples.
+- Put packaged builds in GitHub Releases, not personal configuration.
+- Never upload service-account JSON files, real sheet URLs, API keys, profiles, or calibration data.
+
+## Local Config
+
+Runtime configuration is stored locally, normally at:
 
 `%APPDATA%\TradingWorkflowHelper\config.json`
 
-If AppData is not writable, the app falls back to `config.json` beside
-`main.py`.
-
-If Internal and External use two instances of the same platform, set distinct
-window-title regex patterns in `Sheet Settings > Window Titles`.
-
-If an order panel is normally closed, calibrate `New Order button` and enable
-`Click calibrated New Order target before filling` in Window Titles. Leave it
-off when the panel is already open.
-
-## MVP workflow
-
-1. `Read Sheet`
-2. Verify the displayed directions and values.
-3. `Fill Internal`, `Fill External`, or `Fill Both`
-4. Verify both order panels manually.
-5. `Execute Entry` only displays a dry-run summary.
-
-The entry-price reader, Google Sheet write-back, final MT5 SL/TP sync,
-TradingView position drawing, and real simultaneous entry are reserved for V2.
+This file may contain private sheet URLs, local file paths, profile names, window bindings, and calibration data. It should not be shared.
