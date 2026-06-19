@@ -578,6 +578,101 @@ class TradeInstructionTests(unittest.TestCase):
             all(title == "Order opened from Right MT5" for title, _, _ in fake.typed)
         )
 
+    def test_mt5_sync_external_uses_bound_external_window(self) -> None:
+        values = valid_values()
+        values.update(
+            {
+                "direction": "BUY",
+                "external_lot": "0.44",
+                "external_sl_points": "-10",
+                "external_tp_points": "8",
+                "point_size": "0.01",
+                "price_digits": "2",
+            }
+        )
+        item = TradeInstruction.from_mapping(2, values)
+        stale_point = {
+            "x": 0.5,
+            "y": 0.5,
+            "window_title": "Wrong MT5",
+            "window_width": 100,
+            "window_height": 100,
+        }
+        points = {
+            "trade_tab": dict(stale_point, id="trade_tab"),
+            "position_order_lot": dict(stale_point, id="lot"),
+            "position_order_row": dict(stale_point, id="row"),
+            "position_sl_input": dict(stale_point, id="sl"),
+            "position_tp_input": dict(stale_point, id="tp"),
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "MT5": {
+                        "window_title": {
+                            "internal": "Internal MT5",
+                            "external": "Right MT5",
+                        },
+                        "points": points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            def __init__(self):
+                self.clicked = []
+                self.double_clicked = []
+                self.typed = []
+                self.read_from = []
+
+            def find(self, pattern):
+                if pattern != "Right MT5":
+                    raise AssertionError(pattern)
+                return WindowInfo(1, "Right MT5", 0, 0, 100, 100)
+
+            def click(self, window, point):
+                self.clicked.append((window.title, point["id"]))
+
+            def wait(self, seconds):
+                return None
+
+            def read_number_near(self, window, point, expected):
+                self.read_from.append(window.title)
+                return Decimal("0.44")
+
+            def double_click(self, window, point):
+                self.double_clicked.append((window.title, point["id"]))
+
+            def wait_for_active_window_change(self, window, timeout):
+                if window.title != "Right MT5":
+                    raise AssertionError(window.title)
+                return WindowInfo(2, "Modify from Right MT5", 0, 0, 100, 100)
+
+            def click_and_type(self, window, point, value):
+                self.typed.append((window.title, point["id"], value))
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        automation.sync_external_sl_tp(
+            item,
+            internal_platform="MT5",
+            external_platform="MT5",
+            entry_price_override=Decimal("100"),
+        )
+
+        self.assertEqual(fake.clicked, [("Right MT5", "trade_tab")])
+        self.assertEqual(fake.read_from, ["Right MT5"])
+        self.assertEqual(fake.double_clicked, [("Right MT5", "row")])
+        self.assertTrue(fake.typed)
+        self.assertTrue(
+            all(title == "Modify from Right MT5" for title, _, _ in fake.typed)
+        )
+
     def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
         self.assertEqual(
             _window_title_pattern("GooeyTrade", "GooeyTrade cTrader 5.7.10"),
@@ -701,6 +796,9 @@ class TradeInstructionTests(unittest.TestCase):
             def __init__(self):
                 self.typed = []
                 self.double_clicked = False
+
+            def find(self, pattern):
+                return WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
 
             def find_all(self, pattern):
                 return [WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)]

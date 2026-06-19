@@ -774,12 +774,17 @@ class PlatformAutomation:
             )
 
         modify_window = None
+        bound_window = None
         if use_position_modify_flow:
+            bound_window = self.windows.find(profile["window_title"]["external"])
+            self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")
             if _is_mt5(external_platform):
-                self._activate_mt5_trade_tab(profile, "external", points)
-            lot_window = self._window_for_point(
-                profile, "external", points["position_order_lot"]
-            )
+                trade_tab = points.get("trade_tab")
+                if trade_tab is not None:
+                    self.log("正在切到 MT5 交易欄位。")
+                    self.windows.click(bound_window, trade_tab)
+                    self.windows.wait(0.2)
+            lot_window = bound_window
             operation_points = points
             try:
                 detected_lot = self.windows.read_number_near(
@@ -815,9 +820,7 @@ class PlatformAutomation:
                 f"{external_platform} 第一筆場外訂單手數符合，"
                 "正在開啟持倉修改視窗。"
             )
-            row_window = self._window_for_point(
-                profile, "external", points["position_order_row"]
-            )
+            row_window = bound_window
             self.windows.double_click(
                 row_window,
                 points["position_order_row"],

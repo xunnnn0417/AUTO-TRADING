@@ -13,6 +13,8 @@ build_public/
 dist_public/
 build_preview_sync/
 dist_preview_sync/
+build_bound_sync/
+dist_bound_sync/
 config.json
 *.json
 !config.example.json
