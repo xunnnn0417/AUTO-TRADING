@@ -7,6 +7,7 @@ import threading
 import time
 import webbrowser
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
@@ -368,6 +369,8 @@ class TradingHelperApp(QMainWindow):
         self.parameter_inputs: dict[str, QLineEdit] = {}
         self.parameter_update_button = QPushButton("更新")
         self.parameter_update_button.clicked.connect(self.update_all_trade_parameters)
+        self.daily_pnl_history_button = QPushButton("每日獲利/虧損紀錄")
+        self.daily_pnl_history_button.clicked.connect(self.show_daily_pnl_history)
         self.preview_sl_tp_button = QPushButton("查看場內外止盈止損")
         self.preview_sl_tp_button.clicked.connect(self.show_internal_external_sl_tp)
         parameter_layout.addWidget(QLabel("場內多空"), 0, 0)
@@ -387,10 +390,12 @@ class TradingHelperApp(QMainWindow):
             parameter_layout.addWidget(QLabel(label), row, column)
             parameter_layout.addWidget(entry, row, column + 1)
         parameter_layout.addWidget(self.preview_sl_tp_button, 1, 4)
-        parameter_layout.addWidget(self.parameter_update_button, 1, 5)
+        parameter_layout.addWidget(self.daily_pnl_history_button, 1, 5)
+        parameter_layout.addWidget(self.parameter_update_button, 1, 6)
         parameter_layout.setColumnStretch(1, 1)
         parameter_layout.setColumnStretch(3, 1)
         parameter_layout.setColumnStretch(5, 1)
+        parameter_layout.setColumnStretch(6, 1)
         main.addWidget(parameter_box, 4, 0)
 
         actions = QGroupBox("操作")
@@ -792,6 +797,7 @@ class TradingHelperApp(QMainWindow):
                 source_row=source_row,
             )
             targets: list[str] = []
+            field_targets: dict[str, str] = {}
             for field, value in values.items():
                 target = self.reader.write_value(
                     self.store.data["sheet"],
@@ -800,6 +806,7 @@ class TradingHelperApp(QMainWindow):
                     source_row=source_row,
                 )
                 targets.append(target)
+                field_targets[field] = target
             self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
             warning_values = self.reader.read_a1_values(
                 self.store.data["sheet"],
@@ -823,6 +830,10 @@ class TradingHelperApp(QMainWindow):
                 )
                 self._read_sheet_task(retries=3)
                 return
+            if "daily_pnl" in values:
+                target = field_targets.get("daily_pnl", "")
+                old_value = previous_values.get(target, "")
+                self._record_daily_pnl_history(old_value, values["daily_pnl"])
             self._read_sheet_task(retries=3)
             self.signals.parameter_inputs_reset.emit(list(values))
 
@@ -855,6 +866,53 @@ class TradingHelperApp(QMainWindow):
             seen[key] = field
             result[field] = value
         return result
+
+    def _record_daily_pnl_history(self, old_value: object, new_value: object) -> None:
+        history = self.store.data.setdefault("ui", {}).setdefault(
+            "daily_pnl_history", []
+        )
+        if not isinstance(history, list):
+            history = []
+            self.store.data["ui"]["daily_pnl_history"] = history
+        record = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "old": str(old_value),
+            "new": str(new_value),
+        }
+        history.insert(0, record)
+        del history[80:]
+        self.store.save()
+        self.profiles.save_profile(self.profiles.active_name, self.store.data)
+        self.log(
+            f"已記錄每日獲利/虧損：{record['old'] or '空白'} -> {record['new']}"
+        )
+
+    def show_daily_pnl_history(self) -> None:
+        history = self.store.data.get("ui", {}).get("daily_pnl_history", [])
+        dialog = QDialog(self)
+        dialog.setWindowTitle("每日獲利/虧損紀錄")
+        dialog.resize(520, 360)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setStyleSheet("font-family: Consolas; font-size: 12px;")
+        if isinstance(history, list) and history:
+            lines = []
+            for item in history:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"{item.get('time', '')}    "
+                    f"{item.get('old', '') or '空白'} -> {item.get('new', '')}"
+                )
+            text.setPlainText("\n".join(lines))
+        else:
+            text.setPlainText("目前沒有紀錄。")
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _clear_parameter_inputs(self, fields: object) -> None:
         field_list = fields if isinstance(fields, list) else []

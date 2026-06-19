@@ -76,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "internal_platform": "cTrader",
         "external_platform": "MT5",
         "tv_draw_internal": False,
+        "daily_pnl_history": [],
     },
 }
 
