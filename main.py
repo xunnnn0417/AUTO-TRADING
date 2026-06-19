@@ -4,7 +4,7 @@ from pathlib import Path
 
 MUTEX_NAME = "Local\\TradingWorkflowHelperMVP"
 ERROR_ALREADY_EXISTS = 183
-APP_ID = "Xun.TradingWorkflowHelper"
+APP_ID = "Xun.HedgeAssistant"
 APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_ICON = APP_BASE / "assets" / "app.ico"
 

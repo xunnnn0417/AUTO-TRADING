@@ -413,8 +413,8 @@ class TradingHelperApp(QMainWindow):
             self.daily_pnl_history_button,
             self.parameter_update_button,
         ):
-            action_button.setMinimumWidth(0)
-            action_button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            action_button.setMinimumWidth(82)
+            action_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         parameter_actions.addWidget(self.preview_sl_tp_button, 0, 0)
         parameter_actions.addWidget(self.daily_pnl_history_button, 0, 1)
         parameter_actions.addWidget(self.parameter_update_button, 0, 2)
@@ -423,7 +423,9 @@ class TradingHelperApp(QMainWindow):
         parameter_layout.addLayout(parameter_actions, 1, 2)
         for column in range(3):
             parameter_layout.setColumnMinimumWidth(column, 0)
-            parameter_layout.setColumnStretch(column, 1)
+        parameter_layout.setColumnStretch(0, 10)
+        parameter_layout.setColumnStretch(1, 9)
+        parameter_layout.setColumnStretch(2, 11)
         main.addWidget(parameter_box, 4, 0)
 
         actions = QGroupBox("操作")
