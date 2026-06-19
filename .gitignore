@@ -9,6 +9,8 @@ build_working/
 dist_working/
 build_help/
 dist_help/
+build_public/
+dist_public/
 config.json
 *.json
 !config.example.json
