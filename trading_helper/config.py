@@ -11,41 +11,41 @@ APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "TradingWorkflowHelper"
 CONFIG_PATH = APP_DIR / "config.json"
 PROFILES_PATH = APP_DIR / "profiles.json"
 FALLBACK_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
-DEFAULT_PROFILE_NAME = "預設方案"
+DEFAULT_PROFILE_NAME = "\u9810\u8a2d\u65b9\u6848"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "sheet": {
         "mode": "csv",
-        "data_layout": "row",
+        "data_layout": "cells",
         "spreadsheet_url": "",
         "worksheet": "Sheet1",
         "gid": "0",
         "service_account_file": "",
         "row_number": 2,
-        "status_value": "READY",
+        "status_value": "",
         "columns": {
-            "status": "Status",
-            "symbol": "Symbol",
-            "direction": "Direction",
-            "internal_lot": "Internal Lot",
-            "internal_sl_points": "Internal SL points",
-            "internal_tp_points": "Internal TP points",
-            "external_lot": "External Lot",
-            "external_sl_points": "External SL points",
-            "external_tp_points": "External TP points",
-            "estimated_price": "Estimated Price",
-            "point_size": "Point Size",
-            "price_digits": "Price Digits",
+            "status": "",
+            "symbol": "GOLD",
+            "direction": "C4",
+            "internal_lot": "E8",
+            "internal_sl_points": "E6",
+            "internal_tp_points": "F6",
+            "external_lot": "G8",
+            "external_sl_points": "G6",
+            "external_tp_points": "H6",
+            "estimated_price": "",
+            "point_size": "0.01",
+            "price_digits": "2",
             "internal_entry_price": "D6",
-            "final_external_sl_price": "Final External SL price",
-            "final_external_tp_price": "Final External TP price",
-            "daily_pnl": "Daily PnL",
-            "internal_balance": "Internal Balance",
+            "final_external_sl_price": "",
+            "final_external_tp_price": "",
+            "daily_pnl": "A6",
+            "internal_balance": "C6",
             "original_sl_points": "E4",
-            "expected_sl_points": "Expected SL points",
-            "expected_sl_percent": "Expected SL %",
+            "expected_sl_points": "E6",
+            "expected_sl_percent": "E6",
         },
-        "defaults": {"point_size": "0.0001", "price_digits": "5"},
+        "defaults": {"point_size": "0.01", "price_digits": "2"},
     },
     "platforms": {
         "GooeyTrade": {

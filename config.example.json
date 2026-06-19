@@ -21,9 +21,14 @@
       "estimated_price": "",
       "point_size": "0.01",
       "price_digits": "2",
-      "internal_entry_price": "",
+      "internal_entry_price": "D6",
       "final_external_sl_price": "",
-      "final_external_tp_price": ""
+      "final_external_tp_price": "",
+      "daily_pnl": "A6",
+      "internal_balance": "C6",
+      "original_sl_points": "E4",
+      "expected_sl_points": "E6",
+      "expected_sl_percent": "E6"
     },
     "defaults": {
       "point_size": "0.01",
@@ -31,6 +36,14 @@
     }
   },
   "platforms": {
+    "GooeyTrade": {
+      "window_title": {
+        "internal": "GooeyTrade",
+        "external": "GooeyTrade"
+      },
+      "points": {},
+      "open_panel_before_fill": false
+    },
     "cTrader": {
       "window_title": {
         "internal": "cTrader",
@@ -58,6 +71,7 @@
   },
   "ui": {
     "internal_platform": "cTrader",
-    "external_platform": "MT5"
+    "external_platform": "MT5",
+    "tv_draw_internal": false
   }
 }

@@ -23,7 +23,7 @@ This tool does not decide market direction, calculate risk, or click live entry 
 - No spreadsheet template
 - No trading strategy or market judgment
 
-Each user must create their own Google Sheet, Google Cloud credentials, platform bindings, and calibration data.
+The default settings already include non-private cell mappings and platform defaults. Each user only needs to provide their own sheet URL, optional service-account JSON, window bindings, and calibration data.
 
 ## Download And Run
 
@@ -38,14 +38,18 @@ For Python users:
 
 ## Google Sheet Setup
 
-1. Create your own Google Sheet.
-2. Put the values the app needs somewhere in the sheet, such as symbol, direction, lot size, SL/TP points, estimated price, point size, and price digits.
-3. Open the app and click `試算表設定`.
-4. Paste your spreadsheet URL.
-5. Set the worksheet name or GID.
-6. In the field mapping page, enter either column names, column letters, or direct cell references such as `C4`, `E8`, and `H6`.
+Minimum setup:
+
+1. Create or open your own Google Sheet.
+2. Open the app and click `試算表設定`.
+3. Paste your spreadsheet URL.
+4. Set the worksheet name or GID.
+5. Keep the default cell mappings if your sheet uses the same layout, or edit only the cells that differ.
+6. Leave optional fields blank if you do not use them.
 
 The app does not require a fixed spreadsheet format. If your layout changes, update the mappings.
+
+The packaged default keeps non-private values such as `GOLD`, `C4`, `E8`, `0.01`, and `2`. It does not include any private sheet URL, API key, JSON path, profile, or calibration data.
 
 ## Google API Setup
 
