@@ -74,6 +74,8 @@ class PlatformAutomation:
         bound_window = window
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
+        if _is_ctrader(platform):
+            self._verify_ctrader_account(platform, profile, role, window)
 
         mt5_order_window = None
         should_open_panel = _is_mt5(platform) or profile.get(
@@ -256,6 +258,29 @@ class PlatformAutomation:
             else:
                 self.log(f"cTrader {label}原本未勾選，已打開。")
 
+    def _verify_ctrader_account(
+        self,
+        platform: str,
+        profile: dict[str, Any],
+        role: str,
+        window,
+    ) -> None:
+        expected = str(
+            profile.get("account_number", {}).get(role, "")
+        ).strip()
+        expected_digits = "".join(re.findall(r"\d+", expected))
+        point = profile.get("points", {}).get("account_number")
+        if not expected_digits or not point:
+            return
+        role_text = "場內" if role == "internal" else "場外"
+        detected = self.windows.read_account_number(window, point)
+        if detected != expected_digits:
+            raise AutomationError(
+                f"{role_text} cTrader 帳號不符：目前偵測到 {detected}，"
+                f"綁定帳號是 {expected_digits}。請更改{role_text}帳號。"
+            )
+        self.log(f"已確認{role_text} cTrader 帳號：{detected}")
+
     def _window_for_point(
         self,
         profile: dict[str, Any],
@@ -406,6 +431,13 @@ class PlatformAutomation:
             "right",
             interval=0.08,
         )
+        self.windows.wait(0.35)
+        self.windows.hotkey(
+            tradingview_window,
+            "alt",
+            "right",
+            interval=0.08,
+        )
         self.log("已用 Alt + Shift + → 前往 TradingView 最新價格。")
         self.windows.wait(1.0)
         self._click_profile_point(
@@ -482,6 +514,36 @@ class PlatformAutomation:
             f"止損 {instruction.format_price(sl_price)}，"
             f"止盈 {instruction.format_price(tp_price)}。"
         )
+
+        self._add_tradingview_price_alerts(
+            tradingview_window,
+            instruction,
+            tp_price,
+            sl_price,
+        )
+
+    def _add_tradingview_price_alerts(
+        self,
+        tradingview_window: WindowInfo,
+        instruction: TradeInstruction,
+        tp_price: Decimal,
+        sl_price: Decimal,
+    ) -> None:
+        for label, price in (("止盈", tp_price), ("止損", sl_price)):
+            self.emergency.guard()
+            self.windows.hotkey(
+                tradingview_window,
+                "alt",
+                "a",
+                interval=0.08,
+            )
+            self.windows.wait(0.35)
+            text = instruction.format_price(price)
+            self.windows.paste_text(tradingview_window, text)
+            self.windows.wait(0.1)
+            self.windows.press(tradingview_window, "enter")
+            self.windows.wait(0.35)
+            self.log(f"TradingView 已新增{label}價格鬧鐘：{text}")
 
     def _legacy_sync_external_sl_tp(
         self,
@@ -778,6 +840,10 @@ class PlatformAutomation:
         if use_position_modify_flow:
             bound_window = self.windows.find(profile["window_title"]["external"])
             self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")
+            if _is_ctrader(external_platform):
+                self._verify_ctrader_account(
+                    external_platform, profile, "external", bound_window
+                )
             if _is_mt5(external_platform):
                 trade_tab = points.get("trade_tab")
                 if trade_tab is not None:
@@ -1002,6 +1068,17 @@ class PlatformAutomation:
             f"視窗：{entry_window.title}"
         )
         if _is_ctrader(internal_platform):
+            self._verify_ctrader_account(
+                internal_platform, internal_profile, "internal", entry_window
+            )
+            trade_tab = internal_points.get("trade_tab")
+            if trade_tab is None:
+                raise AutomationError(
+                    f"{internal_platform} 請先校準交易頁面按鈕。"
+                )
+            self.log(f"正在切到場內 {internal_platform} 交易頁面。")
+            self.windows.click(entry_window, trade_tab)
+            self.windows.wait(0.2)
             entry_price = self.windows.read_hover_number(
                 entry_window, entry_point
             )

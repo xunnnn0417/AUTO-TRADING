@@ -2,9 +2,9 @@ import ctypes
 import sys
 from pathlib import Path
 
-MUTEX_NAME = "Local\\TradingWorkflowHelperMVP"
+MUTEX_NAME = "Local\\HedgeAssistant"
 ERROR_ALREADY_EXISTS = 183
-APP_ID = "Xun.HedgeAssistant"
+APP_ID = "Xun.HedgeAssistant.App"
 APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_ICON = APP_BASE / "assets" / "app.ico"
 

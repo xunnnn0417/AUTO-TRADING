@@ -18,6 +18,7 @@ from trading_helper.windows import (
 from trading_helper.automation import PlatformAutomation, _decimal_close, _plain
 from trading_helper.gui import (
     CALIBRATION_TARGETS,
+    TradingHelperApp,
     _resolve_relative_decimal,
     _window_title_pattern,
 )
@@ -46,6 +47,16 @@ def valid_values() -> dict[str, str]:
 
 
 class TradeInstructionTests(unittest.TestCase):
+    def test_internal_balance_tilde_updates_daily_pnl_delta(self) -> None:
+        app = TradingHelperApp.__new__(TradingHelperApp)
+        values = valid_values()
+        values["daily_pnl"] = "100"
+        values["internal_balance"] = "50000"
+        app.instruction = TradeInstruction.from_mapping(2, values)
+        balance, daily_pnl = app._resolve_internal_balance_delta_input("~50472")
+        self.assertEqual(balance, Decimal("50472"))
+        self.assertEqual(daily_pnl, Decimal("572"))
+
     def test_direction_is_reversed(self) -> None:
         item = TradeInstruction.from_mapping(2, valid_values())
         self.assertEqual(item.internal_direction, "BUY")
@@ -770,6 +781,7 @@ class TradeInstructionTests(unittest.TestCase):
         item = TradeInstruction.from_mapping(2, values)
         points = {
             "positions_entry_price": {"id": "entry"},
+            "trade_tab": {"id": "trade"},
             "position_order_lot": {"id": "lot"},
             "position_order_row": {"id": "row"},
             "position_sl_input": {"id": "sl"},
@@ -795,6 +807,7 @@ class TradeInstructionTests(unittest.TestCase):
         class FakeWindows:
             def __init__(self):
                 self.typed = []
+                self.clicked = []
                 self.double_clicked = False
 
             def find(self, pattern):
@@ -808,6 +821,12 @@ class TradeInstructionTests(unittest.TestCase):
 
             def read_number_near(self, window, point, expected):
                 return Decimal("0.8")
+
+            def click(self, window, point):
+                self.clicked.append((window.title, point["id"]))
+
+            def wait(self, seconds):
+                return None
 
             def double_click(self, window, point):
                 self.double_clicked = True
@@ -828,6 +847,7 @@ class TradeInstructionTests(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+        self.assertIn(("cTrader 5.7.14", "trade"), fake.clicked)
         self.assertTrue(fake.double_clicked)
         self.assertEqual(
             fake.typed,
@@ -900,6 +920,12 @@ class TradeInstructionTests(unittest.TestCase):
 
             def click_and_type(self, window, point, value):
                 self.clicked.append(point["id"])
+
+            def paste_text(self, window, text):
+                return None
+
+            def press(self, window, key):
+                return None
 
         fake = FakeWindows()
         automation.windows = fake

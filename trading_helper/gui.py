@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import copy
 import re
@@ -12,9 +12,17 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QIcon,
+    QKeySequence,
+    QShortcut,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QApplication,
     QComboBox,
@@ -27,6 +35,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListView,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -36,6 +45,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTabWidget,
     QTextBrowser,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -71,6 +82,7 @@ MT5_TARGETS = [
 ]
 CALIBRATION_TARGETS = {
     "GooeyTrade": [
+        ("account_number", "帳號數字位置"),
         ("lot_input", "倉位／手數輸入欄"),
         ("sl_checkbox", "止損啟用勾選框"),
         ("sl_input", "止損點數輸入欄"),
@@ -85,6 +97,7 @@ CALIBRATION_TARGETS = {
         ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
     ],
     "cTrader": [
+        ("account_number", "帳號數字位置"),
         ("lot_input", "倉位／手數輸入欄"),
         ("sl_checkbox", "止損啟用勾選框"),
         ("sl_input", "止損點數輸入欄"),
@@ -169,13 +182,152 @@ class UiSignals(QObject):
     status = Signal(str)
     error = Signal(str)
     instruction = Signal(object)
+    sheet_note = Signal(str)
     operation_started = Signal()
     operation_finished = Signal()
     operation_minimized = Signal()
     entry_price_reset = Signal()
     parameter_inputs_reset = Signal(object)
     parameter_write_busy = Signal(bool)
+    parameter_write_retry = Signal()
     external_price_result = Signal(object)
+
+
+class ProfileItemDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option: QStyleOptionViewItem, index) -> None:
+        super().initStyleOption(option, index)
+        option.text = f"☰  {option.text}"
+
+
+class DraggableProfileCombo(QComboBox):
+    orderChanged = Signal(list)
+
+    def __init__(self):
+        super().__init__()
+        self._model = QStandardItemModel(self)
+        self.setModel(self._model)
+        view = QListView()
+        view.setDragDropMode(QAbstractItemView.InternalMove)
+        view.setDefaultDropAction(Qt.MoveAction)
+        view.setDragDropOverwriteMode(False)
+        view.setSelectionMode(QAbstractItemView.SingleSelection)
+        view.setItemDelegate(ProfileItemDelegate(view))
+        self.setView(view)
+        self._model.rowsMoved.connect(self._emit_order)
+        self._model.layoutChanged.connect(self._emit_order)
+
+    def set_names(self, names: list[str]) -> None:
+        self._model.clear()
+        for name in names:
+            item = QStandardItem(name)
+            item.setDragEnabled(True)
+            item.setDropEnabled(False)
+            self._model.appendRow(item)
+
+    def _emit_order(self) -> None:
+        self.orderChanged.emit(
+            [self.itemText(index) for index in range(self.count())]
+        )
+
+
+class SheetNoteIndicator(QLabel):
+    def __init__(self) -> None:
+        super().__init__("!")
+        self._note = ""
+        self.setFixedSize(22, 22)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(
+            "QLabel {"
+            "border: 1px solid #d8d8d8;"
+            "border-radius: 11px;"
+            "font-weight: 800;"
+            "color: #f2f2f2;"
+            "background: #2c2c2c;"
+            "}"
+            "QLabel:disabled { color: #777; border-color: #555; }"
+        )
+        self._popup = QWidget(None)
+        self._popup.setWindowFlags(
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        self._popup.setFixedSize(520, 230)
+        self._popup.setStyleSheet(
+            "QWidget {"
+            "background: #222;"
+            "border: 1px solid #777;"
+            "border-radius: 6px;"
+            "}"
+            "QPlainTextEdit {"
+            "background: transparent;"
+            "border: none;"
+            "color: #f2f2f2;"
+            "font-size: 13px;"
+            "padding: 8px;"
+            "}"
+        )
+        popup_layout = QVBoxLayout(self._popup)
+        popup_layout.setContentsMargins(8, 8, 8, 8)
+        self._popup_text = QPlainTextEdit()
+        self._popup_text.setReadOnly(True)
+        popup_layout.addWidget(self._popup_text)
+        self._popup.installEventFilter(self)
+        self._popup_text.installEventFilter(self)
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._hide_if_left)
+        self.set_note("")
+
+    def set_note(self, value: str) -> None:
+        self._note = str(value or "").strip()
+        self.setEnabled(bool(self._note))
+        self._popup_text.setPlainText(self._note)
+        if not self._note:
+            self._popup.hide()
+
+    def enterEvent(self, event) -> None:
+        self._hide_timer.stop()
+        if self._note:
+            self._show_popup()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._schedule_hide()
+        super().leaveEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in {self._popup, self._popup_text}:
+            if event.type() == QEvent.Enter:
+                self._hide_timer.stop()
+            elif event.type() == QEvent.Leave:
+                self._schedule_hide()
+        return super().eventFilter(watched, event)
+
+    def _show_popup(self) -> None:
+        point = self.mapToGlobal(self.rect().bottomLeft())
+        screen = QApplication.screenAt(point) or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = min(point.x(), area.right() - self._popup.width())
+            y = point.y() + 8
+            if y + self._popup.height() > area.bottom():
+                y = self.mapToGlobal(self.rect().topLeft()).y() - self._popup.height() - 8
+            point.setX(max(area.left(), x))
+            point.setY(max(area.top(), y))
+        self._popup.move(point)
+        self._popup.show()
+        self._popup.raise_()
+
+    def _schedule_hide(self) -> None:
+        self._hide_timer.start(180)
+
+    def _hide_if_left(self) -> None:
+        if self.underMouse() or self._popup.underMouse() or self._popup_text.underMouse():
+            return
+        self._popup.hide()
 
 
 class TradingHelperApp(QMainWindow):
@@ -197,11 +349,17 @@ class TradingHelperApp(QMainWindow):
         self.instruction: TradeInstruction | None = None
         self.manual_entry_price: Decimal | None = None
         self._last_log_trading_day: str | None = None
+        self._parameter_write_active = False
+        self._parameter_write_pending = False
+        self._parameter_write_active_signature: tuple[tuple[str, str], ...] | None = None
+        self._parameter_write_pending_signature: tuple[tuple[str, str], ...] | None = None
+        self._parameter_write_last_signature: tuple[tuple[str, str], ...] | None = None
         self.signals = UiSignals()
         self.signals.log.connect(self._append_log)
         self.signals.status.connect(self._set_status)
         self.signals.error.connect(self._show_error)
         self.signals.instruction.connect(self._show_instruction)
+        self.signals.sheet_note.connect(self._show_sheet_note)
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.signals.operation_minimized.connect(self._minimize_after_operation)
@@ -216,9 +374,11 @@ class TradingHelperApp(QMainWindow):
         self.signals.entry_price_reset.connect(self.entry_price_value.clear)
         self.signals.parameter_inputs_reset.connect(self._clear_parameter_inputs)
         self.signals.parameter_write_busy.connect(self._set_parameter_write_busy)
+        self.signals.parameter_write_retry.connect(self.update_all_trade_parameters)
         self.signals.external_price_result.connect(self._show_external_price_result)
         self._build_operation_hint()
         self._dock_top()
+        QApplication.instance().installEventFilter(self)
         QShortcut(QKeySequence("Esc"), self, activated=self.emergency.stop)
         self.log("對沖小幫手已啟動。目前禁止程式送出訂單。")
         QTimer.singleShot(350, self.read_sheet)
@@ -284,9 +444,9 @@ class TradingHelperApp(QMainWindow):
         header.addWidget(title)
         header.addSpacing(22)
         header.addWidget(QLabel("方案"))
-        self.profile_combo = QComboBox()
+        self.profile_combo = DraggableProfileCombo()
         self.profile_combo.setMinimumWidth(180)
-        self.profile_combo.addItems(self.profiles.names())
+        self.profile_combo.set_names(self.profiles.names())
         self.profile_combo.setCurrentText(self.profiles.active_name)
         header.addWidget(self.profile_combo)
         create_profile = QPushButton("建立")
@@ -302,6 +462,8 @@ class TradingHelperApp(QMainWindow):
         delete_profile.clicked.connect(self.delete_profile)
         header.addWidget(delete_profile)
         header.addStretch()
+        self.sheet_note_indicator = SheetNoteIndicator()
+        header.addWidget(self.sheet_note_indicator)
         help_button = QPushButton("Help")
         help_button.clicked.connect(self.open_help)
         header.addWidget(help_button)
@@ -316,6 +478,7 @@ class TradingHelperApp(QMainWindow):
         header.addWidget(self.tv_draw_internal)
         header.addWidget(self.always_on_top)
         self.profile_combo.currentTextChanged.connect(self.switch_profile)
+        self.profile_combo.orderChanged.connect(self.reorder_profiles)
         main.addLayout(header, 0, 0, 1, 2)
 
         platforms = QGroupBox("平台")
@@ -534,8 +697,29 @@ class TradingHelperApp(QMainWindow):
     def _set_parameter_write_busy(self, busy: bool) -> None:
         for button in self.parameter_locked_buttons:
             button.setEnabled(not busy)
-        self.parameter_update_button.setEnabled(not busy)
-        self.preview_sl_tp_button.setEnabled(not busy)
+        self.parameter_update_button.setEnabled(True)
+        self.preview_sl_tp_button.setEnabled(True)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.update_all_trade_parameters()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            event.type() == QEvent.KeyPress
+            and event.key() in (Qt.Key_Return, Qt.Key_Enter)
+            and QApplication.activeModalWidget() is None
+            and isinstance(watched, QWidget)
+            and (watched is self or self.isAncestorOf(watched))
+            and not isinstance(watched, QLineEdit)
+        ):
+            self.update_all_trade_parameters()
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = QDialog(self)
@@ -631,6 +815,12 @@ class TradingHelperApp(QMainWindow):
         if item is None:
             raise ValidationError("讀取試算表失敗。")
         self.instruction = item
+        try:
+            note_values = self.reader.read_a1_values(self.store.data["sheet"], ["A12"])
+            self.signals.sheet_note.emit(note_values.get("A12", ""))
+        except ValidationError as exc:
+            self.signals.sheet_note.emit("")
+            self.log(f"未讀取 A12 備註：{exc}")
         self.manual_entry_price = None
         self.signals.entry_price_reset.emit()
         self.signals.instruction.emit(item)
@@ -671,6 +861,9 @@ class TradingHelperApp(QMainWindow):
         }
         for key, value in parameter_values.items():
             self.parameter_inputs[key].setPlaceholderText("" if value is None else str(value))
+
+    def _show_sheet_note(self, value: str) -> None:
+        self.sheet_note_indicator.set_note(value)
 
     def _format_expected_sl_placeholder(
         self, item: TradeInstruction
@@ -726,7 +919,22 @@ class TradingHelperApp(QMainWindow):
                 draw_internal=draw_internal,
             )
 
-        self._start("繪製 TradingView", task)
+        self._start("繪製 TradingView", task, restore_after=False)
+
+    def draw_tradingview_with_entry_price(self, entry_price: Decimal) -> None:
+        internal_platform = self.internal_platform.currentText()
+        draw_internal = self.tv_draw_internal.isChecked()
+
+        def task() -> None:
+            item = self._require_instruction()
+            self.automation.draw_tradingview(
+                item,
+                internal_platform=internal_platform,
+                entry_price_override=entry_price,
+                draw_internal=draw_internal,
+            )
+
+        self._start("繪製 TradingView", task, restore_after=False)
 
     def sync_external_sl_tp(self) -> None:
         internal_platform = self.internal_platform.currentText()
@@ -813,6 +1021,12 @@ class TradingHelperApp(QMainWindow):
                     values[key] = format(value, "f")
                     labels.append("每日獲利/虧損")
                     continue
+                if key == "internal_balance" and raw.startswith("~"):
+                    value, daily_pnl = self._resolve_internal_balance_delta_input(raw)
+                    values["internal_balance"] = format(value, "f")
+                    values["daily_pnl"] = format(daily_pnl, "f")
+                    labels.append("場內餘額")
+                    continue
                 value = Decimal(raw)
             except InvalidOperation:
                 label = {
@@ -839,13 +1053,44 @@ class TradingHelperApp(QMainWindow):
         if not values:
             self.log("沒有交易參數需要寫回。")
             return
+        signature = self._parameter_write_signature(values)
+        if self._parameter_write_active:
+            if signature in {
+                self._parameter_write_active_signature,
+                self._parameter_write_pending_signature,
+            }:
+                self._notify_no_parameter_changes()
+                return
+            self._parameter_write_pending = True
+            self._parameter_write_pending_signature = signature
+            self.log("交易參數正在更新中，已排入下一次更新。")
+            return
+        if signature == self._parameter_write_last_signature:
+            self.signals.parameter_inputs_reset.emit(list(values))
+            self._notify_no_parameter_changes()
+            return
         self._write_trade_parameter_values(values, "、".join(labels))
 
+    def _parameter_write_signature(
+        self, values: dict[str, object]
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted((field, str(value)) for field, value in values.items()))
+
+    def _notify_no_parameter_changes(self) -> None:
+        self.log("交易參數沒有新的修改，略過更新。")
+        self.statusBar().showMessage("交易參數沒有新的修改，略過更新。", 3500)
+
     def _write_trade_parameter_values(
-        self, values: dict[str, object], label: str
+        self,
+        values: dict[str, object],
+        label: str,
+        *,
+        busy: bool = True,
+        reset_inputs: bool = True,
     ) -> None:
         source_row = self.instruction.source_row if self.instruction else None
         values = self._dedupe_same_sheet_targets(values)
+        signature = self._parameter_write_signature(values)
 
         def task() -> None:
             previous_values = self.reader.read_field_values(
@@ -853,17 +1098,12 @@ class TradingHelperApp(QMainWindow):
                 list(values),
                 source_row=source_row,
             )
-            targets: list[str] = []
-            field_targets: dict[str, str] = {}
-            for field, value in values.items():
-                target = self.reader.write_value(
-                    self.store.data["sheet"],
-                    field,
-                    value,
-                    source_row=source_row,
-                )
-                targets.append(target)
-                field_targets[field] = target
+            field_targets = self.reader.write_field_values(
+                self.store.data["sheet"],
+                values,
+                source_row=source_row,
+            )
+            targets = [field_targets[field] for field in values]
             self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
             warning_values = self.reader.read_a1_values(
                 self.store.data["sheet"],
@@ -876,31 +1116,46 @@ class TradingHelperApp(QMainWindow):
             }
             if warnings:
                 self.reader.write_a1_values(self.store.data["sheet"], previous_values)
-                self.log(
-                    "A20/E12 出現警示文字，已取消剛剛的調整並還原原值。"
-                )
+                self.log("A20/E12 出現警示文字，已取消剛剛的調整並還原原值。")
                 details = "\n".join(
                     f"{cell}: {message}" for cell, message in warnings.items()
                 )
                 self.signals.error.emit(
                     f"表格警示，已取消剛剛的調整：\n{details}"
                 )
-                self._read_sheet_task(retries=3)
+                self._read_sheet_task(retries=0)
                 return
             if "daily_pnl" in values:
                 target = field_targets.get("daily_pnl", "")
                 old_value = previous_values.get(target, "")
                 self._record_daily_pnl_history(old_value, values["daily_pnl"])
-            self._read_sheet_task(retries=3)
-            self.signals.parameter_inputs_reset.emit(list(values))
+            if not self._parameter_write_pending:
+                self._read_sheet_task(retries=0)
+            if reset_inputs and not self._parameter_write_pending:
+                self.signals.parameter_inputs_reset.emit(list(values))
+            if busy:
+                self._parameter_write_last_signature = signature
 
-        self.signals.parameter_write_busy.emit(True)
+        if busy:
+            self._parameter_write_active = True
+            self._parameter_write_pending = False
+            self._parameter_write_active_signature = signature
+            self._parameter_write_pending_signature = None
+            self.signals.parameter_write_busy.emit(True)
 
         def wrapped_task() -> None:
             try:
                 task()
             finally:
-                self.signals.parameter_write_busy.emit(False)
+                if busy:
+                    should_retry = self._parameter_write_pending
+                    self._parameter_write_active = False
+                    self._parameter_write_pending = False
+                    self._parameter_write_active_signature = None
+                    self._parameter_write_pending_signature = None
+                    self.signals.parameter_write_busy.emit(False)
+                    if should_retry:
+                        self.signals.parameter_write_retry.emit()
 
         self._start(f"寫回{label}", wrapped_task, hide_during=False)
 
@@ -987,6 +1242,7 @@ class TradingHelperApp(QMainWindow):
             raw_entry = self.parameter_inputs["internal_entry_price"].text().replace(",", "").strip()
             if raw_entry:
                 entry_price = Decimal(raw_entry)
+                self._queue_internal_entry_price_write(entry_price)
             else:
                 entry_price = item.internal_entry_price
             if entry_price is None:
@@ -1031,14 +1287,46 @@ class TradingHelperApp(QMainWindow):
             layout.addWidget(self._copyable_value_widget(internal_text), row, 1)
             layout.addWidget(self._copyable_value_widget(external_text), row, 2)
         sync_button = QPushButton("同步到場外")
+        draw_button = QPushButton("繪製 TradingView 部位")
+        draw_button.clicked.connect(
+            lambda checked=False, value=entry_price: (
+                dialog.accept(),
+                self.draw_tradingview_with_entry_price(value),
+            )
+        )
         sync_button.clicked.connect(
             lambda checked=False, value=entry_price: (
                 dialog.accept(),
                 self.sync_external_sl_tp_with_entry_price(value),
             )
         )
+        layout.addWidget(draw_button, len(rows) + 1, 1)
         layout.addWidget(sync_button, len(rows) + 1, 2)
         dialog.exec()
+
+    def _queue_internal_entry_price_write(self, entry_price: Decimal) -> None:
+        value = format(entry_price, "f")
+        signature = self._parameter_write_signature({"internal_entry_price": value})
+        self.manual_entry_price = entry_price
+        self.entry_price_value.setText(value)
+        self.parameter_inputs["internal_entry_price"].setText(value)
+        if self._parameter_write_active:
+            if signature in {
+                self._parameter_write_active_signature,
+                self._parameter_write_pending_signature,
+            }:
+                return
+            self._parameter_write_pending = True
+            self._parameter_write_pending_signature = signature
+            self.log("場內進場點位正在等待目前更新完成後寫回。")
+            return
+        if signature == self._parameter_write_last_signature:
+            self.parameter_inputs["internal_entry_price"].clear()
+            return
+        self._write_trade_parameter_values(
+            {"internal_entry_price": value},
+            "場內進場點位",
+        )
 
     def _copyable_value_widget(self, value: str) -> QWidget:
         widget = QWidget()
@@ -1098,6 +1386,10 @@ class TradingHelperApp(QMainWindow):
             try:
                 if key == "daily_pnl":
                     values[key] = self._resolve_daily_pnl_input(raw)
+                elif key == "internal_balance" and raw.startswith("~"):
+                    balance, daily_pnl = self._resolve_internal_balance_delta_input(raw)
+                    values["internal_balance"] = balance
+                    values["daily_pnl"] = daily_pnl
                 else:
                     values[key] = Decimal(raw)
             except InvalidOperation:
@@ -1147,6 +1439,20 @@ class TradingHelperApp(QMainWindow):
                 base = self.instruction.daily_pnl
             return _resolve_relative_decimal(text, base)
         return _resolve_relative_decimal(text, None)
+
+    def _resolve_internal_balance_delta_input(
+        self, raw: str
+    ) -> tuple[Decimal, Decimal]:
+        if self.instruction is None:
+            raise AutomationError("請先讀取試算表。")
+        text = raw.replace(",", "").strip()
+        if not text.startswith("~"):
+            value = Decimal(text)
+            return value, self.instruction.daily_pnl or Decimal("0")
+        new_balance = Decimal(text[1:].strip())
+        old_balance = self.instruction.internal_balance or Decimal("0")
+        current_pnl = self.instruction.daily_pnl or Decimal("0")
+        return new_balance, current_pnl + (new_balance - old_balance)
 
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
@@ -1211,9 +1517,18 @@ class TradingHelperApp(QMainWindow):
             active = self.windows.window_at_cursor()
             pattern = _window_title_pattern(platform, active.title)
             self._save_bound_window(platform, role, pattern)
+            account_message = ""
+            profile = self.store.data["platforms"].get(platform, {})
+            account_point = profile.get("points", {}).get("account_number")
+            if platform == "cTrader" and account_point:
+                account_number = self.windows.read_account_number(active, account_point)
+                self._save_bound_account(platform, role, account_number)
+                account_message = f"；帳號：{account_number}"
+            elif platform == "cTrader":
+                account_message = "；尚未校準帳號位置，未儲存帳號"
             self.log(
                 f"已綁定{role_text} {platform} 視窗：{active.title}；"
-                f"規則：{pattern}"
+                f"規則：{pattern}{account_message}"
             )
 
         self._start(f"綁定{role_text}視窗", task, hide_during=False)
@@ -1408,6 +1723,11 @@ class TradingHelperApp(QMainWindow):
         )
         self.save_config()
 
+    def _save_bound_account(self, platform: str, role: str, account_number: str) -> None:
+        platform_config = self.store.data["platforms"][platform]
+        platform_config.setdefault("account_number", {})[role] = account_number
+        self.store.save()
+        self.profiles.save_profile(self.profiles.active_name, self.store.data)
     def switch_profile(self, name: str) -> None:
         if self._profile_switching or not name:
             return
@@ -1511,8 +1831,7 @@ class TradingHelperApp(QMainWindow):
 
     def _refresh_profile_combo(self, selected: str) -> None:
         self._profile_switching = True
-        self.profile_combo.clear()
-        self.profile_combo.addItems(self.profiles.names())
+        self.profile_combo.set_names(self.profiles.names())
         self.profile_combo.setCurrentText(selected)
         self._profile_switching = False
 
@@ -1520,6 +1839,12 @@ class TradingHelperApp(QMainWindow):
         self._profile_switching = True
         self.profile_combo.setCurrentText(selected)
         self._profile_switching = False
+
+    def reorder_profiles(self, names: list[str]) -> None:
+        if self._profile_switching:
+            return
+        self.profiles.reorder(names)
+        self.log("已更新方案順序。")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.save_ui_state()
@@ -1790,3 +2115,6 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
+
+
+

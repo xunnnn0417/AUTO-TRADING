@@ -602,6 +602,34 @@ class WindowController:
                 pyautogui.keyUp(key)
         time.sleep(0.12)
 
+    def paste_text(self, window: WindowInfo, text: str) -> None:
+        self.emergency.guard()
+        try:
+            import pyautogui
+            import pyperclip
+        except ImportError as exc:
+            raise AutomationError(
+                "撠摰? pyautogui嚗??銵?install.bat??"
+            ) from exc
+        self.focus(window)
+        self.emergency.guard()
+        pyperclip.copy(str(text))
+        pyautogui.hotkey("ctrl", "v")
+        time.sleep(0.08)
+
+    def press(self, window: WindowInfo, key: str) -> None:
+        self.emergency.guard()
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise AutomationError(
+                "撠摰? pyautogui嚗??銵?install.bat??"
+            ) from exc
+        self.focus(window)
+        self.emergency.guard()
+        pyautogui.press(key)
+        time.sleep(0.08)
+
     def _send_alt_shift_right(self) -> None:
         events = _alt_shift_right_events()
         inputs = (INPUT * len(events))(
@@ -733,6 +761,37 @@ class WindowController:
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"
         )
 
+    def read_account_number(self, window: WindowInfo, point: dict[str, float]) -> str:
+        self.emergency.guard()
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        attempts = [
+            (x, y, 190, 55),
+            (x, y, 240, 70),
+            (x, y, 300, 90),
+        ]
+        last_error: AutomationError | None = None
+        for target_x, target_y, width, height in attempts:
+            try:
+                candidates = self._read_text_candidates_ocr(
+                    target_x,
+                    target_y,
+                    width=width,
+                    height=height,
+                )
+            except AutomationError as exc:
+                last_error = exc
+                continue
+            digit_runs: list[str] = []
+            for candidate in candidates:
+                digit_runs.extend(re.findall(r"\d{3,}", candidate.replace(" ", "")))
+            if digit_runs:
+                return max(digit_runs, key=len)
+        if last_error:
+            raise last_error
+        raise AutomationError("無法從校準區域辨識帳號數字。")
+
     def read_number_near(
         self,
         window: WindowInfo,
@@ -859,6 +918,54 @@ class WindowController:
             "無法從校準區域辨識價格。"
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"
         )
+
+    def _read_text_candidates_ocr(
+        self,
+        x: int,
+        y: int,
+        *,
+        width: int = 150,
+        height: int = 70,
+    ) -> list[str]:
+        try:
+            import cv2
+            import numpy as np
+            import pyautogui
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as exc:
+            raise AutomationError(
+                "尚未安裝 OCR 套件，請重新執行 install.bat。"
+            ) from exc
+
+        self.emergency.guard()
+        left = max(0, x - width // 2)
+        top = max(0, y - height // 2)
+        image = pyautogui.screenshot(region=(left, top, width, height))
+        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        frame = cv2.resize(frame, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        variants = [
+            frame,
+            cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
+            cv2.cvtColor(
+                cv2.threshold(
+                    gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1],
+                cv2.COLOR_GRAY2BGR,
+            ),
+        ]
+        candidates: list[str] = []
+        with WindowController._ocr_lock:
+            if WindowController._ocr_engine is None:
+                WindowController._ocr_engine = RapidOCR()
+            for variant in variants:
+                self.emergency.guard()
+                result, _ = WindowController._ocr_engine(variant)
+                if result:
+                    candidates.extend(str(item[1]) for item in result)
+        if candidates:
+            return candidates
+        raise AutomationError("無法從校準區域辨識文字。")
 
     def _read_number_legacy(self, x: int, y: int) -> Decimal:
         candidates: list[str] = []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+import time
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -76,6 +77,9 @@ def _csv_export_url(url: str, gid: str) -> str:
 
 
 class SheetReader:
+    def __init__(self) -> None:
+        self._worksheet_cache: dict[tuple[str, str, str], Any] = {}
+
     def read(self, config: dict[str, Any]) -> TradeInstruction:
         rows = self._fetch_rows(config)
         if not rows:
@@ -208,7 +212,8 @@ class SheetReader:
         return list(csv.reader(io.StringIO(text)))
 
     def _fetch_gspread(self, config: dict[str, Any]) -> list[list[str]]:
-        return self._open_gspread_worksheet(config).get_all_values()
+        worksheet = self._open_gspread_worksheet(config)
+        return self._run_gspread(lambda: worksheet.get_all_values())
 
     def _open_gspread_worksheet(self, config: dict[str, Any]):
         try:
@@ -218,12 +223,141 @@ class SheetReader:
         credential_file = config.get("service_account_file", "").strip()
         if not credential_file:
             raise ValidationError("必須提供服務帳戶 JSON 檔案路徑。")
+        cache_key = (
+            credential_file,
+            str(config.get("spreadsheet_url", "")),
+            str(config.get("worksheet", "Sheet1")),
+        )
+        cached = self._worksheet_cache.get(cache_key)
+        if cached is not None:
+            return cached
         try:
-            client = gspread.service_account(filename=credential_file)
-            book = client.open_by_url(config["spreadsheet_url"])
-            return book.worksheet(config.get("worksheet", "Sheet1"))
+            worksheet = self._run_gspread(
+                lambda: gspread.service_account(filename=credential_file)
+                .open_by_url(config["spreadsheet_url"])
+                .worksheet(config.get("worksheet", "Sheet1"))
+            )
+            self._worksheet_cache[cache_key] = worksheet
+            return worksheet
         except Exception as exc:
             raise ValidationError(f"Google 試算表 API 錯誤：{exc}") from exc
+
+    def _run_gspread(self, operation, *, attempts: int = 3):
+        last_exc: Exception | None = None
+        transient_markers = (
+            "RemoteDisconnected",
+            "Connection aborted",
+            "Connection reset",
+            "closed connection",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+        )
+        for attempt in range(attempts):
+            try:
+                return operation()
+            except Exception as exc:  # pragma: no cover - network dependent
+                last_exc = exc
+                message = repr(exc)
+                if attempt >= attempts - 1 or not any(
+                    marker in message for marker in transient_markers
+                ):
+                    raise
+                time.sleep(0.35 * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
+
+    def resolve_field_targets(
+        self,
+        config: dict[str, Any],
+        fields: list[str],
+        *,
+        source_row: int | None = None,
+    ) -> dict[str, str]:
+        if config.get("mode") != "service_account":
+            raise ValidationError("此功能需要 service_account 讀取模式。")
+        worksheet = self._open_gspread_worksheet(config)
+        rows: list[list[str]] | None = None
+        if config.get("data_layout", "row") != "cells":
+            rows = self._run_gspread(lambda: worksheet.get_all_values())
+            if not rows:
+                raise ValidationError("試算表沒有可讀取的資料。")
+        targets: dict[str, str] = {}
+        for field in fields:
+            reference = str(config["columns"].get(field, "")).strip()
+            if not reference:
+                raise ValidationError(f"{field} 尚未設定寫回欄位。")
+            targets[field] = self._target_for_reference_from_rows(
+                config,
+                reference,
+                rows,
+                source_row=source_row,
+            )
+        return targets
+
+    def _batch_get_values(self, worksheet, references: list[str]) -> dict[str, str]:
+        if not references:
+            return {}
+        if not hasattr(worksheet, "batch_get"):
+            return {
+                reference: self._run_gspread(
+                    lambda reference=reference: worksheet.acell(reference).value or ""
+                )
+                for reference in references
+            }
+        batches = self._run_gspread(lambda: worksheet.batch_get(references))
+        values: dict[str, str] = {}
+        for reference, matrix in zip(references, batches):
+            value = ""
+            if matrix and len(matrix) and matrix[0]:
+                value = str(matrix[0][0])
+            values[reference] = value
+        return values
+
+    def _batch_update_values(self, worksheet, values: dict[str, object]) -> None:
+        if not values:
+            return
+        if not hasattr(worksheet, "batch_update"):
+            for target, value in values.items():
+                self._run_gspread(
+                    lambda target=target, value=value: worksheet.update_acell(
+                        target, str(value)
+                    )
+                )
+            return
+        data = [
+            {"range": target, "values": [[str(value)]]}
+            for target, value in values.items()
+        ]
+        self._run_gspread(
+            lambda: worksheet.batch_update(data, value_input_option="USER_ENTERED")
+        )
+
+    def write_field_values(
+        self,
+        config: dict[str, Any],
+        values: dict[str, object],
+        *,
+        source_row: int | None = None,
+    ) -> dict[str, str]:
+        if config.get("mode") != "service_account":
+            raise ValidationError("寫回試算表需要 service_account 讀取模式。")
+        worksheet = self._open_gspread_worksheet(config)
+        targets = self.resolve_field_targets(
+            config,
+            list(values),
+            source_row=source_row,
+        )
+        self._batch_update_values(
+            worksheet,
+            {target: values[field] for field, target in targets.items()},
+        )
+        return targets
 
     def write_value(
         self,
@@ -245,7 +379,7 @@ class SheetReader:
             reference,
             source_row=source_row,
         )
-        worksheet.update_acell(target, str(value))
+        self._batch_update_values(worksheet, {target: value})
         return target
 
     def read_field_values(
@@ -256,41 +390,36 @@ class SheetReader:
         source_row: int | None = None,
     ) -> dict[str, str]:
         if config.get("mode") != "service_account":
-            raise ValidationError("讀取寫回前原值需要使用 service_account 讀取模式。")
+            raise ValidationError("讀取原值需要 service_account 讀取模式。")
         worksheet = self._open_gspread_worksheet(config)
-        values: dict[str, str] = {}
-        for field in fields:
-            reference = str(config["columns"].get(field, "")).strip()
-            if not reference:
-                raise ValidationError(f"{field} 尚未設定寫回位置。")
-            target = self._target_for_reference(
-                worksheet,
-                config,
-                reference,
-                source_row=source_row,
-            )
-            values[target] = worksheet.acell(target).value or ""
-        return values
+        targets = self.resolve_field_targets(config, fields, source_row=source_row)
+        return self._batch_get_values(worksheet, list(targets.values()))
 
     def read_a1_values(
         self, config: dict[str, Any], references: list[str]
     ) -> dict[str, str]:
         if config.get("mode") != "service_account":
-            raise ValidationError("讀取檢查格需要使用 service_account 讀取模式。")
+            rows = self._fetch_rows(config)
+            values: dict[str, str] = {}
+            for reference in references:
+                row_index, column_index = _cell_position(reference)
+                values[reference] = (
+                    rows[row_index][column_index]
+                    if row_index < len(rows)
+                    and column_index < len(rows[row_index])
+                    else ""
+                )
+            return values
         worksheet = self._open_gspread_worksheet(config)
-        return {
-            reference: worksheet.acell(reference).value or ""
-            for reference in references
-        }
+        return self._batch_get_values(worksheet, references)
 
     def write_a1_values(
         self, config: dict[str, Any], values: dict[str, str]
     ) -> None:
         if config.get("mode") != "service_account":
-            raise ValidationError("還原試算表需要使用 service_account 讀取模式。")
+            raise ValidationError("寫回試算表需要 service_account 讀取模式。")
         worksheet = self._open_gspread_worksheet(config)
-        for target, value in values.items():
-            worksheet.update_acell(target, str(value))
+        self._batch_update_values(worksheet, values)
 
     def _target_for_reference(
         self,
@@ -305,13 +434,32 @@ class SheetReader:
         else:
             if source_row is None:
                 source_row = max(2, int(config.get("row_number", 2)))
-            rows = worksheet.get_all_values()
+            rows = self._run_gspread(lambda: worksheet.get_all_values())
             if not rows:
                 raise ValidationError("工作表沒有標題列，無法寫回。")
             column_index = _column_index(reference, rows[0])
             row_index = source_row - 1
         target = _a1_notation(row_index, column_index)
         return target
+
+    def _target_for_reference_from_rows(
+        self,
+        config: dict[str, Any],
+        reference: str,
+        rows: list[list[str]] | None,
+        *,
+        source_row: int | None = None,
+    ) -> str:
+        if config.get("data_layout", "row") == "cells":
+            row_index, column_index = _cell_position(reference)
+        else:
+            if source_row is None:
+                source_row = max(2, int(config.get("row_number", 2)))
+            if not rows:
+                raise ValidationError("試算表沒有可讀取的資料。")
+            column_index = _column_index(reference, rows[0])
+            row_index = source_row - 1
+        return _a1_notation(row_index, column_index)
 
     def _select_row(
         self, rows: list[list[str]], headers: list[str], config: dict[str, Any]

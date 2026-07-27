@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -53,11 +53,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "internal": "GooeyTrade",
                 "external": "GooeyTrade",
             },
+            "account_number": {"internal": "", "external": ""},
             "points": {},
             "open_panel_before_fill": False,
         },
         "cTrader": {
             "window_title": {"internal": "cTrader", "external": "cTrader"},
+            "account_number": {"internal": "", "external": ""},
             "points": {},
             "open_panel_before_fill": False,
         },
@@ -319,6 +321,12 @@ class ProfileStore:
         self.data["active"] = name
         self.save()
 
+    def reorder(self, names: list[str]) -> None:
+        profiles = self.data["profiles"]
+        if set(names) != set(profiles):
+            return
+        self.data["profiles"] = {name: profiles[name] for name in names}
+        self.save()
     def sync_calibration_point(
         self,
         platform: str,
@@ -397,3 +405,4 @@ class ProfileStore:
             raise ValueError("方案名稱不能空白。")
         if name in self.data["profiles"]:
             raise ValueError("方案名稱已存在。")
+
