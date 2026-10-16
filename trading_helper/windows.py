@@ -257,11 +257,12 @@ class WindowController:
     def find_calibrated_main(
         self, title_pattern: str, point: dict, platform: str = "cTrader"
     ) -> WindowInfo:
-        """One calibrated broker MAIN HWND, never a same-title dialog.
+        """Identify one native broker MAIN HWND, never a same-title dialog.
 
         Shared by fill, independent SL/TP sync and Demo order submission.
-        A resized window or more than one matching main terminal is UNKNOWN.
-        This fast Win32 enumeration does NOT traverse the UIA tree.
+        Resized main windows are identified, but saved point coordinates
+        must STILL be revalidated by screen_point before any mouse action.
+        This Win32 enumeration does not traverse the UIA tree.
         """
         self.emergency.guard()
         width = int(point.get("window_width", 0))
