@@ -306,5 +306,70 @@ class OneInventorySubmitTests(unittest.TestCase):
         self.windows.click.assert_not_called()
 
 
+
+class MT5FinalExpectedPriceTests(unittest.TestCase):
+    """Wrong but nonzero MT5 prices cannot bypass final form readback."""
+
+    def setUp(self):
+        self.readback={
+            "values": {
+                "lot_input": "1.00",
+                "sl_input": "4050.00",
+                "tp_input": "4150.00",
+            },
+            "direction": None,
+            "checks": {},
+        }
+        self.profile={"points": {}}
+        self.windows=SimpleNamespace(
+            read_fill_snapshot=MagicMock(return_value=self.readback)
+        )
+        self.automation=SimpleNamespace(
+            config={"platforms":{"MT5":self.profile}},
+            windows=self.windows,
+            _normalize_numeric_input=PlatformAutomation._normalize_numeric_input,
+            _last_verified_fills={
+                ("MT5","internal"): {
+                    "direction": "BUY",
+                    "symbol": "XAUUSD",
+                    "values": {
+                        "lot_input": Decimal("1"),
+                        "sl_input": Decimal("4050"),
+                        "tp_input": Decimal("4150"),
+                    },
+                }
+            },
+        )
+        self.adapter=DemoUiBrokerPort(self.automation,MagicMock())
+        self.adapter.set_expected_symbol("XAUUSD")
+        self.adapter.inspect_account=MagicMock()
+        self.adapter._form_window=MagicMock(
+            return_value=(self.profile,SimpleNamespace(title="MT5 Demo order"))
+        )
+        self.adapter._verify_instrument=MagicMock()
+
+    def check(self):
+        self.adapter.verify_order_form("MT5","internal","BUY",Decimal("1"))
+
+    def test_exact_original_mt5_sl_tp_still_allowed(self):
+        self.check()
+        self.windows.read_fill_snapshot.assert_called_once()
+
+    def test_nonzero_wrong_mt5_sl_rejected(self):
+        self.readback["values"]["sl_input"]="4050.01"
+        with self.assertRaisesRegex(AutomationError,"被改動"):
+            self.check()
+
+    def test_nonzero_wrong_mt5_tp_rejected(self):
+        self.readback["values"]["tp_input"]="4149.99"
+        with self.assertRaisesRegex(AutomationError,"被改動"):
+            self.check()
+
+    def test_missing_mt5_fill_receipt_rejected(self):
+        self.automation._last_verified_fills.clear()
+        with self.assertRaises(AutomationError):
+            self.check()
+
+
 if __name__ == "__main__":
     unittest.main()
