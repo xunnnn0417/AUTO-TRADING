@@ -101,3 +101,10 @@
 - 新增 \`tests/test_generic_ctrader_final_snapshot.py\` **16 項尚未執行**的合約/防誤送單測試，並更新既有 timing mock 使其能表示最新的一份 UIA tree。原先 497/497 通過屬於**修正前**測試數據，**不代表本批程式碼通過**。
 - Windows Desktop Commander 在修改途中回報 \`You've reached this month's Desktop Commander usage\`，因此**本機 LAB 有少量部分編輯，但未完整同步 GitHub 新版、未完整回歸、未重啟 LAB，也未實際進行 Broker 操作**。不要將 GitHub 改動視為已部署在電腦上的版本；需要能使用 Windows 後先備份、核對 staged diff、同步完成的檔案到 LAB，再跑定向＋全套離線測試與不碰交易的靜態驗證，確認沒有任何作業執行才可安全重啟。不得碰正式版或 GitHub main。
 - 尚未達到 desktop 審核標準的 runtime operational PASS / true click-gap performance benchmark；未完成以前不能宣稱加速秒數或雙邊真實交易全情境安全。現有 MT5/cTrader 持倉不自動重下、補單或平倉。
+
+## 2026-10-17 03:13 cTrader 主視窗尺寸零匹配新回歸（阻塞中，未修復）
+- 使用者新截圖：按「寫入兩邊」後彈窗 \`cTrader 主視窗校準尺寸 1938x1038 未找到唯一符合者（0 個），不操作。\` 底部 log 03:13:43 相同。流程在 \`PlatformAutomation.fill\` 首次 \`WindowController.find_calibrated_main\` 即 fail-closed；未見證本次有送單，不能假稱整個交易帳戶狀態正常。
+- 新版 resolver 同時要求 WindowController.find_all(title_pattern)、\`^cTrader(?:\s|$)\` 語意標題、主 HWND 寬高相較 lot_input 的舊 \`window_width/window_height\` 誤差 <=2 像素；**0 匹配不等於 cTrader 沒啟動或帳戶錯誤**，也可能是視窗大小／標題／是否列舉的變化。此錯誤不能直接以加大尺寸 tolerance 解決：\`WindowController.screen_point\` 仍嚴格依舊尺寸的 x_px/y_px 點擊；任意放寬主 HWND 辨識會把後面的填值或送單按到錯位。
+- 修復前必需在本機 READ-ONLY 取得所有 title rule 匹配的 HWND、實際 title、PID、窗口 class、window rect、最小化狀態、各角色原校準尺寸；確認唯一主 terminal 與彈出視窗的不同身分。依桌面《更改前審核標準》修復 canonical resolver 的「**主窗口身分辨識**」與「**每個點位座標有效性**」不同責任：辨識不能單靠尺寸；必要時提示恢復舊窗口大小或重新校準，未具證據不能猜比例座標、盲點或繞過重讀校驗。
+- 回歸矩陣應含：固定尺寸／移動位置不縮放、最大化切換尺寸、DPI 變化、多 cTrader 主窗、同名修改彈窗、主窗未顯示、GooeyTrade 與 MT5、不符合座標校準時無訂單點擊；也不能忘記原有滑鼠攔截緊急釋放。
+- Desktop Commander 工具仍正式回覆當月額度用盡、remote_calls_left_pct=0；**無法觀測 live windows、無法修改本機、無法測試或安全重啟**，不得說 bug 已解。GitHub LAB only，勿動 production/main 或創建新訂單。短期使用者可嘗試讓 cTrader 主交易窗口恢復原校準的最大化/大小，但在確認舊成交持倉與掛單、測試模式關閉自動進場前，勿重複按寫入兩邊。
