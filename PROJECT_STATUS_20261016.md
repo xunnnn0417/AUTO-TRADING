@@ -67,3 +67,11 @@
 - 唯讀當時查詢 MT5 場內與 cTrader 場外各 1 筆持倉，兩者 SL/TP 欄位皆非空，但**尚未確認 cTrader 場外 SL/TP 數值等於預期值**，也未讀證掛單與最新成交歷史。未執行任何送單、補單、平倉、同步修改或試算表寫入。
 - 偵測到兩個同時執行的 LAB main.py Python 行程，可能造成工作階段混淆；未確認交易流程完全安全之前禁止盲目關閉其中任一個，尚未重啟 LAB。GUI 已載入版本不一定包含這次修正。
 - P0 自動補單、單邊結果不明的人工二選一處理及雙 Demo 端對端實際驗收仍未完成；P1 手機／Telegram 遠端控制及右側快捷面板保留。已取消的情境預覽圖仍不製作。
+
+## 2026-10-17 P0：滑鼠防干擾與最新雙邊延遲追蹤
+- 使用者要求：每個「填入場內／填入場外／填入兩邊／重新確認進場」流程，自動操控滑鼠期間阻止本人實體滑鼠誤操作；從 worker 的 task 開始前保護，包含填數值、場內／場外送單與啟用的後續同步，完成或異常時解除。獨立繪製 TradingView／同步場外也適用。
+- LAB 新增 `trading_helper/mouse_guard.py`：Windows WH_MOUSE_LL 低階 hook **只攔實體滑鼠事件**，允許程式注入的滑鼠事件及所有鍵盤；Esc 緊急停止有效；context-manager try/finally 解除；啟動不成功則 fail closed；180s 看門狗解除並停止自動化。禁止 Windows BlockInput 或 ClipCursor 造成 Escape／程式移動失效。
+- `trading_helper/gui.py::_start()` 接入。新增 8 個離線測試；全套 492/492 PASS（111.951 秒），compileall + git diff --check PASS；原生 hook 在「停用攔截」的安全煙霧測試成功安裝／退出，尚未證明真實物理滑鼠被攔截與交易 GUI 同步相容，勿宣稱端對端驗收。
+- 使用者新回報：填完兩側數值到首次送單仍慢，MT5 按送單到 cTrader 按送單也慢。現有 fast-pair instrumentation 已分記場內／場外填入與預檢時間、兩個 click_started 的函式級間隔、分別核對耗時；尚未取得當次耗時數值，不能把延遲說成券商成交或斷言某一檢查是唯一瓶頸。實測 cTrader 完整帳戶 UIA 樹讀取每次約 1.6～2.1s，可能貢獻多秒延遲；未取消送單前獨立必要核對。
+- 最新 journal 01:09:06（在 00:54 安全重啟新版 LAB 之後）：confirmed_both 和 internal_protected 已確認，再次因缺少唯一 CTraderAccountNumberTextBlock_AId 而 attention_required；先前兩次讀不到時的限次重查仍未根治，不能宣稱同步完成、也不能自動重下單／平倉。下次需要現場 UIA 隱藏原因／modal／前景狀態診斷與可驗收的安全修復。
+- 不動正式版與 GitHub main，不覆蓋 config/profiles/calibration，不在此開倉、補單、平倉或寫入 Sheets。GitHub 只推 LAB 分支。本次 GUI 需要安全重啟才能載入滑鼠保護；重啟前必須確認自動交易任務停止，保護實機持倉。
