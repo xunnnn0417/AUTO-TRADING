@@ -10,7 +10,7 @@ For native **read-only** MT5 position verification on Windows, install `MetaTrad
 
 Windows desktop helper for reading a user-owned Google Sheet and assisting with cTrader, MT5, and TradingView workflows.
 
-This tool does not decide market direction, calculate risk, or click live entry buttons. It only moves data from your sheet into calibrated UI fields and helps draw or update related position information.
+This tool does not decide market direction or place Live orders. By default it fills calibrated broker fields from your sheet. Its experimental LAB-only, explicitly enabled **Demo auto-entry** can click once in each verified Demo broker, then attempt independently checked SL/TP sync and optional TradingView drawing. Do not mistake an offline test passing for approval to run Live trading.
 
 ## What Is Included
 
@@ -92,7 +92,7 @@ During calibration, click the calibration window once while waiting for the coun
 1. Click `讀取試算表`.
 2. Confirm symbol, direction, lot size, and SL/TP values.
 3. Click `填入場內`, `填入場外`, or `填入兩邊`.
-4. Confirm the platform fields manually before entry.
+4. Confirm the platform fields and the enabled automation switches. With auto-entry **off**, you enter manually; with auto-entry explicitly **on**, a guarded **Demo-only** order workflow may submit orders when every preflight passes.
 5. After manual entry, use the entry-price and SL/TP helper actions when needed.
 6. Press `ESC` at any time to stop pending mouse and keyboard actions.
 
