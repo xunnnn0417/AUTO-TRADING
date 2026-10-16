@@ -107,8 +107,14 @@ class AutoEntryJournal:
     def _write(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True,exist_ok=True)
         tmp=self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2),
-                       encoding="utf-8")
+        # The journal is the no-double-submit barrier. A temp-file
+        # rename is atomic, but by itself does not flush unwritten bytes
+        # before the UI is allowed to click the broker. Flush FIRST.
+        # Any disk/write error stops the workflow before another order.
+        with tmp.open("w",encoding="utf-8") as stream:
+            json.dump(data,stream,ensure_ascii=False,indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp,self.path)
 
     def prepare_confirmed_retry(
