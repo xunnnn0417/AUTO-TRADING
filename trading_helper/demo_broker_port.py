@@ -648,9 +648,30 @@ class DemoUiBrokerPort:
             raise AutomationError(
                 f"{role} {platform} 手數被改動：預期 {lot}、實際 {observed}。"
             )
+        verified_fills=getattr(self.automation,"_last_verified_fills",None)
+        expected_form=None
+        if isinstance(verified_fills,dict):
+            # Production PlatformAutomation creates this dict. A missing
+            # value means this side was not freshly filled AND read back
+            # in this operation; block entry, even if nonzero SL/TP exist.
+            expected_form=verified_fills.get((platform,role))
+            if (not isinstance(expected_form,dict)
+                or expected_form.get("direction")!=direction
+                or str(expected_form.get("symbol","")).upper()!=
+                   str(self._expected_symbol or "").upper()
+                or not isinstance(expected_form.get("values"),dict)
+                or expected_form["values"].get("lot_input")!=lot):
+                raise AutomationError(
+                    f"{role} {platform} 沒有對應本次填入且核對成功的"
+                    "方向、商品與手數紀錄，禁止送單。"
+                )
         for key in ("sl_input","tp_input"):
+            previous=(
+                expected_form["values"].get(key)
+                if expected_form is not None else None
+            )
             number=self.automation._normalize_numeric_input(
-                snap["values"][key]
+                snap["values"][key],previous
             )
             if ("MT5" in platform.upper() and number<=0) or (
                 "MT5" not in platform.upper() and number==0
@@ -659,6 +680,14 @@ class DemoUiBrokerPort:
                 # (e.g. -527); MT5 SL/TP are absolute positive prices.
                 raise AutomationError(
                     f"{role} {key} 沒有有效數值，禁止送單。"
+                )
+            if expected_form is not None and (
+                not isinstance(previous,Decimal)
+                or number!=previous
+            ):
+                raise AutomationError(
+                    f"{role} {platform} {key} 在填入完成後被改動："
+                    f"本次核對值 {previous}、送單前 {number}；不送單。"
                 )
         if "MT5" not in platform.upper():
             if snap["direction"]!=direction:
