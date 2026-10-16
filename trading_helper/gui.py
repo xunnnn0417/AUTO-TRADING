@@ -71,6 +71,7 @@ from .auto_entry import (
     DuplicateEntryDecisionRequired,
 )
 from .demo_broker_port import DemoUiBrokerPort
+from .entry_status_report import build_entry_status_report
 from .config import APP_DIR
 from .field_detection import inspect_uia_window
 from .calibration_scan import ScanReport, inspect_all_targets
@@ -246,6 +247,7 @@ class UiSignals(QObject):
     ctrader_decimal_suggestion = Signal(object)
     duplicate_entry_decision = Signal(object)
     window_binding_result = Signal(object)
+    auto_entry_result = Signal(object)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -491,7 +493,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.signals.operation_minimized.connect(self._minimize_after_operation)
         self.signals.window_binding_result.connect(self._on_window_binding_result)
+        self.signals.auto_entry_result.connect(self._queue_auto_entry_result)
         self._window_binding_dialog = None
+        self._auto_entry_receipt = None
         self.emergency = EmergencyController(self._emergency_callback)
         self.windows = WindowController(self.emergency)
         threading.Thread(target=self.windows.warm_ocr, daemon=True).start()
@@ -1685,6 +1689,47 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return True
         return super().eventFilter(watched, event)
 
+    def _queue_auto_entry_result(self, report: dict) -> None:
+        """Qt thread: wait for operation_minimized, then show the receipt."""
+        QTimer.singleShot(
+            450, lambda payload=dict(report): self._show_auto_entry_result(payload)
+        )
+
+    def _show_auto_entry_result(self, report: dict) -> None:
+        """Topmost read-only receipt, no new order and no broker focus/click."""
+        earlier = getattr(self, "_auto_entry_receipt", None)
+        if earlier is not None:
+            earlier.close()
+        # An independent window remains visible when the main LAB window
+        # is automatically minimized after fill-both.
+        dialog = QDialog()
+        dialog.setObjectName("autoEntryResultDialog")
+        dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
+        dialog.setWindowTitle(str(report.get("title") or "開倉結果待確認"))
+        dialog.resize(520, 345)
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(str(report.get("title") or "開倉結果待確認"), dialog)
+        heading.setObjectName("autoEntryResultHeading")
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        details = QTextBrowser(dialog)
+        details.setObjectName("autoEntryResultBody")
+        details.setReadOnly(True)
+        details.setPlainText(str(report.get("message") or "尚無可用的核對結果。"))
+        layout.addWidget(details)
+        actions = QHBoxLayout()
+        button = QPushButton("確認", dialog)
+        button.setObjectName("autoEntryResultConfirmButton")
+        button.clicked.connect(dialog.accept)
+        actions.addStretch()
+        actions.addWidget(button)
+        layout.addLayout(actions)
+        self._auto_entry_receipt = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        QApplication.alert(dialog, 5000)
+
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("場外止盈止損")
@@ -1792,7 +1837,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             except Exception as exc:
                 self.signals.status.emit("錯誤")
                 self.log(f"錯誤：{exc}")
-                self.signals.error.emit(str(exc))
+                # An entry receipt already contains the uncertainty and
+                # next steps; avoid showing two competing error popups.
+                if not getattr(exc, "_auto_entry_result_emitted", False):
+                    self.signals.error.emit(str(exc))
             finally:
                 if is_fill:
                     self._fill_task_lock.release()
@@ -2283,6 +2331,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         profile_name=self.profiles.active_name
         sheet_url=str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
+        def emit_receipt(*, success: bool, reason: str = "") -> bool:
+            signal = getattr(
+                getattr(self, "signals", None), "auto_entry_result", None
+            )
+            if signal is None:
+                return False
+            # A past journal entry is only historical evidence; this popup
+            # never claims that a position is still open right now.
+            key = getattr(flow, "last_key", None)
+            entry = (
+                journal.entry(key)
+                if key and getattr(flow, "journal_current_attempt", False)
+                else None
+            )
+            report = build_entry_status_report(
+                entry, success=success, sync_requested=sync_sl_tp,
+                tv_requested=draw_tv, reason=reason,
+                internal_platform=internal_platform,
+                external_platform=external_platform,
+            )
+            signal.emit(report)
+            return True
         extra=(
             {
                 "duplicate_confirmation":duplicate_confirmation,
@@ -2309,6 +2379,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "fast_pair":fast_pair,
             }
             raise
+        except Exception as exc:
+            if emit_receipt(success=False, reason=str(exc)):
+                setattr(exc, "_auto_entry_result_emitted", True)
+            raise
+        emit_receipt(success=True)
         self.log(
             f"Demo 兩邊成交並核對成功："
             f"{result[0].ticket} / {result[1].ticket}"

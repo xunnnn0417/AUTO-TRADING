@@ -158,8 +158,26 @@ class AutoEntryJournal:
                 "status":status, "details":details,
                 "time":time.strftime("%Y-%m-%d %H:%M:%S"),
             })
+            if status in ("filled_internal", "filled_external"):
+                # Sequential entry uses the same durable per-leg receipt
+                # as fast pair. This is recorded after unique fill readback,
+                # using the existing atomic journal write (no added wait).
+                role=status.removeprefix("filled_")
+                ticket = details.removeprefix("ticket=").strip()
+                if not details.startswith("ticket=") or not ticket:
+                    raise RecoveryRequired("成交編號無效，拒絕記錄為已成交。")
+                confirmed=dict(entry.get("confirmed_legs",{}))
+                if role in confirmed and confirmed[role]!=ticket:
+                    raise RecoveryRequired("同一場別出現不同成交編號。")
+                confirmed[role]=ticket
+                entry["confirmed_legs"]=confirmed
             if status=="both_confirmed":
                 entry["confirmed_both"]=details
+            if status=="internal_protected":
+                entry["internal_protected"]=True
+            if status=="synchronized":
+                # Only recorded AFTER modifying and reading back the SL/TP.
+                entry["sl_tp_synchronized"]=True
             data[key]=entry
             self._write(data)
 
@@ -275,6 +293,8 @@ class AutoEntryWorkflow:
             manual_reconciliation_confirmed: bool = False,
             fast_pair: bool = False,
             ) -> tuple[Position,Position]:
+        self.last_key = None
+        self.journal_current_attempt = False
         self.guard()
         if hasattr(self.port, "set_expected_symbol"):
             self.port.set_expected_symbol(instruction.symbol)
@@ -303,6 +323,9 @@ class AutoEntryWorkflow:
             account_e.platform,account_e.account_id,account_e.server):
             raise AutomationError("場內與場外不可使用同一交易帳戶。")
         key=self.fingerprint(profile,sheet_url,(account_i,account_e),instruction)
+        # Diagnostic only: the receipt can report the associated journal
+        # without any broker access or change to order execution.
+        self.last_key=key
         existing=self.journal.entry(key)
         if existing:
             status=str(existing.get("status",""))
@@ -363,8 +386,10 @@ class AutoEntryWorkflow:
             self.journal.prepare_confirmed_retry(
                 key,existing,manually_reconciled=True
             )
+            self.journal_current_attempt = True
             self.journal.record_verified_leg(key,"internal",first)
             self.journal.record_verified_leg(key,"external",second)
+            self.journal.record(key,"internal_protected",first.ticket)
             self.journal.record(
                 key,"both_confirmed",first.ticket+"/"+second.ticket
             )
@@ -428,6 +453,7 @@ class AutoEntryWorkflow:
                 ),
             )
         self.journal.record(key,"prepared","兩側預檢完成")
+        self.journal_current_attempt = True
         try:
             if fast_pair:
                 # Explicitly opted-in Demo-only rapid hedge: BOTH dialogs
