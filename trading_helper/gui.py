@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QTabWidget,
+    QTabBar,
     QTextBrowser,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -93,6 +94,7 @@ from .sheets import SheetReader
 from .trading_day import trading_day_key
 from .ui_theme import MAIN_THEME, themed_icon
 from .delayed_help import DelayedHoverHelp
+from .calibration_status import completion
 from .progress_ruler import (
     AccountRuler, SHEET_RULER_REFERENCES, calculate_ruler_from_sheet,
     decimal_value, money,
@@ -655,9 +657,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             "確認唯一持倉識別後才允許嘗試送單；可能真的在 Demo 開倉。"
             "任何結果不確定會停止，不會重送或自行平倉。"
         )
-        # Never arm a broker entry toggle merely because it was enabled in
-        # a previous session. Users explicitly enable each automation.
-        self.auto_entry_on_fill_both.setChecked(False)
+        # Restore the user's previously confirmed preference. This only
+        # checks a box: starting the GUI never runs fill/order callbacks.
+        self.auto_entry_on_fill_both.setChecked(
+            bool(self.store.data["ui"].get("auto_entry_on_fill_both",False))
+        )
         self.auto_entry_on_fill_both.toggled.connect(self._confirm_auto_entry_toggle)
         # A single-line safety toggle replaces the former full-width row.
         self.auto_entry_on_fill_both.setToolTip(
@@ -685,6 +689,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         self.tv_draw_internal.toggled.connect(lambda _: self.save_ui_state())
         display_layout.addWidget(self.tv_draw_internal)
+        self.show_calibration_badges = QCheckBox(
+            "顯示校準未完成紅點", display_container
+        )
+        self.show_calibration_badges.setChecked(
+            bool(self.store.data["ui"].get("show_calibration_badges", True))
+        )
+        self.show_calibration_badges.toggled.connect(
+            lambda _: self.save_ui_state()
+        )
+        self.show_calibration_badges.toggled.connect(
+            lambda _: self._refresh_calibration_badges()
+        )
+        display_layout.addWidget(self.show_calibration_badges)
         self.always_on_top = QCheckBox("保持最上層", display_container)
         self.always_on_top.setChecked(False)
         self.always_on_top.toggled.connect(self.set_always_on_top)
@@ -1031,14 +1048,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             "先檢查兩邊，再連續送出兩邊，之後核對成交。"
             "其中一邊未成交可能造成單邊曝險。"
         )
-        # Never persist a fast-dispatch consent across application restarts:
-        # require another explicit opt-in for every LAB testing session.
-        self.auto_fast_pair.setChecked(False)
+        self.auto_fast_pair.setChecked(
+            bool(self.store.data["ui"].get("auto_fast_pair",False))
+        )
         self.auto_fast_pair.toggled.connect(self._confirm_fast_pair_toggle)
         automation_layout.addWidget(self.auto_fast_pair)
         self.auto_sync_sl_tp_after_entry = QCheckBox("同步 SL/TP")
         self.auto_sync_sl_tp_after_entry.setObjectName("auto_sync_sl_tp_after_entry")
-        self.auto_sync_sl_tp_after_entry.setChecked(False)
+        self.auto_sync_sl_tp_after_entry.setChecked(
+            bool(self.store.data["ui"].get("auto_sync_sl_tp_after_entry",False))
+        )
         self.auto_sync_sl_tp_after_entry.toggled.connect(
             lambda enabled: self._confirm_future_auto_option(
                 self.auto_sync_sl_tp_after_entry, enabled, "同步 SL/TP"
@@ -1047,7 +1066,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.addWidget(self.auto_sync_sl_tp_after_entry)
         self.auto_draw_tv_after_entry = QCheckBox("繪製 TV")
         self.auto_draw_tv_after_entry.setObjectName("auto_draw_tv_after_entry")
-        self.auto_draw_tv_after_entry.setChecked(False)
+        self.auto_draw_tv_after_entry.setChecked(
+            bool(self.store.data["ui"].get("auto_draw_tv_after_entry",False))
+        )
         self.auto_draw_tv_after_entry.toggled.connect(
             lambda enabled: self._confirm_future_auto_option(
                 self.auto_draw_tv_after_entry, enabled, "繪製 TV"
@@ -1330,6 +1351,60 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._hover_help.register(widget, description)
         self.profile_combo.setToolTip(self.profile_combo.currentText())
         self.profile_combo.currentTextChanged.connect(self.profile_combo.setToolTip)
+        self._setup_calibration_badges()
+
+    def _setup_calibration_badges(self) -> None:
+        """Tiny noninteractive dots at top-right of Edit and broker buttons."""
+        self._calibration_badge_labels = {}
+        targets = [
+            self.page_nav["編輯"],
+            self.action_buttons["校準 cTrader"],
+            self.action_buttons["校準 MT5"],
+            self.action_buttons["校準 TradingView"],
+        ]
+        for button in targets:
+            dot = QLabel("●", button)
+            dot.setObjectName("calibrationIncompleteDot")
+            dot.setFixedSize(12, 12)
+            dot.setStyleSheet(
+                "color:#fa5362;font-size:15px;background:transparent;"
+            )
+            dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            dot.move(max(0, button.width()-13), 0)
+            dot.hide()
+            button.installEventFilter(self)
+            self._calibration_badge_labels[button] = dot
+        self._refresh_calibration_badges()
+
+    def _refresh_calibration_badges(self) -> None:
+        """Only inspect in-memory saved coordinates; never scan a broker."""
+        badges = getattr(self, "_calibration_badge_labels", None)
+        if not badges:
+            return
+        enabled = bool(self.show_calibration_badges.isChecked())
+        incomplete = {}
+        for platform in ("cTrader", "MT5", "TradingView"):
+            points = self.store.data["platforms"].get(
+                platform, {}
+            ).get("points", {})
+            keys = [key for key,_ in CALIBRATION_TARGETS[platform]]
+            done,total = completion(points, keys)
+            incomplete[platform] = done < total
+            self.action_buttons["校準 " + platform].setToolTip(
+                f"已儲存校準：{done}/{total}；"
+                "僅代表位置已儲存，不代表實際交易欄位驗收。"
+            )
+        states = {
+            self.page_nav["編輯"]: any(incomplete.values()),
+            self.action_buttons["校準 cTrader"]: incomplete["cTrader"],
+            self.action_buttons["校準 MT5"]: incomplete["MT5"],
+            self.action_buttons["校準 TradingView"]: incomplete["TradingView"],
+        }
+        for button, dot in badges.items():
+            dot.move(max(0, button.width()-13), 0)
+            dot.setVisible(enabled and states[button])
+            if dot.isVisible():
+                dot.raise_()
 
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
@@ -1586,6 +1661,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         super().keyPressEvent(event)
 
     def eventFilter(self, watched, event) -> bool:
+        badges = getattr(self, "_calibration_badge_labels", {})
+        if watched in badges and event.type() in (
+            QEvent.Resize, QEvent.Show,
+        ):
+            dot = badges[watched]
+            dot.move(max(0, watched.width()-13), 0)
+            dot.raise_()
         if (
             event.type() == QEvent.KeyPress
             and event.key() in (Qt.Key_Return, Qt.Key_Enter)
@@ -2800,6 +2882,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         try:
             CalibrationDialog(self, platform).exec()
         finally:
+            self._refresh_calibration_badges()
             if not was_minimized:
                 self.showNormal()
                 self.raise_()
@@ -2914,8 +2997,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
               MT5 第二階段請先自行開啟新訂單視窗。</li>
               <li>「讀取試算表」核對方向、手數及止盈止損，再按「填入場內／場外／兩邊」。</li>
             </ol>
+            <h2>校準前建立模擬帳戶</h2>
+            <p>若還沒有方便測試的持倉，可前往
+            <b>IC Markets 官方網站</b>申請模擬帳戶，分別選擇
+            <b>cTrader</b> 與 <b>MetaTrader 5 (MT5)</b>，
+            在對應桌面平台登入後，再逐階段校準。
+            校準持倉列表與修改視窗時，請先自行開啟已有的
+            <b>Demo 持倉</b>與修改視窗。無持倉時可先校準進場前欄位；
+            不需要為了校準使用 Live 帳戶。校準掃描本身不會下單。</p>
+            <p>校準頁標籤的 (6/7) 是已儲存位置數/總數，
+            不是交易安全驗收。紅點可在「顯示設定」關閉。</p>
             <h2>填入與進場</h2>
-            <p>目前填入只會寫入交易欄位，<b>不會自動送單</b>。
+            <p>未勾選「自動進場」時，填入只會寫入交易欄位；
+            勾選後雙 Demo 自動進場功能可能真的送出模擬訂單。
             缺校準點會列出清單；數值未按 Enter 則會先詢問確認。
             按 ESC 可中止後續動作。</p>
             <h2>交易參數與工具</h2>
@@ -2999,7 +3093,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "internal_platform": self.internal_platform.currentText(),
                 "external_platform": self.external_platform.currentText(),
                 "tv_draw_internal": self.tv_draw_internal.isChecked(),
+                "show_calibration_badges": (
+                    self.show_calibration_badges.isChecked()
+                    if hasattr(self, "show_calibration_badges")
+                    else bool(self.store.data["ui"].get(
+                        "show_calibration_badges", True))
+                ),
                 "auto_entry_on_fill_both": self.auto_entry_on_fill_both.isChecked(),
+                "auto_fast_pair": (
+                    self.auto_fast_pair.isChecked()
+                    if hasattr(self,"auto_fast_pair") else False
+                ),
                 "auto_sync_sl_tp_after_entry": self.auto_sync_sl_tp_after_entry.isChecked(),
                 "auto_draw_tv_after_entry": self.auto_draw_tv_after_entry.isChecked(),
             }
@@ -3049,6 +3153,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
         if not enabled:
+            if hasattr(self, "save_ui_state"):
+                self.save_ui_state()
             self.log("已關閉快速雙邊進場，恢復先確認場內再進場場外。")
             return
         if not self.auto_entry_on_fill_both.isChecked():
@@ -3070,7 +3176,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.auto_fast_pair.setChecked(False)
             self.auto_fast_pair.blockSignals(was)
             return
-        self.log("已明確啟用本次 LAB 快速雙邊 Demo 送單；單邊成交風險提高。")
+        if hasattr(self,"save_ui_state"):
+            self.save_ui_state()
+        self.log("已明確啟用快速雙邊 Demo 偏好；送單仍須按填入兩邊並通過核對。")
 
     def _confirm_auto_entry_toggle(self, enabled: bool) -> None:
         """Explicit opt-in; switching off takes effect immediately."""
@@ -3246,31 +3354,50 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.internal_platform.blockSignals(True)
         self.external_platform.blockSignals(True)
         self.tv_draw_internal.blockSignals(True)
+        badge_toggle=getattr(self,"show_calibration_badges",None)
+        if badge_toggle is not None:
+            badge_toggle.blockSignals(True)
         self.auto_entry_on_fill_both.blockSignals(True)
         self.auto_sync_sl_tp_after_entry.blockSignals(True)
         self.auto_draw_tv_after_entry.blockSignals(True)
         fast_control=getattr(self,"auto_fast_pair",None)
         if fast_control is not None:
             fast_control.blockSignals(True)
-            fast_control.setChecked(False)
         self.internal_platform.setCurrentText(ui["internal_platform"])
         self.external_platform.setCurrentText(ui["external_platform"])
         self.tv_draw_internal.setChecked(bool(ui.get("tv_draw_internal", False)))
-        self.auto_entry_on_fill_both.setChecked(False)
-        self.auto_sync_sl_tp_after_entry.setChecked(False)
-        self.auto_draw_tv_after_entry.setChecked(False)
+        if badge_toggle is not None:
+            badge_toggle.setChecked(
+                bool(ui.get("show_calibration_badges", True))
+            )
+        self.auto_entry_on_fill_both.setChecked(
+            bool(ui.get("auto_entry_on_fill_both",False))
+        )
+        self.auto_sync_sl_tp_after_entry.setChecked(
+            bool(ui.get("auto_sync_sl_tp_after_entry",False))
+        )
+        self.auto_draw_tv_after_entry.setChecked(
+            bool(ui.get("auto_draw_tv_after_entry",False))
+        )
+        if fast_control is not None:
+            fast_control.setChecked(bool(ui.get("auto_fast_pair",False)))
         self.internal_platform.blockSignals(False)
         self.external_platform.blockSignals(False)
         self.tv_draw_internal.blockSignals(False)
+        if badge_toggle is not None:
+            badge_toggle.blockSignals(False)
         self.auto_entry_on_fill_both.blockSignals(False)
         self.auto_sync_sl_tp_after_entry.blockSignals(False)
         self.auto_draw_tv_after_entry.blockSignals(False)
         if fast_control is not None:
             fast_control.blockSignals(False)
         TradingHelperApp._refresh_auto_option_dependencies(self)
-        # Clearing old checked preferences also prevents a profile switch
-        # from silently re-enabling a previously armed trade workflow.
-        ui["auto_entry_on_fill_both"] = False
+        # Dependencies are checked without emitting clicked/toggled events;
+        # a restored preference never triggers broker I/O by itself.
+        ui["auto_entry_on_fill_both"] = self.auto_entry_on_fill_both.isChecked()
+        ui["auto_fast_pair"] = (
+            fast_control.isChecked() if fast_control is not None else False
+        )
         ui["auto_sync_sl_tp_after_entry"] = (
             self.auto_sync_sl_tp_after_entry.isChecked()
         )
@@ -3297,6 +3424,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             label.setText("-")
         if hasattr(self, "_refresh_ruler"):
             self._refresh_ruler()
+        if hasattr(self,"_refresh_calibration_badges"):
+            self._refresh_calibration_badges()
 
     def _refresh_profile_combo(self, selected: str) -> None:
         self._profile_switching = True
@@ -3348,6 +3477,8 @@ class CalibrationDialog(QDialog):
         # Use short descriptive titles; instructions remain inside each page.
         self._calibration_tabs.tabBar().setUsesScrollButtons(False)
         self._stage_keys: list[tuple[str, ...]] = []
+        self._stage_titles: list[str] = []
+        self._stage_dots: list[QLabel] = []
         keys_all = tuple(key for key, _ in CALIBRATION_TARGETS[platform])
         if platform == "cTrader":
             after_keys = set(POSITION_GRID_KEYS+POSITION_EDIT_KEYS)
@@ -3420,7 +3551,20 @@ class CalibrationDialog(QDialog):
                 ))
             page_layout.addStretch()
             self._stage_keys.append(tuple(stage_keys))
-            self._calibration_tabs.addTab(page, title)
+            self._stage_titles.append(title)
+            tab_idx = self._calibration_tabs.addTab(page, title)
+            dot = QLabel("●")
+            dot.setObjectName("stageCalibrationIncompleteDot")
+            dot.setFixedSize(12, 15)
+            dot.setStyleSheet(
+                "color:#fa5362;font-size:15px;background:transparent;"
+            )
+            dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self._calibration_tabs.tabBar().setTabButton(
+                tab_idx, QTabBar.RightSide, dot
+            )
+            self._stage_dots.append(dot)
+        self._refresh_stage_progress()
         self._calibration_tabs.currentChanged.connect(self._select_stage_radio)
         layout.addWidget(self._calibration_tabs)
         # Detailed calibration precautions live in Help and tooltips.
@@ -3474,6 +3618,26 @@ class CalibrationDialog(QDialog):
         self._hover_outline = CandidateOutline()
         self.hover_finished.connect(self._finish_hover)
         self.inventory_finished.connect(self._finish_inventory)
+
+    def _refresh_stage_progress(self) -> None:
+        # Also support lightweight, read-only calibration previews whose
+        # parent has not yet loaded a full ConfigStore (including unit tests).
+        store=getattr(self.app, "store", None)
+        data=getattr(store, "data", {}) or {}
+        platforms=data.get("platforms", {}) if isinstance(data,dict) else {}
+        points=platforms.get(self.platform, {}).get("points", {})
+        ui=data.get("ui", {}) if isinstance(data,dict) else {}
+        show_dots=bool(ui.get("show_calibration_badges", True))
+        for idx, keys in enumerate(self._stage_keys):
+            done,total=completion(points,keys)
+            self._calibration_tabs.setTabText(
+                idx, f"{self._stage_titles[idx]} ({done}/{total})"
+            )
+            self._stage_dots[idx].setVisible(
+                show_dots and done < total
+            )
+        if hasattr(self.app, "_refresh_calibration_badges"):
+            self.app._refresh_calibration_badges()
 
     def _select_stage_radio(self, index: int) -> None:
         """A field selected in another tab must not be captured by mistake."""
@@ -3773,6 +3937,7 @@ class CalibrationDialog(QDialog):
                 original, ctx["pid"], process_id_for_window,
             )
             save_confirmed_points(self.app, self.platform, points)
+            self._refresh_stage_progress()
             state["saved"] = True
             for cb in state["checkboxes"].values():
                 cb.setEnabled(False)
@@ -4090,6 +4255,7 @@ class CalibrationDialog(QDialog):
         return "external"
 
     def _finish_capture(self, key: str) -> None:
+        self._refresh_stage_progress()
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
         self.showNormal()
         self.raise_()
@@ -4424,6 +4590,5 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
-
 
 

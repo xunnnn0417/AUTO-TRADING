@@ -78,7 +78,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "internal_platform": "cTrader",
         "external_platform": "MT5",
         "tv_draw_internal": False,
+        "show_calibration_badges": True,
         "auto_entry_on_fill_both": False,
+        "auto_fast_pair": False,
         "auto_sync_sl_tp_after_entry": False,
         "auto_draw_tv_after_entry": False,
         # Scheme-specific cTrader input preference; stale identities
@@ -119,7 +121,9 @@ def _copy_platform_data_if_empty(
         return
     target_profile = _ensure_platform(platforms, target)
     source_profile = platforms[source]
-    if source_profile.get("points") and not target_profile.get("points"):
+    if (source_profile.get("points")
+        and not target_profile.get("points")
+        and not target_profile.get("cleared_calibration_keys")):
         target_profile["points"] = deepcopy(source_profile["points"])
     source_titles = source_profile.get("window_title", {})
     target_titles = target_profile.setdefault("window_title", {})
@@ -185,8 +189,12 @@ def _restore_legacy_points(
         return
     target_profile = _ensure_platform(platforms, target)
     target_points = target_profile.setdefault("points", {})
+    # Explicitly cleared calibration entries must stay missing on startup.
+    # Otherwise legacy GooeyTrade aliases silently re-add removed cTrader
+    # points, hiding the incomplete badge and defeating user re-calibration.
+    cleared = set(target_profile.get("cleared_calibration_keys",()))
     for point_name, point in source_points.items():
-        if point_name not in target_points:
+        if point_name not in target_points and point_name not in cleared:
             target_points[point_name] = deepcopy(point)
 
 
@@ -405,6 +413,15 @@ class ProfileStore:
                 config["platforms"][target_platform].setdefault("points", {})[
                     point_name
                 ] = synced_point
+                # Saving a newly captured point ends that field's explicit
+                # "cleared" state so future migrations can work normally.
+                cleared = config["platforms"][target_platform].get(
+                    "cleared_calibration_keys",[]
+                )
+                if point_name in cleared:
+                    config["platforms"][target_platform]["cleared_calibration_keys"] = [
+                        item for item in cleared if item != point_name
+                    ]
         self.save()
 
     def save(self) -> None:
@@ -452,4 +469,3 @@ class ProfileStore:
             raise ValueError("方案名稱不能空白。")
         if name in self.data["profiles"]:
             raise ValueError("方案名稱已存在。")
-

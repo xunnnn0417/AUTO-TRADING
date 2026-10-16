@@ -175,7 +175,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         dialog=MagicMock()
         fake.auto_entry_on_fill_both.toggled.connect(dialog)
         TradingHelperApp._apply_profile_ui(fake)
-        self.assertFalse(fake.auto_entry_on_fill_both.isChecked())
+        self.assertTrue(fake.auto_entry_on_fill_both.isChecked())
         self.assertFalse(fake.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(fake.auto_draw_tv_after_entry.isChecked())
         dialog.assert_not_called()

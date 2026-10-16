@@ -92,17 +92,65 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             "ui"]["auto_sync_sl_tp_after_entry"])
         self.assertTrue(self.w.profiles.load_profile()[
             "ui"]["auto_draw_tv_after_entry"])
-        # Even saved ON toggles must never silently activate when changing
-        # schemes or launching a new session.
-        self.w._apply_profile_ui()
-        self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
-        self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
+        # Remember individually confirmed options, without another prompt
+        # or firing any fill/order workflow on profile restore.
+        with patch("trading_helper.gui.QMessageBox.question") as question:
+            self.w._apply_profile_ui()
+            question.assert_not_called()
+        self.assertTrue(self.w.auto_entry_on_fill_both.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.auto_draw_tv_after_entry.isChecked())
         self.w.auto_sync_sl_tp_after_entry.setChecked(False)
         self.assertFalse(self.w.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(self.w.store.data["ui"]["auto_draw_tv_after_entry"])
+
+    def test_confirmed_fast_pair_preference_persists_without_repeat_prompt(self):
+        with patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+            self.w.auto_fast_pair.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
+        self.assertTrue(self.w.store.data["ui"]["auto_fast_pair"])
+        self.assertTrue(self.w.profiles.load_profile()["ui"]["auto_fast_pair"])
+        with patch("trading_helper.gui.QMessageBox.question") as prompt:
+            self.w._apply_profile_ui()
+            prompt.assert_not_called()
+        self.assertTrue(self.w.auto_entry_on_fill_both.isChecked())
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
+        self.w.auto_fast_pair.setChecked(False)
+        self.assertFalse(self.w.profiles.load_profile()["ui"]["auto_fast_pair"])
+
+    def test_tradingview_main_badge_follows_saved_points_and_display_switch(self):
+        from trading_helper.calibration_status import completion
+        targets=gui.CALIBRATION_TARGETS
+        def saved():
+            return {"x":.4,"y":.5}
+        platforms=self.w.store.data["platforms"]
+        for plat in ("cTrader","MT5","TradingView"):
+            platforms[plat]["points"]={k:saved() for k,_ in targets[plat]}
+        platforms["TradingView"]["points"].pop(targets["TradingView"][0][0])
+        self.w.switch_workspace("編輯")
+        self.w.show_calibration_badges.setChecked(True)
+        self.w._refresh_calibration_badges()
+        self.qtapp.processEvents()
+        dots=self.w._calibration_badge_labels
+        tv=dots[self.w.action_buttons["校準 TradingView"]]
+        edit=dots[self.w.page_nav["編輯"]]
+        self.assertTrue(tv.isVisible())
+        self.assertTrue(edit.isVisible())
+        self.assertFalse(dots[self.w.action_buttons["校準 cTrader"]].isVisible())
+        self.assertFalse(dots[self.w.action_buttons["校準 MT5"]].isVisible())
+        self.assertEqual(
+            completion(platforms["TradingView"]["points"],
+                       [k for k,_ in targets["TradingView"]]),(7,8))
+        self.w.show_calibration_badges.setChecked(False)
+        self.qtapp.processEvents()
+        self.assertFalse(tv.isVisible())
+        self.assertFalse(edit.isVisible())
 
     def test_unchecking_first_cascades_and_can_restore_sequentially(self):
         first=self.w.auto_entry_on_fill_both
@@ -164,8 +212,8 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             "auto_draw_tv_after_entry":True,
         })
         self.w._apply_profile_ui()
-        self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isEnabled())
+        self.assertTrue(self.w.auto_entry_on_fill_both.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isEnabled())
         self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
