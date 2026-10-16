@@ -168,6 +168,38 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(box.findChild(QPushButton,"windowBindingChangeButton").isEnabled())
         box.close()
 
+    def test_binding_result_is_topmost_and_reopens_if_broker_hides_it(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","old-bound-regex")
+        self.w.bind_role_window("external")
+        box=self.w._window_binding_dialog
+        self.assertFalse(bool(box.windowFlags() & Qt.WindowStaysOnTopHint))
+        box.hide()
+        self.w._on_window_binding_result({
+            "role":"external","platform":"MT5","ok":True,
+            "old":"old-bound-regex","new":"new-bound-regex",
+            "title":"MT5 Demo Terminal"
+        })
+        self.qtapp.processEvents()
+        self.assertTrue(bool(box.windowFlags() & Qt.WindowStaysOnTopHint))
+        self.assertTrue(box.isVisible())
+        self.assertIn("完成",box.windowTitle())
+        self.assertIn("new-bound-regex",
+                      box.findChild(QLabel,"windowBindingResultLabel").text())
+        # A repeated capture disables topmost during the 3-second cursor
+        # selection; its final receipt must become topmost again.
+        with patch.object(self.w.windows,"window_at_cursor",
+                          side_effect=RuntimeError("模擬擷取失敗")), \
+             patch.object(gui.time,"sleep",return_value=None), \
+             patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()):
+            box.findChild(QPushButton,"windowBindingChangeButton").click()
+            self.qtapp.processEvents()
+        self.assertTrue(bool(box.windowFlags() & Qt.WindowStaysOnTopHint))
+        self.assertIn("未完成",box.windowTitle())
+        self.assertIn("未更改",box.findChild(QLabel,"windowBindingResultLabel").text())
+        box.close()
+
     def test_simulated_window_capture_changes_binding_only(self):
         from types import SimpleNamespace
         from PySide6.QtWidgets import QLabel

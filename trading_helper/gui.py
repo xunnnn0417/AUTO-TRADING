@@ -2939,6 +2939,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._window_binding_dialog = dialog
 
         def begin() -> None:
+            # The receipt is temporarily topmost *after* capture. Turn that
+            # flag off for a subsequent capture so the dialog will not cover
+            # the broker window under the cursor during the countdown.
+            if dialog.windowFlags() & Qt.WindowStaysOnTopHint:
+                dialog.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+                dialog.show()
             change.setEnabled(False)
             outcome.setText(
                 "等待擷取：請在 3 秒內將滑鼠游標移到目標平台視窗。"
@@ -3001,7 +3007,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _on_window_binding_result(self, result: dict) -> None:
         """UI-thread receipt in the SAME panel; no separate success popup."""
         dialog = getattr(self,"_window_binding_dialog",None)
-        if dialog is None or not dialog.isVisible():
+        if dialog is None:
             return
         if (dialog.property("boundRole")!=result.get("role") or
             dialog.property("boundPlatform")!=result.get("platform")):
@@ -3028,6 +3034,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             outcome.setText(
                 f"未更改原本的綁定。原因：{result.get('message','未知錯誤')}"
             )
+        # Give the user an immediate visible receipt even when the broker
+        # window has foreground focus. Raising a normal QDialog is not
+        # sufficient on Windows: make only this finished receipt topmost,
+        # without bringing cTrader/MT5 to the foreground or sending keys.
+        dialog.setWindowTitle(
+            "✓ 視窗綁定完成" if result.get("ok") else "視窗綁定未完成"
+        )
+        if not (dialog.windowFlags() & Qt.WindowStaysOnTopHint):
+            dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        QApplication.alert(dialog, 4000)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
