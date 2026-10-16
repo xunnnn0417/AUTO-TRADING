@@ -66,3 +66,15 @@
 - **GitHub LAB 已修正** `trading_helper/gui.py` 8 處過時的 Demo 自動進場/後續選項文案（純文字，不修改送單演算法）。
 - **本文件新增**，把全 repo 的 P0 / P1 / P2、受影響模組與驗收前提統一收斂。
 - **尚未完成：** 本機部署、全部回歸、實際 click-gap 性能、P0-01/04 修正、真實端到端驗收。
+
+## 2026-10-17 P0 修復進度更新（以 Windows CI 為準）
+
+- **P0-01（程式修正完成／實機未驗）**：`WindowController.find_calibrated_main` 用符合版本型態的 cTrader 原生主窗標題辨識唯一視窗，不再以 1938×1038 等舊校準大小當作主窗身份；`PlatformAutomation.fill` 在任何 UIA 掃描或輸入前，以只讀 `screen_point` 提早核對當前視窗的點擊座標。尺寸/DPI 失效依舊拒絕點擊，避免「0 個主窗」模糊錯誤。不同 cTrader 真實版本標題仍需本機驗收。
+- **P0-02（程式原型已測／實機延遲未知）**：先前 GitHub LAB 已把 cTrader 最終送單前的帳戶、商品、表單、原生 Place order 按鈕取證共用同一個全新的 UIA inventory；CI 有模擬快照回歸。尚未同步使用者電腦，不能聲稱兩次 OS 點擊 <1 秒或實際成交改善。
+- **P0-03（離線驗收完成／實機部署未完成）**：新增 LAB Windows GitHub Actions CI；2026-10-17 編譯及 `525/525` 離線 unittest PASS，`git diff --exit-code` PASS，約 81.340 秒。[成功執行證據](https://github.com/xunnnn0417/AUTO-TRADING/actions/runs/38968709491)，測試程式 commit `11aeed38fcb82f3025b0f09d0174e6a91ed8ea37`。GitHub LAB 通過不代表 Windows 本機 LAB 已更新。
+- **P0-04（程式修正完成／實機未驗）**：`PlatformAutomation.fill` 只在每側三欄**實際讀回成功後**保存本次預期方向、商品、手數、SL/TP 值；下一次新 fill 先清掉舊值。最後 `DemoUiBrokerPort.verify_order_form` 對同筆數值作精確 Decimal 比對。cTrader native/Gooey 點數及 MT5 填入時計價都以本次**已驗證填值**為準；錯誤的非零 SL/TP、沒有本次驗證記錄都禁止送單。新增 cTrader 與 MT5 正反例，CI 已通過。
+- **P0-05（待實機）**：cTrader account/modal 選窗改善，但原有持倉 SL/TP **沒有**真實重新核對或修正；繼續標示未證實，不能在未知時自動下單、補單、平倉。
+- **P0-06（有意安全禁用）**：無券商伺服器最終拒單及無掛單可核對證據，GUI adapter `prove_terminal_rejection` 繼續回傳 None，不允許危險猜測補單。
+- **P0-07（程式改善／斷電證明仍需實機）**：`AutoEntryJournal._write` 在同目錄暫存 JSON 呼叫 `flush` + `os.fsync` 後才 `os.replace`；I/O 失敗不得覆寫已確認紀錄，新增兩項測試通過。這改善資料寫入耐久性，但 **不保證** Windows NTFS 任意瞬間斷電後目錄資訊完整，仍需 crash/fault 實機測試。
+- 額外：cTrader UIA traversal 失敗現一律轉成 `AutomationError` 安全停止；已修正舊 synthetic UIA fixture。**本次沒有操作任何券商訂單或本機持倉**；正式版與 GitHub `main` 均未修改。
+- GitHub 參考：Microsoft UI Automation 的 CacheRequest 能降低跨行程反覆讀取多個屬性的成本；pywinauto 社群也有將 repeated selectors 轉為單次 descendants inventory 的效能案例。現階段只採納**本次新鮮 inventory 可共用**的架構概念，不在未驗證情況下引入整套外部交易機器人或替換 native automation provider。
