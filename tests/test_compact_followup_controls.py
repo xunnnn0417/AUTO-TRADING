@@ -235,7 +235,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
                       box.findChild(QLabel,"windowBindingResultLabel").text())
         # A repeated capture disables topmost during the 3-second cursor
         # selection; its final receipt must become topmost again.
-        with patch.object(self.w.windows,"window_at_cursor",
+        with patch.object(self.w.windows,"foreground_top_level_window",
                           side_effect=RuntimeError("模擬擷取失敗")), \
              patch.object(gui.time,"sleep",return_value=None), \
              patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()):
@@ -252,7 +252,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.w._save_bound_window("MT5","external","old-bound-regex")
         self.w.bind_role_window("external")
         box=self.w._window_binding_dialog
-        with patch.object(self.w.windows,"window_at_cursor",
+        with patch.object(self.w.windows,"foreground_top_level_window",
                           return_value=SimpleNamespace(title="ICMarkets Terminal - 7777")), \
              patch.object(gui.time,"sleep",return_value=None), \
              patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()), \
@@ -268,12 +268,66 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         )
         box.close()
 
+    def test_foreground_binding_works_even_when_cursor_is_somewhere_else(self):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","old-title")
+        self.w.bind_role_window("external")
+        panel=self.w._window_binding_dialog
+        with patch.object(
+            self.w.windows,"foreground_top_level_window",
+            return_value=SimpleNamespace(
+                handle=901,title="ICMarkets MT5 Terminal - 55512345"
+            )
+        ) as foreground, \
+             patch.object(self.w.windows,"window_at_cursor",
+                          side_effect=AssertionError("cursor must be ignored")) as cursor, \
+             patch("trading_helper.gui.process_id_for_window",
+                   side_effect=lambda handle:123 if handle==901 else 456), \
+             patch.object(gui.time,"sleep",return_value=None), \
+             patch.object(self.w,"_start",
+                          side_effect=lambda name,task,**kw:task()):
+            panel.findChild(QPushButton,"windowBindingChangeButton").click()
+            self.qtapp.processEvents()
+            foreground.assert_called_once()
+            cursor.assert_not_called()
+        self.assertIn("ICMarkets",self.w.store.data[
+            "platforms"]["MT5"]["window_title"]["external"])
+        self.assertIn("已更改完成",panel.findChild(
+            QLabel,"windowBindingResultLabel").text())
+        panel.close()
+
+    def test_binding_rejects_own_gui_even_when_it_is_foreground(self):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","saved-rule")
+        self.w.bind_role_window("external")
+        panel=self.w._window_binding_dialog
+        with patch.object(
+            self.w.windows,"foreground_top_level_window",
+            return_value=SimpleNamespace(
+                handle=901,title="對沖小幫手"
+            )
+        ), \
+             patch("trading_helper.gui.process_id_for_window",return_value=123), \
+             patch("trading_helper.gui.os.getpid",return_value=123), \
+             patch.object(gui.time,"sleep",return_value=None), \
+             patch.object(self.w,"_start",
+                          side_effect=lambda name,task,**kw:task()):
+            panel.findChild(QPushButton,"windowBindingChangeButton").click()
+            self.qtapp.processEvents()
+        self.assertEqual(self.w.store.data[
+            "platforms"]["MT5"]["window_title"]["external"],"saved-rule")
+        self.assertIn("最前景仍是對沖小幫手",
+                      panel.findChild(QLabel,"windowBindingResultLabel").text())
+        panel.close()
+
     def test_failed_capture_keeps_existing_binding_and_shows_error_inline(self):
         from PySide6.QtWidgets import QLabel
         self.w._save_bound_window("MT5","external","old-bound-regex")
         self.w.bind_role_window("external")
         box=self.w._window_binding_dialog
-        with patch.object(self.w.windows,"window_at_cursor",
+        with patch.object(self.w.windows,"foreground_top_level_window",
                           side_effect=RuntimeError("無效視窗")), \
              patch.object(gui.time,"sleep",return_value=None), \
              patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 import sys
 import threading
@@ -2919,7 +2920,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         layout.addWidget(current_label)
         outcome = QLabel(
             "確認目前綁定後，可在此更改。"
-            "按下更改後，3 秒內將游標移到目標視窗。",dialog
+            "按下更改後，3 秒內切換到要綁定的交易平台視窗（不用移動滑鼠）。",dialog
         )
         outcome.setWordWrap(True)
         outcome.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -2952,13 +2953,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 dialog.show()
             change.setEnabled(False)
             outcome.setText(
-                "等待擷取：請在 3 秒內將滑鼠游標移到目標平台視窗。"
+                "等待擷取：請在 3 秒內將目標交易平台切到最前景。"
                 "擷取期間不會下單。"
             )
             origin_profile = self.profiles.active_name
             def task() -> None:
                 try:
-                    self.log(f"準備綁定{role_text} {platform}：3 秒後擷取游標下視窗。")
+                    self.log(f"準備綁定{role_text} {platform}：3 秒後擷取最前景視窗，無須移動滑鼠。")
                     for count in (3,2,1):
                         self.log(f"綁定{role_text} {platform}：{count}")
                         time.sleep(1)
@@ -2971,8 +2972,29 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     )
                     if selected != platform:
                         raise AutomationError("平台已變更，請重新開啟綁定。")
-                    target = self.windows.window_at_cursor()
-                    pattern = _window_title_pattern(platform,target.title)
+                    target = self.windows.foreground_top_level_window()
+                    # Qt/dialog itself or an unrelated program is NOT an
+                    # eligible target. Do not silently bind the wrong HWND.
+                    target_pid = process_id_for_window(
+                        getattr(target, "handle", 0)
+                    )
+                    # GUI HWND methods are not thread-safe. The worker
+                    # can compare against our process ID without touching Qt.
+                    own_pid = os.getpid()
+                    if target_pid and own_pid and target_pid == own_pid:
+                        raise AutomationError(
+                            "最前景仍是對沖小幫手。請切換到目標交易平台後重新綁定。"
+                        )
+                    title = str(target.title)
+                    if platform == "cTrader" and not (
+                        "ctrader" in title.lower()
+                        or "gooeytrade" in title.lower()
+                    ):
+                        raise AutomationError(
+                            "最前景視窗不像 cTrader，未修改綁定。"
+                            "請先將 cTrader 切到最上層。"
+                        )
+                    pattern = _window_title_pattern(platform,title)
                     # Capture optional account info before writing binding.
                     account_message = ""
                     point = self.store.data["platforms"].get(

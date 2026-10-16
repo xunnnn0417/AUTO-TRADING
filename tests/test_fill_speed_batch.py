@@ -32,6 +32,34 @@ def pt(x,y):
     return dict(x_px=x,y_px=y,window_width=800,window_height=600)
 
 
+class ForegroundBindingWindowTests(unittest.TestCase):
+    def test_binding_uses_foreground_root_not_cursor(self):
+        controller=WindowController(SimpleNamespace(guard=lambda:None))
+        top=WindowInfo(42,"cTrader Demo",0,0,1200,800)
+        controller.list_windows=MagicMock(return_value=[top])
+        with patch("trading_helper.windows.user32") as api:
+            api.GetForegroundWindow.return_value=91
+            api.GetAncestor.return_value=42
+            api.WindowFromPoint.side_effect=AssertionError(
+                "Binding must never depend on the pointer"
+            )
+            self.assertEqual(controller.foreground_top_level_window(),top)
+            api.GetAncestor.assert_called_once_with(91,2)
+            api.WindowFromPoint.assert_not_called()
+
+    def test_unknown_foreground_does_not_choose_random_z_order_window(self):
+        controller=WindowController(SimpleNamespace(guard=lambda:None))
+        controller.list_windows=MagicMock(
+            return_value=[WindowInfo(42,"cTrader Demo",0,0,1200,800)]
+        )
+        with patch("trading_helper.windows.user32") as api:
+            api.GetForegroundWindow.return_value=99
+            api.GetAncestor.return_value=99
+            with self.assertRaisesRegex(AutomationError,"最前景"):
+                controller.foreground_top_level_window()
+            api.WindowFromPoint.assert_not_called()
+
+
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.window=WindowInfo(1234,"mock cTrader",0,0,800,600)
@@ -123,10 +151,11 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(actual,self.window)
             u.SetForegroundWindow.assert_not_called()
             wait.assert_not_called()
-            u.GetForegroundWindow.return_value=5
+            # Foreground changes during a short poll: no fixed 200ms wait.
+            u.GetForegroundWindow.side_effect=[5,5,self.window.handle]
             self.controller.focus(self.window)
             u.SetForegroundWindow.assert_called_once_with(self.window.handle)
-            wait.assert_called_once_with(0.2)
+            wait.assert_called_once_with(0.015)
 
 
 class BatchWorkflowTests(unittest.TestCase):

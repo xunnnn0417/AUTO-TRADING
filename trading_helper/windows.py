@@ -293,6 +293,21 @@ class WindowController:
                 return window
         raise AutomationError("無法辨識目前作用中的視窗。")
 
+    def foreground_top_level_window(self) -> WindowInfo:
+        """Visible foreground owner window, independent of mouse location.
+
+        Used for explicit window binding only. Do not silently choose the
+        first Z-order window when the foreground is unrecognised.
+        """
+        handle = user32.GetForegroundWindow()
+        if not handle:
+            raise AutomationError("目前沒有可辨識的前景視窗，請切換到交易平台再試。")
+        root_handle = user32.GetAncestor(handle, GA_ROOT) or handle
+        for window in self.list_windows():
+            if window.handle == root_handle:
+                return window
+        raise AutomationError("無法辨識最前景視窗，請將交易平台切到最上層再試。")
+
     def window_at_cursor(self) -> WindowInfo:
         point = wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
@@ -314,7 +329,16 @@ class WindowController:
         if minimized:
             user32.ShowWindow(window.handle, SW_RESTORE)
         user32.SetForegroundWindow(window.handle)
-        time.sleep(0.2)
+        # SetForegroundWindow may succeed immediately. Poll only until the
+        # desired HWND is active rather than sleeping 200ms unconditionally.
+        deadline=time.monotonic()+0.22
+        while user32.GetForegroundWindow()!=window.handle:
+            self.emergency.guard()
+            if time.monotonic()>=deadline:
+                raise AutomationError(
+                    "平台視窗無法取得焦點，停止填值／核對，避免操作錯誤視窗。"
+                )
+            time.sleep(0.015)
         return self._refresh(window.handle)
 
     def cursor_position(self) -> tuple[int, int]:
