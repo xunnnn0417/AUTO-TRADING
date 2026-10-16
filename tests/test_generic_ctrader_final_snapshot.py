@@ -50,6 +50,26 @@ class MainWindowTests(unittest.TestCase):
         with self.assertRaises(AutomationError):
             self.ctrl.find_calibrated_main("cTrader", self.point)
 
+    def test_resized_main_identified_but_stale_calibration_cannot_click(self):
+        resized = WindowInfo(66, "cTrader 5.6.0", 0, 0, 1580, 900)
+        self.ctrl.find_all.return_value = [self.dialog, resized]
+        selected = self.ctrl.find_calibrated_main("cTrader", self.point)
+        self.assertEqual(selected.handle, resized.handle)
+        # Identification succeeds, but using the old 1938x1038 mouse
+        # calibration remains forbidden: never scale/guess broker clicks.
+        with self.assertRaises(AutomationError):
+            self.ctrl.screen_point(selected, {
+                **self.point, "x_px": 100, "y_px": 100
+            })
+
+    def test_main_with_wrong_native_title_still_fails(self):
+        impostor = WindowInfo(
+            77, "cTrader Modify order or position", 0, 0, 1938, 1038
+        )
+        self.ctrl.find_all.return_value = [self.dialog, impostor]
+        with self.assertRaises(AutomationError):
+            self.ctrl.find_calibrated_main("cTrader", self.point)
+
     def test_missing_calibration_fails_closed(self):
         with self.assertRaises(AutomationError):
             self.ctrl.find_calibrated_main("cTrader", {})
@@ -152,6 +172,17 @@ class OneInventorySubmitTests(unittest.TestCase):
             config=self.config,
             emergency=SimpleNamespace(guard=lambda: None),
             _normalize_numeric_input=PlatformAutomation._normalize_numeric_input,
+            _last_verified_fills={
+                ("cTrader", "external"): {
+                    "direction": "SELL",
+                    "symbol": "XAUUSD",
+                    "values": {
+                        "lot_input": Decimal("0.74"),
+                        "sl_input": Decimal("-500"),
+                        "tp_input": Decimal("200"),
+                    },
+                }
+            },
         )
         self.adapter = DemoUiBrokerPort(automation, MagicMock())
         self.adapter.set_expected_symbol("XAUUSD")
@@ -236,6 +267,32 @@ class OneInventorySubmitTests(unittest.TestCase):
 
     def test_missing_sl_cannot_click(self):
         self.read_snapshot.return_value["values"]["sl_input"] = "0"
+        with self.assertRaises(AutomationError):
+            self.submit()
+        self.windows.click.assert_not_called()
+
+    def test_nonzero_but_wrong_sl_cannot_click(self):
+        self.read_snapshot.return_value["values"]["sl_input"] = "-499"
+        with self.assertRaisesRegex(AutomationError, "被改動"):
+            self.submit()
+        self.windows.click.assert_not_called()
+
+    def test_nonzero_but_wrong_tp_cannot_click(self):
+        self.read_snapshot.return_value["values"]["tp_input"] = "201"
+        with self.assertRaisesRegex(AutomationError, "被改動"):
+            self.submit()
+        self.windows.click.assert_not_called()
+
+    def test_final_order_with_no_verified_fill_cannot_click(self):
+        self.adapter.automation._last_verified_fills.clear()
+        with self.assertRaises(AutomationError):
+            self.submit()
+        self.windows.click.assert_not_called()
+
+    def test_verified_fill_wrong_direction_cannot_click(self):
+        self.adapter.automation._last_verified_fills[
+            ("cTrader", "external")
+        ]["direction"] = "BUY"
         with self.assertRaises(AutomationError):
             self.submit()
         self.windows.click.assert_not_called()
