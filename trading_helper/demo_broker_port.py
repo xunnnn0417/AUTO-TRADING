@@ -14,7 +14,7 @@ import time
 from decimal import Decimal, InvalidOperation
 
 from .auto_entry import DemoAccount, Position
-from .windows import AutomationError
+from .windows import AutomationError, WindowInfo
 
 
 class DemoUiBrokerPort:
@@ -124,7 +124,38 @@ class DemoUiBrokerPort:
 
     def _bound(self, platform, role):
         profile=self.automation.config["platforms"][platform]
-        return profile,self.automation.windows.find(profile["window_title"][role])
+        pattern=profile["window_title"][role]
+        window=self.automation.windows.find(pattern)
+        if "MT5" not in platform.upper() and isinstance(window, WindowInfo):
+            # A cTrader popup and the REAL trading window can have the
+            # same title. EnumWindows returns the popup first while it is
+            # foremost; re-reading the popup will NEVER reveal an account.
+            # The user's existing lot-input calibration uniquely identifies
+            # the full-size main window without an expensive UIA rescan.
+            point=profile.get("points",{}).get("lot_input",{})
+            width=int(point.get("window_width",0))
+            height=int(point.get("window_height",0))
+            if width>0 and height>0 and (
+                abs(window.width-width)>2 or abs(window.height-height)>2
+            ):
+                candidates=self.automation.windows.find_all(pattern)
+                matches=[
+                    candidate for candidate in candidates
+                    if isinstance(candidate,WindowInfo)
+                    and abs(candidate.width-width)<=2
+                    and abs(candidate.height-height)<=2
+                ]
+                if len(matches)!=1:
+                    raise AutomationError(
+                        "cTrader 標題相符但校準尺寸無唯一主視窗"
+                        f"（符合 {len(matches)} 個），不操作。"
+                    )
+                window=matches[0]
+                self.log(
+                    "cTrader 偵測到同名對話視窗；已選回唯一"
+                    "符合校準尺寸的主交易視窗。"
+                )
+        return profile,window
 
     @staticmethod
     def _decimal(raw, *, empty_ok=False):
