@@ -2929,6 +2929,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         change = QPushButton("更改綁定" if current else "建立綁定",dialog)
         change.setObjectName("windowBindingChangeButton")
         close = QPushButton("關閉",dialog)
+        close.setObjectName("windowBindingConfirmButton")
         close.clicked.connect(dialog.close)
         buttons.addStretch()
         buttons.addWidget(change)
@@ -2936,9 +2937,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         layout.addLayout(buttons)
         dialog.setProperty("boundRole",role)
         dialog.setProperty("boundPlatform",platform)
+        dialog.setProperty("boundPattern",current)
         self._window_binding_dialog = dialog
 
         def begin() -> None:
+            # On repeat capture, report the most recently saved binding
+            # rather than the binding at first opening of this panel.
+            before_pattern = str(dialog.property("boundPattern") or "")
             # The receipt is temporarily topmost *after* capture. Turn that
             # flag off for a subsequent capture so the dialog will not cover
             # the broker window under the cursor during the countdown.
@@ -2984,18 +2989,18 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         self._save_bound_account(platform,role,account_number)
                     self.signals.window_binding_result.emit({
                         "role":role,"platform":platform,
-                        "ok":True,"old":current,
+                        "ok":True,"old":before_pattern,
                         "new":pattern,"title":target.title,
                         "note":account_message,
                     })
                     self.log(
                         f"已更改{role_text} {platform} 視窗："
-                        f"{current or '未綁定'} → {pattern}"
+                        f"{before_pattern or '未綁定'} → {pattern}"
                     )
                 except Exception as exc:
                     self.signals.window_binding_result.emit({
                         "role":role,"platform":platform,
-                        "ok":False,"old":current,"message":str(exc),
+                        "ok":False,"old":before_pattern,"message":str(exc),
                     })
                     self.log(f"{role_text} {platform} 綁定未完成：{exc}")
             self._start(f"綁定{role_text}視窗",task,hide_during=False)
@@ -3016,7 +3021,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         button = dialog.findChild(QPushButton,"windowBindingChangeButton")
         if button is not None:
             button.setEnabled(True)
+        # Both internal and external bindings share the same receipt UI.
+        # Once a capture ends, the next action must be unambiguous:
+        # either retry selection or accept the shown binding and dismiss it.
+        confirm = dialog.findChild(QPushButton,"windowBindingConfirmButton")
+        if button is not None:
+            button.setText("重新綁定")
+        if confirm is not None:
+            confirm.setText("確認")
+            confirm.setDefault(True)
         if result.get("ok"):
+            dialog.setProperty("boundPattern",result["new"])
             platform=result["platform"]
             role=result["role"]
             current_label = dialog.layout().itemAt(0).widget()

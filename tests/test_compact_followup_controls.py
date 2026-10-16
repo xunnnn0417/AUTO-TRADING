@@ -168,6 +168,52 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(box.findChild(QPushButton,"windowBindingChangeButton").isEnabled())
         box.close()
 
+    def test_binding_result_actions_match_for_both_internal_and_external(self):
+        # One shared dialog implementation serves both roles. After a
+        # successful capture, the actions become retry and confirm.
+        for platform,role in (("cTrader","internal"),("MT5","external")):
+            with self.subTest(platform=platform,role=role):
+                if role=="internal":
+                    self.w.internal_platform.setCurrentText(platform)
+                else:
+                    self.w.external_platform.setCurrentText(platform)
+                self.w._save_bound_window(platform,role,"old-rule")
+                self.w.bind_role_window(role)
+                panel=self.w._window_binding_dialog
+                self.w._on_window_binding_result({
+                    "role":role,"platform":platform,"ok":True,
+                    "old":"old-rule","new":"new-rule",
+                    "title":f"{platform} Demo Terminal",
+                })
+                retry=panel.findChild(QPushButton,"windowBindingChangeButton")
+                confirm=panel.findChild(QPushButton,"windowBindingConfirmButton")
+                self.assertEqual(retry.text(),"重新綁定")
+                self.assertEqual(confirm.text(),"確認")
+                self.assertEqual(panel.property("boundPattern"),"new-rule")
+                self.assertTrue(panel.isVisible())
+                confirm.click()
+                self.assertFalse(panel.isVisible())
+
+    def test_failed_capture_offers_retry_and_confirm_without_overwriting(self):
+        self.w._save_bound_window("MT5","external","old-rule")
+        self.w.bind_role_window("external")
+        panel=self.w._window_binding_dialog
+        self.w._on_window_binding_result({
+            "role":"external","platform":"MT5","ok":False,
+            "old":"old-rule","message":"沒有找到視窗",
+        })
+        self.assertEqual(
+            panel.findChild(QPushButton,"windowBindingChangeButton").text(),
+            "重新綁定",
+        )
+        self.assertEqual(
+            panel.findChild(QPushButton,"windowBindingConfirmButton").text(),
+            "確認",
+        )
+        self.assertEqual(panel.property("boundPattern"),"old-rule")
+        panel.findChild(QPushButton,"windowBindingConfirmButton").click()
+        self.assertFalse(panel.isVisible())
+
     def test_binding_result_is_topmost_and_reopens_if_broker_hides_it(self):
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QLabel
