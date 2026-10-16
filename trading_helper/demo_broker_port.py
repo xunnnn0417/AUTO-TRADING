@@ -207,9 +207,26 @@ class DemoUiBrokerPort:
             )
         from pywinauto import Desktop
         try:
-            elements=Desktop(backend="uia").window(
-                handle=window.handle
-            ).descendants()
+            # A transient UIA tree may omit the cTrader account number
+            # during a window transition. Retry ONLY when its count is zero.
+            # Duplicate IDs, changed identities and non-DEMO still fail closed.
+            for attempt in range(3):
+                elements=Desktop(backend="uia").window(
+                    handle=window.handle
+                ).descendants()
+                number_nodes=[
+                    element for element in elements
+                    if (str(element.element_info.automation_id)==
+                        "CTraderAccountNumberTextBlock_AId"
+                        and element.is_visible())
+                ]
+                if number_nodes or attempt==2:
+                    break
+                self.log(
+                    "cTrader identity UIA temporarily missing; "
+                    f"read-only retry {attempt+1}/2."
+                )
+                time.sleep(0.12)
             def unique(aid):
                 found=[e for e in elements if e.is_visible() and
                        str(e.element_info.automation_id)==aid]
