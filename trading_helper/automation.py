@@ -75,6 +75,10 @@ class PlatformAutomation:
         self.windows = windows
         self.emergency = emergency
         self.log = log
+        # Only values read back after the CURRENT fill operation qualify
+        # as expected SL/TP for its later final pre-submit check. Never
+        # rely solely on non-zero SL/TP or on a previous order's settings.
+        self._last_verified_fills: dict[tuple[str, str], dict] = {}
 
     def fill(
         self,
@@ -82,6 +86,7 @@ class PlatformAutomation:
         role: str,
         instruction: TradeInstruction,
     ) -> None:
+        self._last_verified_fills.pop((platform, role), None)
         self.emergency.guard()
         profile = self.config["platforms"][platform]
         points = profile.get("points", {})
@@ -255,6 +260,18 @@ class PlatformAutomation:
             profile, role, platform, role_text, points, window,
             mt5_order_window, direction, values,
         )
+        # The MT5 prices here are the actual values written and checked
+        # using this fill's quote (not a later recalculation from a moved
+        # quote). cTrader native/gooey point modes have already been
+        # applied by _field_values. A failed fill never reaches this line.
+        self._last_verified_fills[(platform, role)] = {
+            "direction": direction,
+            "symbol": instruction.symbol,
+            "values": {
+                key: self._normalize_numeric_input(value)
+                for key, _, value in values
+            },
+        }
         self.log(f"{role_text} {platform} 欄位全部讀回核對正確，沒有送出訂單。")
 
     @staticmethod
