@@ -114,3 +114,9 @@
 - 最新 GitHub LAB `gui.py` 純說明文字 8 處與 README 說明更新，修正「自動送單尚未實作」等過時訊息；尚未本機執行或重啟，沒有交易、補單、平倉或覆蓋正式版。
 - P0：cTrader 主窗尺寸 zero-match、快速雙邊 click-to-click timing、最後 SL/TP 語意核對、未部署／未跑全套 regression、同步狀態 readback、缺少可信最終拒單證明。P1：滑鼠鎖定全 task UX、反向組合與 TV 實機驗收等。P2：右側快捷列、重大事件提醒、手機/Telegram。取消的止盈情境預覽圖不恢復。
 - 目前 Desktop Commander 月額度仍為 0；不得把 GitHub 內容當成使用者 Windows 已更新版本，需待工具恢復後先完成備份、diff、測試、再決定是否安全重啟 LAB。
+
+## 2026-10-17 P0 實作與 Windows CI 525/525 PASS
+- 詳細完整進度、逐項限制與下一步在 [AUDIT_20261017_FULL_PROJECT.md](AUDIT_20261017_FULL_PROJECT.md)。
+- GitHub LAB 已安全修改：cTrader 主視窗身份與座標有效性分層；填值後只記錄本次三欄實際驗證的數值，最後送單前精確比對 SL/TP；UIA traversal 錯誤轉成 fail-closed；journal JSON flush+fsync 後才 atomic replace；單次新鮮 UIA inventory 進行 cTrader 最後核對（此前已寫入）。
+- **GitHub Windows CI** 2026-10-17：[525/525 PASS](https://github.com/xunnnn0417/AUTO-TRADING/actions/runs/38968709491)，編譯及 Git clean PASS，驗收程式 commit `11aeed38fcb82f3025b0f09d0174e6a91ed8ea37`。測試初輪因未更新測試替身等失敗，已修正後全數通過，沒有真實券商 API 或下單。
+- 最新本機 LAB 未能同步、重啟或測量真實 MT5/cTrader click gap：Desktop Commander 額度 0。**禁止宣稱新版已部署／加速已在實機驗收、既有持倉 SL/TP 已同步，或可在 UNKNOWN 自動補單。**正式版及 main 未動。
