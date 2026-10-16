@@ -108,3 +108,9 @@
 - 修復前必需在本機 READ-ONLY 取得所有 title rule 匹配的 HWND、實際 title、PID、窗口 class、window rect、最小化狀態、各角色原校準尺寸；確認唯一主 terminal 與彈出視窗的不同身分。依桌面《更改前審核標準》修復 canonical resolver 的「**主窗口身分辨識**」與「**每個點位座標有效性**」不同責任：辨識不能單靠尺寸；必要時提示恢復舊窗口大小或重新校準，未具證據不能猜比例座標、盲點或繞過重讀校驗。
 - 回歸矩陣應含：固定尺寸／移動位置不縮放、最大化切換尺寸、DPI 變化、多 cTrader 主窗、同名修改彈窗、主窗未顯示、GooeyTrade 與 MT5、不符合座標校準時無訂單點擊；也不能忘記原有滑鼠攔截緊急釋放。
 - Desktop Commander 工具仍正式回覆當月額度用盡、remote_calls_left_pct=0；**無法觀測 live windows、無法修改本機、無法測試或安全重啟**，不得說 bug 已解。GitHub LAB only，勿動 production/main 或創建新訂單。短期使用者可嘗試讓 cTrader 主交易窗口恢復原校準的最大化/大小，但在確認舊成交持倉與掛單、測試模式關閉自動進場前，勿重複按寫入兩邊。
+
+## 2026-10-17 全專案審核（GitHub LAB，未部署）
+- 已建立 [完整 P0/P1/P2 稽核與驗收清單](AUDIT_20261017_FULL_PROJECT.md)：覆核 26 個程式模組、55 個測試檔、啟動／設定、UI 與功能待辦，區分程式已有但未部署、未通過實機、規則仍缺口、未實作。
+- 最新 GitHub LAB `gui.py` 純說明文字 8 處與 README 說明更新，修正「自動送單尚未實作」等過時訊息；尚未本機執行或重啟，沒有交易、補單、平倉或覆蓋正式版。
+- P0：cTrader 主窗尺寸 zero-match、快速雙邊 click-to-click timing、最後 SL/TP 語意核對、未部署／未跑全套 regression、同步狀態 readback、缺少可信最終拒單證明。P1：滑鼠鎖定全 task UX、反向組合與 TV 實機驗收等。P2：右側快捷列、重大事件提醒、手機/Telegram。取消的止盈情境預覽圖不恢復。
+- 目前 Desktop Commander 月額度仍為 0；不得把 GitHub 內容當成使用者 Windows 已更新版本，需待工具恢復後先完成備份、diff、測試、再決定是否安全重啟 LAB。
