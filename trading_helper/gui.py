@@ -1721,6 +1721,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         button = QPushButton("確認", dialog)
         button.setObjectName("autoEntryResultConfirmButton")
         button.clicked.connect(dialog.accept)
+        role = report.get("single_confirmed_role")
+        if role in ("internal","external"):
+            # These are explicitly HUMAN action paths. No broker clicks,
+            # API submission, close-position or fallback automatic order.
+            for option,title in (
+                ("close","核對後手動平掉已開倉側"),
+                ("hedge","核對後手動處理另一側"),
+            ):
+                choice=QPushButton(title,dialog)
+                choice.setObjectName(
+                    "autoEntryIncidentCloseButton" if option=="close"
+                    else "autoEntryIncidentHedgeButton"
+                )
+                choice.clicked.connect(
+                    lambda checked=False, action=option, info=dict(report):
+                        self._explain_manual_incident_action(action,info)
+                )
+                actions.addWidget(choice)
         actions.addStretch()
         actions.addWidget(button)
         layout.addLayout(actions)
@@ -1729,6 +1747,42 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         QApplication.alert(dialog, 5000)
+
+    def _explain_manual_incident_action(
+        self, action: str, report: dict
+    ) -> None:
+        """Explain chosen manual path; NEVER actuate unknown-state trades."""
+        role=report.get("single_confirmed_role")
+        if role not in ("internal","external") or action not in ("close","hedge"):
+            return
+        side="場內" if role=="internal" else "場外"
+        other="場外" if role=="internal" else "場內"
+        platform=str(report.get(
+            "internal_platform" if role=="internal" else "external_platform",""
+        ))
+        opposite=str(report.get(
+            "external_platform" if role=="internal" else "internal_platform",""
+        ))
+        title=("人工平倉前核對" if action=="close" else "人工補倉前核對")
+        instruction=(
+            f"已確認的 {side}（{platform}）持倉可能仍存在。\\n"
+            f"請先在 {platform} 核對最新持倉編號與手數，再到"
+            f" {opposite} 核對當前持倉、掛單、交易歷史。\\n\\n"
+            + (
+                f"若確認必須解除單邊風險，請親自操作 {side} 的"
+                "正確持倉平倉，並驗證平倉回報。"
+                if action=="close" else
+                f"只有證實 {other}（{opposite}）沒有成交、"
+                "也沒有待成交訂單時，才親自在該平台重新開倉，"
+                "並重新核對方向、商品、手數、SL／TP。"
+            )
+            + "\\n\\n本按鈕只顯示操作說明，不會自動開倉或平倉。"
+            "另一側狀態不明時，這兩種選擇都可能有風險。"
+        )
+        QMessageBox.warning(
+            getattr(self,"_auto_entry_receipt",None) or self,
+            title,instruction
+        )
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = QDialog(self)

@@ -60,12 +60,31 @@ def build_entry_status_report(
     else:
         parts.append("TradingView 繪圖：本次沒有啟用")
 
-    # Never imply a rescue order exists just because one side is missing.
-    parts.append("自動補開：未執行（目前尚未啟用）")
+    incident_role = (
+        "internal" if internal and not external and not success
+        else "external" if external and not internal and not success
+        else None
+    )
+    # Only an actual rescue confirmation may be described as successful.
+    rescued = str(entry.get("rescued_role", ""))
+    if rescued in ("internal","external"):
+        parts.append(
+            f"自動補開：已確認補開{'場內' if rescued=='internal' else '場外'}一次"
+        )
+    elif entry.get("rescue_attempted"):
+        parts.append("自動補開：曾嘗試一次，成交仍須核對；不會再次補送")
+    else:
+        parts.append("自動補開：未執行（缺少可靠拒單證明時禁止）")
+    parts.append("後續異常操作：不會自動平倉，須人工確認")
     if not success:
         parts.append("後續：已停止自動送單，請核對兩側持倉及掛單。")
         if reason:
             parts.append("原因：" + str(reason)[:600])
     else:
         parts.append("提醒：此為開倉當下驗證，不代表兩側日後一定同步平倉。")
-    return {"title": title, "message": "\n".join(parts), "success": success}
+    return {
+        "title": title, "message": "\n".join(parts), "success": success,
+        "single_confirmed_role": incident_role,
+        "internal_platform": internal_platform,
+        "external_platform": external_platform,
+    }

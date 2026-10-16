@@ -29,6 +29,14 @@ class DemoUiBrokerPort:
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
         self._expected_symbol: str | None = None
 
+    def prove_terminal_rejection(self, platform: str, role: str,
+                                 attempt_key: str, account_id: str,
+                                 symbol: str):
+        # No authenticated, correlated broker order status/history is
+        # exposed by the current GUI-only adapter. An empty Positions grid
+        # or timeout is NOT a definitive rejection. Fail closed.
+        return None
+
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
 

@@ -17,6 +17,7 @@ import threading
 import time
 
 from .windows import AutomationError
+from .recovery_policy import validate_terminal_rejection
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,9 @@ class BrokerExecutionPort(Protocol):
                                tp: Decimal) -> None: ...
     def draw_tradingview(self, instruction, internal_platform: str,
                          entry: Decimal, draw_internal: bool) -> None: ...
+    def prove_terminal_rejection(self, platform: str, role: str,
+                                 attempt_key: str, account_id: str,
+                                 symbol: str): ...
 
 
 class RecoveryRequired(AutomationError):
@@ -130,6 +134,25 @@ class AutoEntryJournal:
             }
             self._write(data)
 
+    def reserve_verified_rescue(self, key: str, role: str, order_id: str) -> None:
+        """Durably consume the sole retry permit BEFORE any new broker click."""
+        if role not in ("internal","external") or not order_id:
+            raise RecoveryRequired("補單場別或原始訂單編號不明。")
+        with self._lock:
+            data=self._all()
+            current=data.get(key)
+            if not isinstance(current,dict):
+                raise RecoveryRequired("不存在首次送單紀錄，拒絕補單。")
+            if current.get("rescue_attempted") or current.get("rescued_role"):
+                raise RecoveryRequired("此交易已啟動過補單，禁止再次補單。")
+            current["rescue_attempted"]=True
+            current["rescue_role"]=role
+            current["rescue_rejected_order_id"]=order_id
+            current["status"]="rescue_reserved"
+            current["time"]=time.strftime("%Y-%m-%d %H:%M:%S")
+            data[key]=current
+            self._write(data)
+
     def record_verified_leg(self, key: str, role: str, pos: Position) -> None:
         """Persist independent confirmed tickets before inspecting the other side."""
         if role not in ("internal","external"):
@@ -173,6 +196,10 @@ class AutoEntryJournal:
                 entry["confirmed_legs"]=confirmed
             if status=="both_confirmed":
                 entry["confirmed_both"]=details
+            if status=="rescue_confirmed":
+                if details not in ("internal","external"):
+                    raise RecoveryRequired("補單成功場別無效。")
+                entry["rescued_role"]=details
             if status=="internal_protected":
                 entry["internal_protected"]=True
             if status=="synchronized":
@@ -189,6 +216,65 @@ class AutoEntryWorkflow:
         self.journal=journal
         self.guard=guard
         self.log=log
+
+    def _rescue_only_proven_rejection(
+        self, *, key: str, platform: str, role: str, direction: str,
+        lot: Decimal, account: DemoAccount, baseline: tuple[Position,...],
+        verified_other: Position, other_platform: str, other_role: str,
+        other_account: DemoAccount, other_direction: str, other_lot: Decimal,
+        instruction,
+    ) -> Position | None:
+        """Once-only rescue, ONLY with a broker's final rejection proof.
+
+        The existing Windows UI broker adapter cannot produce this proof.
+        All unknown/timeouts remain fail-closed. No place-order click without
+        identity, other-leg and zero-pending/fill checks.
+        """
+        certify=getattr(self.port,"prove_terminal_rejection",None)
+        if not callable(certify):
+            return None
+        self.guard()
+        proof=validate_terminal_rejection(
+            certify(platform,role,key,account.account_id,instruction.symbol),
+            attempt_key=key,platform=platform,role=role,
+            account_id=account.account_id,symbol=instruction.symbol,
+        )
+        if proof is None:
+            return None
+        # Reject stale account changes, other-leg movement or ambiguous
+        # missing-leg positions even if the broker proof was genuine.
+        for plat,side,expected_account in (
+            (platform,role,account),
+            (other_platform,other_role,other_account),
+        ):
+            fresh=self.port.inspect_account(plat,side)
+            if fresh!=expected_account or not fresh.verified or not fresh.is_demo:
+                raise RecoveryRequired("補單前 Demo 帳戶身分已變動，禁止再送單。")
+        current_other=self.port.snapshot_positions(other_platform,other_role)
+        matches=[p for p in current_other if p.ticket==verified_other.ticket]
+        if len(current_other)!=1 or len(matches)!=1:
+            raise RecoveryRequired("補單前另一邊已成交持倉不再唯一，停止。")
+        self._validate_position(
+            matches[0],other_platform,other_direction,
+            other_lot,other_account,instruction.symbol
+        )
+        current_missing=self.port.snapshot_positions(platform,role)
+        if current_missing!=baseline or current_missing:
+            raise RecoveryRequired("拒單側持倉已變動或非空，禁止補單。")
+        self.port.verify_order_form(platform,role,direction,lot)
+        # Reservation is the crash-safe barrier. A restart cannot resend.
+        self.journal.reserve_verified_rescue(
+            key,role,proof.original_broker_order_id
+        )
+        self.log(f"{role} 有最終拒單證明，僅嘗試補開一次。")
+        pos=self._submit_and_confirm(
+            platform,role,direction,lot,account,baseline,
+            instruction.symbol,key
+        )
+        self.journal.record_verified_leg(key,role,pos)
+        self.journal.record(key,"rescue_confirmed",role)
+        self.log(f"{role} 補單已唯一成交確認：{pos.ticket}")
+        return pos
 
     @staticmethod
     def fingerprint(profile: str, sheet_url: str, accounts: tuple[DemoAccount,...],
@@ -514,6 +600,35 @@ class AutoEntryWorkflow:
                         verified[role]=pos
                     except Exception as exc:
                         uncertainty[role]=str(exc)
+                if len(uncertainty)==1 and len(verified)==1:
+                    missing_role=next(iter(uncertainty))
+                    remaining={
+                        "internal":(internal_platform,
+                                    instruction.internal_direction,
+                                    instruction.internal.lot,before_i,account_i,
+                                    external_platform,"external",account_e,
+                                    instruction.external_direction,
+                                    instruction.external.lot),
+                        "external":(external_platform,
+                                    instruction.external_direction,
+                                    instruction.external.lot,before_e,account_e,
+                                    internal_platform,"internal",account_i,
+                                    instruction.internal_direction,
+                                    instruction.internal.lot),
+                    }
+                    (plat,direction,lot,baseline,account,op,other_role,
+                     other_account,other_dir,other_lot)=remaining[missing_role]
+                    rescued=self._rescue_only_proven_rejection(
+                        key=key,platform=plat,role=missing_role,
+                        direction=direction,lot=lot,account=account,
+                        baseline=baseline,verified_other=verified[other_role],
+                        other_platform=op,other_role=other_role,
+                        other_account=other_account,other_direction=other_dir,
+                        other_lot=other_lot,instruction=instruction,
+                    )
+                    if rescued is not None:
+                        verified[missing_role]=rescued
+                        uncertainty.pop(missing_role)
                 if uncertainty:
                     states=[
                         f"{role}: "+("已確認成交" if role in verified
@@ -555,9 +670,24 @@ class AutoEntryWorkflow:
                         instruction.internal.tp_points
                     )
                 self.journal.record(key,"internal_protected",first.ticket)
-                second=self._submit_and_confirm(
-                    external_platform,"external",instruction.external_direction,
-                    instruction.external.lot,account_e,before_e,instruction.symbol,key)
+                try:
+                    second=self._submit_and_confirm(
+                        external_platform,"external",instruction.external_direction,
+                        instruction.external.lot,account_e,before_e,instruction.symbol,key)
+                except Exception:
+                    second=self._rescue_only_proven_rejection(
+                        key=key,platform=external_platform,role="external",
+                        direction=instruction.external_direction,
+                        lot=instruction.external.lot,account=account_e,
+                        baseline=before_e,verified_other=first,
+                        other_platform=internal_platform,other_role="internal",
+                        other_account=account_i,
+                        other_direction=instruction.internal_direction,
+                        other_lot=instruction.internal.lot,
+                        instruction=instruction,
+                    )
+                    if second is None:
+                        raise
                 self.guard()
                 # A genuine both-entered milestone requires two independently
                 # confirmed tickets, not only two dispatched mouse clicks.
