@@ -431,6 +431,7 @@ class AutoEntryWorkflow:
             ) -> tuple[Position,Position]:
         self.last_key = None
         self.journal_current_attempt = False
+        precheck_started=time.perf_counter()
         self.guard()
         if hasattr(self.port, "set_expected_symbol"):
             self.port.set_expected_symbol(instruction.symbol)
@@ -590,6 +591,12 @@ class AutoEntryWorkflow:
             )
         self.journal.record(key,"prepared","兩側預檢完成")
         self.journal_current_attempt = True
+        precheck_finished=time.perf_counter()
+        self.log(
+            "自動進場預檢完成："
+            f"{(precheck_finished-precheck_started)*1000:.0f}ms，"
+            "已準備送單。兩側表單在送單前仍會再次唯讀核對。"
+        )
         try:
             if fast_pair:
                 # Explicitly opted-in Demo-only rapid hedge: BOTH dialogs
@@ -608,7 +615,11 @@ class AutoEntryWorkflow:
                      instruction.external_direction,instruction.external.lot),
                 ):
                     self.guard()
-                    self.port.verify_order_form(plat,role,direction,lot)
+                    # Both forms were checked BEFORE the first click.
+                    # The real DemoUiBrokerPort.submit_once does another
+                    # fresh per-click form readback itself. A third scan
+                    # here only delayed the next click without adding an
+                    # independent safety property.
                     self.journal.record(
                         key,f"sending_{role}",
                         "快速雙邊送出中，成交狀態仍未知"
@@ -624,6 +635,32 @@ class AutoEntryWorkflow:
                         f"快速雙邊：兩側送單呼叫開始間隔 {gap_ms:.0f} ms；"
                         "非實際成交價差或券商成交延遲。"
                     )
+                    readings=getattr(self.port,"submit_phase_timings",None)
+                    if isinstance(readings,dict) and all(
+                        role in readings and
+                        {"start","form_verified","click_started","click_returned"}
+                          <=set(readings[role])
+                        for role in ("internal","external")
+                    ):
+                        in_t=readings["internal"]
+                        ex_t=readings["external"]
+                        click_gap_ms=(
+                            ex_t["click_started"]-in_t["click_started"]
+                        )*1000
+                        self.log(
+                            "快速雙邊診斷：兩次實際點擊函式"
+                            f"開始間隔 {click_gap_ms:.0f}ms；"
+                            "場內送單前表單核對 "
+                            f"{(in_t['form_verified']-in_t['start'])*1000:.0f}ms，"
+                            "場外送單前表單核對 "
+                            f"{(ex_t['form_verified']-ex_t['start'])*1000:.0f}ms，"
+                            "首筆點擊至返回 "
+                            f"{(in_t['click_returned']-in_t['click_started'])*1000:.0f}ms，"
+                            "場外 UIA 按鈕定位 "
+                            f"{(ex_t['click_started']-ex_t['form_verified'])*1000:.0f}ms。"
+                            "時間是 Python 視窗點擊函式，"
+                            "不是券商真實成交回報。"
+                        )
                 # Check BOTH sides independently. A failed cTrader read
                 # must not suppress our MT5 read-only native inspection.
                 # A confirmed ticket is persisted before checking the other

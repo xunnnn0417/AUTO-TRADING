@@ -2350,8 +2350,20 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     ) -> None:
         """Fill both sides first; start guarded demo entry ONLY after readback."""
         item = self._require_instruction()
+        fill_started=time.perf_counter()
         self.automation.fill(internal_platform, "internal", item)
+        after_internal=time.perf_counter()
         self.automation.fill(external_platform, "external", item)
+        after_external=time.perf_counter()
+        emit_log=getattr(self,"log",None)
+        if callable(emit_log):
+            emit_log(
+                "填入兩邊診斷：場內 "
+                f"{(after_internal-fill_started)*1000:.0f}ms，"
+                "場外 "
+                f"{(after_external-after_internal)*1000:.0f}ms。"
+                "若勾選自動進場，接著執行交易前核對。"
+            )
         if auto_entry_requested:
             if sync_sl_tp or draw_tv or draw_internal or fast_pair:
                 self._auto_entry_after_fill_both_pending(

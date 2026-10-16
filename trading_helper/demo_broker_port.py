@@ -29,6 +29,9 @@ class DemoUiBrokerPort:
         self._ticket_role: dict[tuple[str, str], str] = {}
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
         self._expected_symbol: str | None = None
+        # Local performance telemetry only. No accounts, quantities or
+        # trading data are logged; this never changes order-click behavior.
+        self.submit_phase_timings: dict[str, dict[str, float]] = {}
 
     def prove_terminal_rejection(self, platform: str, role: str,
                                  attempt_key: str, account_id: str,
@@ -545,9 +548,12 @@ class DemoUiBrokerPort:
                 raise AutomationError("cTrader SL／TP 有未勾選項目。")
 
     def submit_once(self,platform,role,direction,lot,key):
-        # Return immediately if either identity or fresh form is uncertain.
-        self.inspect_account(platform,role)
+        # Fresh verify_order_form already calls inspect_account internally.
+        # Do not enumerate the same cTrader account controls a second time;
+        # keep the independent FULL fresh pre-click form readback unchanged.
+        timestamps={"start":time.perf_counter()}
         self.verify_order_form(platform,role,direction,lot)
+        timestamps["form_verified"]=time.perf_counter()
         profile,win=self._form_window(platform,role)
         points=profile["points"]
         click_point=None
@@ -637,7 +643,10 @@ class DemoUiBrokerPort:
         self.automation.emergency.guard()
         # The ONLY broker order submission click in this module.
         # Never retry it in case of timeout or uncertain acknowledgement.
+        timestamps["click_started"]=time.perf_counter()
         self.automation.windows.click(win,click_point or point)
+        timestamps["click_returned"]=time.perf_counter()
+        self.submit_phase_timings[role]=timestamps
 
     def confirm_new_position(self,platform,role,baseline,direction,volume,account_id):
         previous={p.ticket for p in baseline}
