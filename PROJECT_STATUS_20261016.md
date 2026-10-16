@@ -58,3 +58,12 @@
 - 修正後重新唯讀執行 cTrader 場外 snapshot_positions：成功，Positions 筆數 0（約 3617ms）；MT5 場內唯讀 snapshot_positions：成功，Positions 筆數 0（約 2036ms）。僅為當時持倉快照，未檢查所有掛單、歷史成交，也不保證之後狀態不變。
 - 無任何交易、補單、平倉、Google Sheets 寫入或 LAB 重啟；正式版與 GitHub main 未修改。LAB 執行中舊程序若未重新啟動，仍可能使用先前載入的舊版本。
 - 原有 P0 不變：快速雙邊真實點擊計時與雙 Demo 端對端驗收、cTrader 場外同步核對、可信拒單證據後才可首次補單、單邊未知時人工安全應變；P1 遠端手機/Telegram 控制及右側快捷面板仍待開發。已取消的情境預覽圖不恢復。
+
+## 2026-10-17 00:27 cTrader 帳戶控制項間歇缺失（第二次發生）
+- 最新 Demo journal 紀錄：00:27:41，兩側 confirmed_both、MT5 internal_protected=true，但未紀錄 cTrader 場外 SL/TP synchronized，status=attention_required；cTrader 缺少唯一的 CTraderAccountNumberTextBlock_AId 控制項。不得重新開倉，也不得將兩邊已成交誤說成單邊。
+- 後續三次原生 UIA 唯讀全樹掃描，每次帳號、Demo 類型、券商名稱控制項各唯一且可見，整樹掃描耗時約 1592/1723/2071ms；支持暫時缺失可能，尚未證明發生當下的 UIA 狀態。
+- LAB 修正 inspect_account：**只有帳號控制項數量為 0** 時，最多增加兩次唯讀掃描，每次間隔約 120ms；任何重複 ID、非 Demo、帳號變化或最後仍缺失均禁止繼續送單，不跳過驗證；正常成功時不增加額外全樹掃描。
+- 新增 5 個離線測試，完整回歸 484/484 PASS（108.560 秒），compileall 與 git diff --check PASS。這不代表 cTrader 修改場外 SL/TP 已實際驗收。
+- 唯讀當時查詢 MT5 場內與 cTrader 場外各 1 筆持倉，兩者 SL/TP 欄位皆非空，但**尚未確認 cTrader 場外 SL/TP 數值等於預期值**，也未讀證掛單與最新成交歷史。未執行任何送單、補單、平倉、同步修改或試算表寫入。
+- 偵測到兩個同時執行的 LAB main.py Python 行程，可能造成工作階段混淆；未確認交易流程完全安全之前禁止盲目關閉其中任一個，尚未重啟 LAB。GUI 已載入版本不一定包含這次修正。
+- P0 自動補單、單邊結果不明的人工二選一處理及雙 Demo 端對端實際驗收仍未完成；P1 手機／Telegram 遠端控制及右側快捷面板保留。已取消的情境預覽圖仍不製作。
