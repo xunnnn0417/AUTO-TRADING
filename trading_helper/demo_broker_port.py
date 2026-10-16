@@ -14,7 +14,7 @@ import time
 from decimal import Decimal, InvalidOperation
 
 from .auto_entry import DemoAccount, Position
-from .windows import AutomationError, WindowInfo
+from .windows import AutomationError, WindowInfo, WindowController
 
 
 class DemoUiBrokerPort:
@@ -60,7 +60,9 @@ class DemoUiBrokerPort:
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
 
-    def _verify_instrument(self, platform: str, role: str, win) -> None:
+    def _verify_instrument(
+        self, platform: str, role: str, win, *, _controls=None
+    ) -> None:
         expected=self._expected_symbol
         if not expected:
             raise AutomationError("沒有可信的本次商品代碼，禁止送單。")
@@ -94,10 +96,15 @@ class DemoUiBrokerPort:
             raise AutomationError(
                 f"cTrader 尚未驗證 {expected} 商品描述欄位，拒絕送單。"
             )
-        info=Desktop(backend="uia").window(handle=win.handle)
+        if _controls is None:
+            info=Desktop(backend="uia").window(handle=win.handle)
+            controls=info.descendants(control_type="Text")
+        else:
+            controls=_controls
         matches=[
-            item for item in info.descendants(control_type="Text")
-            if item.is_visible() and
+            item for item in controls
+            if str(item.element_info.control_type)=="Text"
+            and item.is_visible() and
             str(item.element_info.automation_id).endswith(
                 "SymbolQuickInfoTemplates__TextBlock_Description_AId"
             ) and str(item.window_text()).strip()==wanted
@@ -125,6 +132,15 @@ class DemoUiBrokerPort:
     def _bound(self, platform, role):
         profile=self.automation.config["platforms"][platform]
         pattern=profile["window_title"][role]
+        if (platform in ("cTrader", "GooeyTrade")
+                and isinstance(self.automation.windows, WindowController)):
+            # Real entrypoints share the same canonical calibrated main
+            # terminal finder as fill and post-entry work; fake adapters
+            # below retain compatibility with existing offline fixtures.
+            return profile,self.automation.windows.find_calibrated_main(
+                pattern,profile.get("points",{}).get("lot_input",{}),
+                platform=platform,
+            )
         window=self.automation.windows.find(pattern)
         if "MT5" not in platform.upper() and isinstance(window, WindowInfo):
             # A cTrader popup and the REAL trading window can have the
@@ -222,8 +238,13 @@ class DemoUiBrokerPort:
         if text in ("sell","short","賣出","空"):return "SELL"
         raise AutomationError(f"持倉方向無法可靠辨識：{raw!r}")
 
-    def inspect_account(self, platform: str, role: str) -> DemoAccount:
-        profile,window=self._bound(platform,role)
+    def inspect_account(
+        self, platform: str, role: str, *, _controls=None, _window=None
+    ) -> DemoAccount:
+        if _window is None:
+            profile,window=self._bound(platform,role)
+        else:
+            window=_window
         title=str(window.title or "")
         if "MT5" in platform.upper():
             m=re.search(r"\b(\d{5,})\s*-\s*([^\s-]+(?:-[^\s-]+)*-Demo)\b",
@@ -241,17 +262,20 @@ class DemoUiBrokerPort:
             # A transient UIA tree may omit the cTrader account number
             # during a window transition. Retry ONLY when its count is zero.
             # Duplicate IDs, changed identities and non-DEMO still fail closed.
-            for attempt in range(3):
-                elements=Desktop(backend="uia").window(
-                    handle=window.handle
-                ).descendants()
+            for attempt in range(1 if _controls is not None else 3):
+                elements=(
+                    _controls if _controls is not None
+                    else Desktop(backend="uia").window(
+                        handle=window.handle
+                    ).descendants()
+                )
                 number_nodes=[
                     element for element in elements
                     if (str(element.element_info.automation_id)==
                         "CTraderAccountNumberTextBlock_AId"
                         and element.is_visible())
                 ]
-                if number_nodes or attempt==2:
+                if number_nodes or _controls is not None or attempt==2:
                     break
                 self.log(
                     "cTrader identity UIA temporarily missing; "
@@ -591,14 +615,28 @@ class DemoUiBrokerPort:
                     f"無法在進場前確認 TradingView 視窗：{exc}"
                 ) from exc
 
-    def verify_order_form(self, platform,role,direction,lot) -> None:
-        self.inspect_account(platform,role)
-        profile,win=self._form_window(platform,role)
-        self._verify_instrument(platform,role,win)
+    def verify_order_form(
+        self, platform,role,direction,lot, *,
+        _controls=None, _window=None
+    ) -> None:
+        # Ordinary preflight still reads independent fresh broker evidence.
+        # Only the final cTrader pre-click path reuses its ONE new UIA tree.
+        if _controls is None:
+            self.inspect_account(platform,role)
+        else:
+            self.inspect_account(
+                platform,role,_controls=_controls,_window=_window
+            )
+        profile,win=(
+            self._form_window(platform,role) if _window is None
+            else (self.automation.config["platforms"][platform],_window)
+        )
+        self._verify_instrument(platform,role,win,_controls=_controls)
         points=profile.get("points",{})
         try:
+            kwargs=({"_controls":_controls} if _controls is not None else {})
             snap=self.automation.windows.read_fill_snapshot(
-                win,points,ctrader="MT5" not in platform.upper()
+                win,points,ctrader="MT5" not in platform.upper(),**kwargs
             )
             observed=self.automation._normalize_numeric_input(
                 snap["values"]["lot_input"],lot
@@ -633,9 +671,28 @@ class DemoUiBrokerPort:
         # Do not enumerate the same cTrader account controls a second time;
         # keep the independent FULL fresh pre-click form readback unchanged.
         timestamps={"start":time.perf_counter()}
-        self.verify_order_form(platform,role,direction,lot)
+        controls=None
+        if "MT5" not in platform.upper():
+            # One fresh post-focus UIA inventory serves ALL independent
+            # semantic guards: Demo account, instrument, form and order
+            # button. Never reuse an earlier preflight inventory.
+            profile,win=self._form_window(platform,role)
+            self.automation.emergency.guard()
+            self.automation.windows.focus(win)
+            from pywinauto import Desktop
+            controls=Desktop(backend="uia").window(
+                handle=win.handle
+            ).descendants()
+            timestamps["uia_inventory_returned"]=time.perf_counter()
+            self.automation.emergency.guard()
+            self.verify_order_form(
+                platform,role,direction,lot,
+                _controls=controls,_window=win,
+            )
+        else:
+            self.verify_order_form(platform,role,direction,lot)
+            profile,win=self._form_window(platform,role)
         timestamps["form_verified"]=time.perf_counter()
-        profile,win=self._form_window(platform,role)
         points=profile["points"]
         click_point=None
         if "MT5" in platform.upper():
@@ -670,11 +727,11 @@ class DemoUiBrokerPort:
             point=points.get("order_submit_button")
             if not point:
                 raise AutomationError("cTrader 尚未人工校準真正的 Place order。")
-            from pywinauto import Desktop
-            elems=Desktop(backend="uia").window(
-                handle=win.handle
-            ).descendants(control_type="Button")
-            buttons=[b for b in elems if b.is_visible() and b.is_enabled() and
+            # Native button from the SAME fresh checked inventory; type,
+            # ID, parent ancestry and calibrated location remain mandatory.
+            buttons=[b for b in controls
+                if str(b.element_info.control_type)=="Button"
+                and b.is_visible() and b.is_enabled() and
                 str(b.element_info.automation_id)==
                 "Orders_Create_MarketOrderPlaceButtonControl__Button_NewOrdersWindowPlaceOrder_AId"
             ]
