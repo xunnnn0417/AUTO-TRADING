@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal
+import time
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
+from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
 from .windows import AutomationError, EmergencyController, WindowController
 
@@ -42,6 +44,23 @@ TRADINGVIEW_REQUIRED_POINTS = [
 ]
 
 
+class CTraderDecimalInputSuggestion(AutomationError):
+    """Two confirmed truncated decimal writes; let GUI offer opt-in.
+
+    The fill operation MUST stop here. No automatic mode change, retry,
+    broker order submission, or cross-side continuation is performed.
+    """
+    def __init__(self, role_text: str, label: str, expected: str, actual: str):
+        self.role_text = role_text
+        self.label = label
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"{role_text} cTrader {label}連續兩次輸入小數後只保留整數部分："
+            f"預期 {expected}、讀回 {actual}。已停止填寫。"
+        )
+
+
 class PlatformAutomation:
     def __init__(
         self,
@@ -49,7 +68,9 @@ class PlatformAutomation:
         windows: WindowController,
         emergency: EmergencyController,
         log: Log,
+        profile_name: str = "",
     ):
+        self.profile_name = profile_name
         self.config = config
         self.windows = windows
         self.emergency = emergency
@@ -64,7 +85,10 @@ class PlatformAutomation:
         self.emergency.guard()
         profile = self.config["platforms"][platform]
         points = profile.get("points", {})
-        missing = [name for name in REQUIRED_POINTS[platform] if name not in points]
+        required=list(REQUIRED_POINTS[platform])
+        if _is_ctrader(platform):
+            required.extend(("buy_button","sell_button"))
+        missing = [name for name in required if name not in points]
         if missing:
             raise AutomationError(
                 f"{platform} 尚未完成以下校準：{', '.join(missing)}"
@@ -81,20 +105,42 @@ class PlatformAutomation:
         should_open_panel = _is_mt5(platform) or profile.get(
             "open_panel_before_fill"
         )
-        if _is_mt5(platform) and "new_order_button" in points:
-            self.windows.click(bound_window, points["new_order_button"])
-            try:
-                mt5_order_window = self.windows.wait_for_active_window_change(
-                    bound_window,
-                    timeout=2.5,
+        if _is_mt5(platform):
+            # Reuse an already-open, independently verified native order modal.
+            # Waiting for a foreground-window CHANGE falsely fails when
+            # the same MT5 order window was open before this fill began.
+            from .demo_broker_port import DemoUiBrokerPort
+            port = DemoUiBrokerPort(self, self.log)
+            port.set_expected_symbol(instruction.symbol)
+            _, mt5_order_window = port._form_window(
+                platform, role, allow_absent=True
+            )
+            if mt5_order_window is not None:
+                self.log(
+                    f"{role_text} {platform} 新訂單視窗已開啟，"
+                    "沿用現有視窗，不重複點擊新訂單。"
                 )
-            except AutomationError:
-                mt5_order_window = self.windows.wait_for_point_window(
-                    profile,
-                    role,
-                    points["lot_input"],
-                    timeout=2.5,
-                )
+            else:
+                if "new_order_button" not in points:
+                    raise AutomationError(
+                        f"{role_text} MT5 新訂單視窗未開啟且尚未校準新訂單按鈕。"
+                    )
+                self.windows.click(bound_window, points["new_order_button"])
+                deadline = time.monotonic() + 2.5
+                while time.monotonic() < deadline:
+                    self.emergency.guard()
+                    _, mt5_order_window = port._form_window(
+                        platform, role, allow_absent=True
+                    )
+                    if mt5_order_window is not None:
+                        break
+                    time.sleep(0.05)
+                if mt5_order_window is None:
+                    raise AutomationError(
+                        f"{role_text} MT5 點擊新訂單後未找到唯一、"
+                        "商品與校準尺寸均符合的訂單視窗；"
+                        "不以主視窗或過時標題代替，已停止填寫。"
+                    )
             self.log(f"{role_text} {platform} 訂單視窗：{mt5_order_window.title}")
         elif should_open_panel and "new_order_button" in points:
             panel_is_open = self.windows.point_window_exists(
@@ -200,7 +246,215 @@ class PlatformAutomation:
                 value,
                 forced_window=mt5_order_window if _is_mt5(platform) else None,
             )
-        self.log(f"{role_text} {platform} 欄位已填妥，沒有送出訂單。")
+        self._verify_filled_side(
+            profile, role, platform, role_text, points, window,
+            mt5_order_window, direction, values,
+        )
+        self.log(f"{role_text} {platform} 欄位全部讀回核對正確，沒有送出訂單。")
+
+    @staticmethod
+    def _normalize_numeric_input(
+        raw: str, expected: Decimal | None = None
+    ) -> Decimal:
+        """Compare numeric UIA values, honoring the expected decimal format."""
+        value=str(raw).strip()
+        value=value.replace("−","-").replace("\u00a0","")
+        value=value.replace("\u202f","").replace(" ","").replace("'","")
+        # Decimal comma: 0,74 -> 0.74. Thousands grouping: 4,117.46.
+        if "," in value and "." in value:
+            if value.rfind(",") > value.rfind("."):
+                value=value.replace(".","").replace(",",".")
+            else:
+                value=value.replace(",","")
+        elif "," in value:
+            bits=value.split(",")
+            if len(bits)==2 and len(bits[1])==3 and len(bits[0])>=1:
+                # "0,740" is a decimal comma for some locale settings,
+                # while "3,378" may be a thousands group. The known
+                # expected numeric value disambiguates the two safely.
+                decimal_form=Decimal(value.replace(",","."))
+                if expected is not None and decimal_form==expected:
+                    value=value.replace(",",".")
+                else:
+                    value="".join(bits)
+            else:
+                value=value.replace(",",".")
+        try:
+            result=Decimal(value)
+        except (InvalidOperation,ValueError) as exc:
+            raise AutomationError(
+                f"讀回值「{raw}」不是可確認的純數字，已停止；不會猜測。"
+            ) from exc
+        if not result.is_finite():
+            raise AutomationError("欄位讀回不是有效有限數字，已停止。")
+        return result
+
+    def _verify_filled_side(
+        self,
+        profile: dict[str, Any],
+        role: str,
+        platform: str,
+        role_text: str,
+        points: dict[str, dict[str, Any]],
+        bound_window,
+        mt5_order_window,
+        direction: str,
+        values: list[tuple[str,str,str]],
+    ) -> None:
+        """Verify each side AFTER all initial writes, then repair mismatches.
+
+        Each field is written at most THREE times TOTAL (initial + two
+        repairs). UIA access failure != confirmed value mismatch; stop rather
+        than risking blind repeat input or order clicks.
+        """
+        attempts={key:1 for key,_,_ in values}
+        expected={key:self._normalize_numeric_input(value)
+                  for key,_,value in values}
+        verified={}
+        max_cycles=3*len(values)+1
+        for _ in range(max_cycles):
+            self.emergency.guard()
+            # A native controller can read every UIA control once per
+            # verification cycle. Old fakes/adapters retain the original
+            # checked per-field readback as a compatibility fallback.
+            batch=None
+            if hasattr(self.windows,"read_fill_snapshot"):
+                common_window=(
+                    mt5_order_window if _is_mt5(platform) else bound_window
+                )
+                if common_window is None:
+                    raise AutomationError(
+                        f"{role_text} {platform} 找不到唯一的下單視窗，已停止。"
+                    )
+                try:
+                    batch=self.windows.read_fill_snapshot(
+                        common_window,points,ctrader=_is_ctrader(platform)
+                    )
+                except AutomationError as exc:
+                    raise AutomationError(
+                        f"{role_text} {platform} 整側 UIA 核對失敗：{exc}"
+                        "。已停止，未重填。"
+                    ) from exc
+            if _is_ctrader(platform) and batch is None:
+                actual_direction=self.windows.read_ctrader_direction(
+                    bound_window,points
+                )
+                if actual_direction!=direction:
+                    raise AutomationError(
+                        f"{role_text} {platform} 方向錯誤：預期 {direction}，"
+                        f"實際 {actual_direction}；已停止。"
+                    )
+                for name,label in (
+                    ("sl_checkbox","止損"),("tp_checkbox","止盈")
+                ):
+                    checkbox_window=self._window_for_point(
+                        profile,role,points[name]
+                    )
+                    if not self.windows.read_ctrader_checkbox_checked(
+                        checkbox_window,points[name],name
+                    ):
+                        raise AutomationError(
+                            f"{role_text} {platform} {label}勾選已關閉，"
+                            "已停止；請重新檢查下單面板。"
+                        )
+            if _is_ctrader(platform) and batch is not None:
+                if batch["direction"]!=direction:
+                    raise AutomationError(
+                        f"{role_text} {platform} 方向錯誤：預期 {direction}，"
+                        f"實際 {batch['direction']}；已停止。"
+                    )
+                for name,label in (
+                    ("sl_checkbox","止損"),("tp_checkbox","止盈")
+                ):
+                    if not batch["checks"].get(name,False):
+                        raise AutomationError(
+                            f"{role_text} {platform} {label}勾選已關閉，"
+                            "已停止；請重新檢查下單面板。"
+                        )
+            mismatches=[]
+            for point_name,label,value in values:
+                self.emergency.guard()
+                try:
+                    if batch is not None:
+                        readback=batch["values"][point_name]
+                    else:
+                        field_window=(mt5_order_window if _is_mt5(platform)
+                                      else self._window_for_point(
+                                          profile,role,points[point_name]
+                                      ))
+                        readback=self.windows.read_edit_value(
+                            field_window,points[point_name]
+                        )
+                    observed=self._normalize_numeric_input(
+                        readback,expected[point_name]
+                    )
+                except (AutomationError, KeyError, TypeError) as exc:
+                    raise AutomationError(
+                        f"{role_text} {platform} {label} 無法讀回確認：{exc}"
+                        "。已停止；未執行重填。"
+                    ) from exc
+                if observed != expected[point_name]:
+                    mismatches.append((point_name,label,value,readback))
+                else:
+                    verified[point_name]=readback
+            if not mismatches:
+                self.log(
+                    f"{role_text} {platform} 核對通過："
+                    + "、".join(
+                        f"{label}={verified[key]}"
+                        for key,label,_ in values
+                    )
+                    + ("，方向與 SL/TP 勾選狀態正常"
+                       if _is_ctrader(platform) else "")
+                )
+                return
+            # Repair just ONE wrong field then reread the ENTIRE side: a
+            # platform may recompute another field when this one changes.
+            point_name,label,value,readback=mismatches[0]
+            count=attempts[point_name]
+            if (
+                platform == "cTrader"
+                and ctrader_mode_for_profile(self.config, self.profile_name)
+                    == "native"
+                and point_name in ("sl_input", "tp_input")
+                and count >= 2
+            ):
+                # Suggest conversion ONLY for a verified fractional value
+                # whose entire fractional part vanished on 2 writes.
+                # Unreadable data, unrelated mismatches, MT5 and GooeyTrade
+                # do not trigger the suggestion.
+                target=expected[point_name]
+                got=self._normalize_numeric_input(
+                    readback, expected[point_name]
+                )
+                if (
+                    target != target.to_integral_value()
+                    and got == Decimal(int(target))
+                ):
+                    raise CTraderDecimalInputSuggestion(
+                        role_text, label, value, readback
+                    )
+            if count>=3:
+                raise AutomationError(
+                    f"{role_text} {platform} {label} 核對失敗（三次填入）。"
+                    f"預期 {value}，實際讀回「{readback}」。"
+                    "已停止後續場別操作，未送出訂單。"
+                )
+            self.log(
+                f"{role_text} {platform} {label} 不一致："
+                f"預期 {value}、實際「{readback}」。"
+                f"重新填入第 {count+1}/3 次，接著重查整側。"
+            )
+            self._fill_field(
+                profile,role,points,role_text,platform,
+                point_name,label,value,
+                forced_window=(mt5_order_window if _is_mt5(platform) else None),
+            )
+            attempts[point_name]+=1
+        raise AutomationError(
+            f"{role_text} {platform} 多欄相互變動，三次修正內無法穩定確認，"
+            "已停止；未送出訂單。"
+        )
 
     def _fill_field(
         self,
@@ -251,7 +505,7 @@ class PlatformAutomation:
                 profile, role, points[point_name]
             )
             clicks = self.windows.refresh_checkbox_checked(
-                checkbox_window, points[point_name]
+                checkbox_window, points[point_name], point_name
             )
             if clicks == 2:
                 self.log(f"cTrader {label}原本已勾選，已關閉後重新打開。")
@@ -1111,14 +1365,18 @@ class PlatformAutomation:
             value,
         )
 
-    @staticmethod
     def _ctrader_uses_point_size(
+        self,
         platform: str,
         profile: dict[str, Any],
         role: str,
         points: dict[str, dict[str, Any]],
     ) -> bool:
         if platform == "GooeyTrade":
+            return True
+        if platform == "cTrader" and ctrader_mode_for_profile(
+            self.config, self.profile_name
+        ) == "gooey":
             return True
         role_pattern = str(profile.get("window_title", {}).get(role, ""))
         return "GooeyTrade" in role_pattern

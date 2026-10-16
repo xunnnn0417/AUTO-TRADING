@@ -305,7 +305,13 @@ class WindowController:
 
     def focus(self, window: WindowInfo) -> WindowInfo:
         self.emergency.guard()
-        if user32.IsIconic(window.handle):
+        minimized=bool(user32.IsIconic(window.handle))
+        # Most fill/verify operations target one already-active window.
+        # Keep the exact refresh and calibration-size checks, but do not
+        # wait 200ms after every field if the correct HWND is foreground.
+        if not minimized and user32.GetForegroundWindow()==window.handle:
+            return self._refresh(window.handle)
+        if minimized:
             user32.ShowWindow(window.handle, SW_RESTORE)
         user32.SetForegroundWindow(window.handle)
         time.sleep(0.2)
@@ -357,6 +363,303 @@ class WindowController:
             x = window.left + round(float(point["x"]) * window.width)
             y = window.top + round(float(point["y"]) * window.height)
             return x, y
+
+    def read_fill_snapshot(
+        self,
+        window: WindowInfo,
+        points: dict[str, dict[str, float]],
+        *,
+        ctrader: bool = False,
+    ) -> dict[str, object]:
+        """One FRESH UIA inventory to verify every input on the same window.
+
+        Safe speed optimization: enumerate controls ONCE per verification
+        round, not once per field / direction / checkbox. Values and toggle
+        states are always fetched fresh. Never click, submit, type or reuse
+        a previous round's values.
+        """
+        self.emergency.guard()
+        from pywinauto import Desktop
+        focused = self.focus(window)
+        target_points = {
+            name: points[name]
+            for name in ("lot_input", "sl_input", "tp_input")
+        }
+        if ctrader:
+            target_points.update({
+                name: points[name] for name in (
+                    "buy_button","sell_button","sl_checkbox","tp_checkbox"
+                )
+            })
+        coords={}
+        for key,point in target_points.items():
+            self.emergency.guard()
+            self._validate_calibrated_window(focused,point)
+            coords[key]=self.screen_point(focused,point)
+        try:
+            controls=Desktop(backend="uia").window(
+                handle=focused.handle
+            ).descendants()
+        except Exception as exc:
+            raise AutomationError(
+                f"無法一次讀取交易視窗欄位清單：{exc}"
+            ) from exc
+        self.emergency.guard()
+        types={"Edit":[],"Spinner":[],"RadioButton":[],"CheckBox":[]}
+        for ctrl in controls:
+            try:
+                kind=str(ctrl.element_info.control_type)
+                if kind not in types:
+                    continue
+                if not ctrl.is_visible() or not ctrl.is_enabled():
+                    continue
+                box=ctrl.rectangle()
+                rect=(box.left,box.top,box.right,box.bottom)
+                types[kind].append((ctrl,rect))
+            except Exception:
+                continue
+
+        def matching_edit(key: str):
+            x,y=coords[key]
+            unique={}
+            for ctrl,rect in types["Edit"]+types["Spinner"]:
+                a,b,c,d=rect
+                if a-4<=x<=c+4 and b-4<=y<=d+4:
+                    unique.setdefault(rect,ctrl)
+            if len(unique)!=1:
+                raise AutomationError(
+                    f"{key} 沒有唯一可讀欄位（找到 {len(unique)} 個），"
+                    "為安全起見不會盲目重填。"
+                )
+            return next(iter(unique.values()))
+
+        values={}
+        for key in ("lot_input","sl_input","tp_input"):
+            self.emergency.guard()
+            ctrl=matching_edit(key)
+            try:
+                text=str(ctrl.get_value()).strip()
+            except Exception as exc:
+                raise AutomationError(
+                    f"{key} 不支援 UIA ValuePattern 讀回：{exc}"
+                ) from exc
+            if not text:
+                raise AutomationError(f"{key} UIA 讀回空白，已停止。")
+            values[key]=text
+        result={"values":values, "direction":None, "checks":{}}
+        if not ctrader:
+            return result
+
+        selected={}
+        for side,key in (("BUY","buy_button"),("SELL","sell_button")):
+            x,y=coords[key]
+            matches=[]
+            for ctrl,(l,t,r,b) in types["RadioButton"]:
+                if l<=x<=r and t<=y<=b:
+                    matches.append(ctrl)
+            if len(matches)!=1:
+                raise AutomationError(
+                    f"cTrader {side} 找不到唯一方向按鈕（{len(matches)} 個）。"
+                )
+            try:
+                selected[side]=bool(matches[0].is_selected())
+            except Exception as exc:
+                raise AutomationError(
+                    f"cTrader {side} 方向狀態讀取失敗：{exc}"
+                ) from exc
+        if selected["BUY"]==selected["SELL"]:
+            raise AutomationError(
+                "cTrader 買賣方向沒有唯一選擇，已停止填寫。"
+            )
+        result["direction"]="BUY" if selected["BUY"] else "SELL"
+        states={}
+        for key,terms in (
+            ("sl_checkbox",("stop loss","stoploss","止損","止损")),
+            ("tp_checkbox",("take profit","takeprofit","止盈"))
+        ):
+            x,y=coords[key]
+            matches=[]
+            for ctrl,(l,t,r,b) in types["CheckBox"]:
+                try:
+                    name=(ctrl.window_text() or "").casefold().replace("-"," ")
+                    if not any(term in name for term in terms):
+                        continue
+                    cx=(l+r)//2
+                    cy=(t+b)//2
+                    if abs(cx-x)<=42 and abs(cy-y)<=42:
+                        matches.append(ctrl)
+                except Exception:
+                    continue
+            if len(matches)!=1:
+                raise AutomationError(
+                    f"cTrader {key} 找不到唯一勾選框（{len(matches)} 個）。"
+                )
+            try:
+                toggle=int(matches[0].get_toggle_state())
+            except Exception as exc:
+                raise AutomationError(
+                    f"cTrader {key} 勾選狀態讀取失敗：{exc}"
+                ) from exc
+            if toggle not in (0,1):
+                raise AutomationError(
+                    f"cTrader {key} 勾選狀態不確定（{toggle}）。"
+                )
+            states[key]=bool(toggle)
+        result["checks"]=states
+        return result
+
+    def read_edit_value(
+        self,
+        window: WindowInfo,
+        point: dict[str, float],
+    ) -> str:
+        """Read a calibrated editable cell using native UIA ValuePattern.
+
+        Do not click or use the clipboard (Ctrl+C from a misfocused window
+        might copy unrelated text). Require exactly one matching UIA Edit
+        or Spinner at the calibrated point. Failure is explicitly UNVERIFIED,
+        never treated as a mismatch that would trigger blind rewrites.
+        """
+        self.emergency.guard()
+        from pywinauto import Desktop
+
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x,y=self.screen_point(focused,point)
+        root=Desktop(backend="uia").window(handle=focused.handle)
+        hits=[]
+        try:
+            controls=root.descendants()
+        except Exception as exc:
+            raise AutomationError(f"UIA 無法列舉交易欄位：{exc}") from exc
+        for ctrl in controls:
+            try:
+                info=ctrl.element_info
+                if str(info.control_type) not in ("Edit","Spinner"):
+                    continue
+                if not ctrl.is_visible() or not ctrl.is_enabled():
+                    continue
+                rect=ctrl.rectangle()
+                if not (
+                    rect.left-4 <= x <= rect.right+4
+                    and rect.top-4 <= y <= rect.bottom+4
+                ):
+                    continue
+                cx=(rect.left+rect.right)/2
+                cy=(rect.top+rect.bottom)/2
+                score=abs(cx-x)+abs(cy-y)
+                hits.append((score,ctrl,(rect.left,rect.top,rect.right,rect.bottom)))
+            except Exception:
+                continue
+        # Ignore equivalent nested Edit/Spinner geometry, but fail if
+        # two DISTINCT editable controls cover the calibration point.
+        by_rect={}
+        for score,ctrl,rect in hits:
+            if rect not in by_rect or score < by_rect[rect][0]:
+                by_rect[rect]=(score,ctrl)
+        if len(by_rect) != 1:
+            raise AutomationError(
+                "無法從校準點唯一定位可讀取的輸入欄位"
+                f"（找到 {len(by_rect)} 個）。請重新校準；不會盲目重填。"
+            )
+        ctrl=next(iter(by_rect.values()))[1]
+        try:
+            value=str(ctrl.get_value()).strip()
+        except Exception as exc:
+            raise AutomationError(
+                f"輸入欄位不支援可靠讀回（UIA ValuePattern）：{exc}。"
+                "已停止，不會盲目重填。"
+            ) from exc
+        if not value:
+            raise AutomationError("輸入欄位讀回空白，狀態不明，已停止。")
+        return value
+
+    def read_ctrader_direction(
+        self,
+        window: WindowInfo,
+        points: dict[str, dict[str, float]],
+    ) -> str:
+        """Only claim BUY/SELL when exactly one of two UIA radios is selected."""
+        from pywinauto import Desktop
+        self.emergency.guard()
+        focused=self.focus(window)
+        root=Desktop(backend="uia").window(handle=focused.handle)
+        try:
+            radios=root.descendants(control_type="RadioButton")
+        except Exception as exc:
+            raise AutomationError(f"讀取 cTrader 多空方向失敗：{exc}") from exc
+        selected={}
+        for side,key in (("BUY","buy_button"),("SELL","sell_button")):
+            if key not in points:
+                raise AutomationError(f"缺少 cTrader {key} 校準")
+            point=points[key]
+            self._validate_calibrated_window(focused,point)
+            x,y=self.screen_point(focused,point)
+            hits=[]
+            for radio in radios:
+                try:
+                    rr=radio.rectangle()
+                    if (rr.left<=x<=rr.right and rr.top<=y<=rr.bottom
+                            and radio.is_visible()):
+                        hits.append(radio)
+                except Exception:
+                    continue
+            if len(hits)!=1:
+                raise AutomationError(
+                    f"cTrader {side} 方向鈕無法唯一辨識（{len(hits)} 個），"
+                    "已停止，不會把點擊視作方向確認。"
+                )
+            try:
+                selected[side]=bool(hits[0].is_selected())
+            except Exception as exc:
+                raise AutomationError(f"cTrader {side} 方向狀態讀取失敗：{exc}") from exc
+        if selected["BUY"] == selected["SELL"]:
+            raise AutomationError("cTrader 買賣方向未呈現唯一已選狀態，已停止填寫。")
+        return "BUY" if selected["BUY"] else "SELL"
+
+    def read_ctrader_checkbox_checked(
+        self, window: WindowInfo, point: dict[str,float], checkbox_key: str
+    ) -> bool:
+        """Read-only verified UIA checkbox status after entry values change."""
+        from pywinauto import Desktop
+        self.emergency.guard()
+        focused=self.focus(window)
+        self._validate_calibrated_window(focused,point)
+        x,y=self.screen_point(focused,point)
+        root=Desktop(backend="uia").window(handle=focused.handle)
+        try:
+            all_checks=root.descendants(control_type="CheckBox")
+        except Exception as exc:
+            raise AutomationError(f"cTrader {checkbox_key} 狀態讀取失敗：{exc}") from exc
+        matches=[]
+        for ctrl in all_checks:
+            try:
+                name=(ctrl.window_text() or "").casefold().replace("-"," ")
+                label_match=(
+                    any(t in name for t in ("stop loss","stoploss","止損","止损"))
+                    if checkbox_key=="sl_checkbox"
+                    else any(t in name for t in ("take profit","takeprofit","止盈"))
+                )
+                if not label_match:
+                    continue
+                rr=ctrl.rectangle()
+                cx=(rr.left+rr.right)//2
+                cy=(rr.top+rr.bottom)//2
+                if abs(cx-x)<=42 and abs(cy-y)<=42 and ctrl.is_visible():
+                    matches.append(ctrl)
+            except Exception:
+                continue
+        if len(matches)!=1:
+            raise AutomationError(
+                f"cTrader {checkbox_key} 讀回找不到唯一勾選框，已停止填寫。"
+            )
+        try:
+            state=int(matches[0].get_toggle_state())
+        except Exception as exc:
+            raise AutomationError(f"cTrader {checkbox_key} 勾選狀態不明：{exc}") from exc
+        if state not in (0,1):
+            raise AutomationError(f"cTrader {checkbox_key} 狀態不確定：{state}")
+        return bool(state)
 
     def click_and_type(
         self,
@@ -540,29 +843,131 @@ class WindowController:
         self,
         window: WindowInfo,
         point: dict[str, float],
+        checkbox_key: str,
     ) -> int:
+        """Restore the checked state using cTrader's REAL UIA ToggleState.
+
+        * Unchecked -> click once, verify checked (1)
+        * Checked -> click off, verify unchecked, click on, verify checked (2)
+
+        The old "five bright pixels" test was fundamentally unreliable:
+        an UNCHECKED cTrader box's white border passes that test. Use the
+        unique nearby, semantically matching UIA CheckBox instead. When no
+        reliable ToggleState is available, FAIL CLOSED rather than blindly
+        clicking a live trading screen. Clicking the UIA control center also
+        avoids a calibrated point on its bottom border.
+        """
+        if checkbox_key not in ("sl_checkbox", "tp_checkbox"):
+            raise AutomationError(f"不支援的 cTrader 勾選框：{checkbox_key}")
         self.emergency.guard()
         try:
             import pyautogui
+            from pywinauto import Desktop
         except ImportError as exc:
-            raise AutomationError("尚未安裝 pyautogui，請先執行 install.bat。") from exc
+            raise AutomationError("cTrader 勾選狀態讀取需要 pywinauto 與 pyautogui") from exc
         focused = self.focus(window)
         self._validate_calibrated_window(focused, point)
-        x, y = self.screen_point(focused, point)
-        self.emergency.guard()
-        image = pyautogui.screenshot(
-            region=(max(0, x - 7), max(0, y - 7), 15, 15)
-        ).convert("L")
-        bright_pixels = sum(pixel >= 150 for pixel in image.getdata())
-        if bright_pixels >= 5:
-            pyautogui.click(x, y)
-            time.sleep(0.08)
+        target_x, target_y = self.screen_point(focused, point)
+        label = "止損" if checkbox_key == "sl_checkbox" else "止盈"
+
+        def locate():
+            self.emergency.guard()
+            try:
+                root = Desktop(backend="uia").window(handle=focused.handle)
+                controls = root.descendants(control_type="CheckBox")
+                matches = []
+                for ctrl in controls:
+                    name = (ctrl.window_text() or "").casefold().replace("-", " ")
+                    if checkbox_key == "sl_checkbox":
+                        correct = ("stop loss" in name or "stoploss" in name
+                                   or "止損" in name or "止损" in name)
+                    else:
+                        correct = ("take profit" in name or "takeprofit" in name
+                                   or "止盈" in name)
+                    if not correct:
+                        continue
+                    rect = ctrl.rectangle()
+                    cx = (rect.left + rect.right) // 2
+                    cy = (rect.top + rect.bottom) // 2
+                    # The existing calibrated point may be on the lower edge;
+                    # only accept a checkbox that is spatially very close.
+                    if abs(cx-target_x) > 42 or abs(cy-target_y) > 42:
+                        continue
+                    if not ctrl.is_enabled() or not ctrl.is_visible():
+                        continue
+                    matches.append((ctrl, cx, cy))
+                if len(matches) != 1:
+                    raise AutomationError(
+                        f"cTrader {label}無法辨識唯一的勾選框（找到 {len(matches)} 個）。"
+                        "已停止填寫；請打開 cTrader 下單面板並重新校準。"
+                    )
+                ctrl, cx, cy = matches[0]
+                toggle = int(ctrl.get_toggle_state())
+                if toggle not in (0, 1):
+                    raise AutomationError(
+                        f"cTrader {label}勾選狀態不明（{toggle}），為避免誤切換已停止。"
+                    )
+                return ctrl, toggle, cx, cy
+            except AutomationError:
+                raise
+            except Exception as exc:
+                raise AutomationError(
+                    f"無法可靠讀取 cTrader {label}勾選狀態，已停止填寫：{exc}"
+                ) from exc
+
+        # Reuse the SAME uniquely identified UIA checkbox between the
+        # two clicks. The old flow re-enumerated all UIA checkboxes before
+        # and after each click (5+ slow traversals per already-checked box).
+        # A fast verified toggle isn't an unverified blind double-click.
+        ctrl, current, x, y = locate()
+
+        def wait_for(expected: int) -> None:
+            nonlocal ctrl, x, y
+            deadline = time.monotonic() + 1.2
+            while True:
+                self.emergency.guard()
+                try:
+                    observed = int(ctrl.get_toggle_state())
+                except Exception:
+                    # cTrader sometimes rebuilds a checkbox after toggling.
+                    # Reacquire by its semantic label and calibrated location
+                    # ONLY on a stale UIA element, not on every poll.
+                    fresh, observed, fx, fy = locate()
+                    if abs(fx - x) > 12 or abs(fy - y) > 12:
+                        raise AutomationError(
+                            f"cTrader {label}勾選框切換時移位，已停止。"
+                        )
+                    ctrl, x, y = fresh, fx, fy
+                if observed not in (0, 1):
+                    raise AutomationError(
+                        f"cTrader {label}勾選狀態無法確定（{observed}）。"
+                    )
+                if observed == expected:
+                    return
+                if time.monotonic() >= deadline:
+                    raise AutomationError(
+                        f"cTrader {label}點擊後狀態未變成"
+                        f"{'勾選' if expected else '未勾選'}；"
+                        "已停止後續操作，請檢查校準位置。"
+                    )
+                time.sleep(0.025)
+
+        def click_to(expected: int) -> None:
+            nonlocal current
+            if current == expected:
+                raise AutomationError(
+                    f"cTrader {label}狀態在操作期間變動，已取消以防誤按。"
+                )
             self.emergency.guard()
             pyautogui.click(x, y)
-            time.sleep(0.08)
+            wait_for(expected)
+            current = expected
+
+        if current:
+            click_to(0)
+            click_to(1)
             return 2
-        pyautogui.click(x, y)
-        time.sleep(0.08)
+        click_to(1)
         return 1
 
     def hotkey(

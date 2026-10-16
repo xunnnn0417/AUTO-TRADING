@@ -577,10 +577,30 @@ class TradeInstructionTests(unittest.TestCase):
             def click_and_type(self, window, point, value):
                 self.typed.append((window.title, point["id"], value))
 
+            def read_edit_value(self, window, point):
+                matches = [
+                    text for title, key, text in self.typed
+                    if key == point["id"] and title == window.title
+                ]
+                if not matches:
+                    raise AssertionError("attempted to read unwritten field")
+                return matches[-1]
+
         fake = FakeWindows()
         automation.windows = fake
-
-        automation.fill("MT5", "external", item)
+        # Native dialog lookup is independent of the stale calibrated
+        # window-title regex. Simulate absent -> opened after one click.
+        from unittest.mock import patch
+        from trading_helper.demo_broker_port import DemoUiBrokerPort
+        profile = automation.config["platforms"]["MT5"]
+        opened = WindowInfo(
+            2, "Order opened from Right MT5", 0, 0, 100, 100
+        )
+        with patch.object(
+            DemoUiBrokerPort, "_form_window",
+            side_effect=[(profile, None), (profile, opened)],
+        ):
+            automation.fill("MT5", "external", item)
 
         self.assertEqual(fake.clicked, [("Right MT5", "new_order")])
         self.assertEqual(fake.read_from, ["Order opened from Right MT5"])

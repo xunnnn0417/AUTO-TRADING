@@ -1,3 +1,11 @@
+# LAB development snapshot (2026-10-16)
+
+This branch contains the experimental **Demo-only** cTrader/MT5 UI automation and tests. The original repository `main` branch is not replaced. Do not use this snapshot for Live trading. Order submission requires user-enabled options and validated Demo identity; unconfirmed fills are not auto-retried.
+
+For native **read-only** MT5 position verification on Windows, install `MetaTrader5` into the LAB's `vendor/mt5_readonly` directory using pip; vendor binaries and personal account settings are intentionally excluded from the repository.
+
+---
+
 # 對沖小幫手
 
 Windows desktop helper for reading a user-owned Google Sheet and assisting with cTrader, MT5, and TradingView workflows.

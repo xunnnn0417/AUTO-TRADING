@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "TradingWorkflowHelper"
+APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "TradingWorkflowHelper_TEST"
 CONFIG_PATH = APP_DIR / "config.json"
 PROFILES_PATH = APP_DIR / "profiles.json"
 FALLBACK_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
@@ -78,6 +78,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "internal_platform": "cTrader",
         "external_platform": "MT5",
         "tv_draw_internal": False,
+        "auto_entry_on_fill_both": False,
+        "auto_sync_sl_tp_after_entry": False,
+        "auto_draw_tv_after_entry": False,
+        # Scheme-specific cTrader input preference; stale identities
+        # always resolve to the original method, never a copied mode.
+        "ctrader_sl_tp_input_mode": "native",
+        "ctrader_sl_tp_input_identity": "",
         "daily_pnl_history": [],
         "trading_day_separator": {
             "enabled": True,
@@ -227,6 +234,39 @@ def _migrate_config(config: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def ctrader_mode_identity(name: str, sheet_url: str) -> str:
+    """A renamed plan or changed spreadsheet URL is a new input scheme."""
+    return json.dumps(
+        [str(name).strip(), str(sheet_url).strip()],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+
+
+def ctrader_mode_for_profile(config: dict[str, Any], name: str) -> str:
+    ui = config.get("ui", {})
+    identity = ctrader_mode_identity(
+        name, config.get("sheet", {}).get("spreadsheet_url", "")
+    )
+    if ui.get("ctrader_sl_tp_input_identity") != identity:
+        return "native"
+    return (
+        "gooey" if ui.get("ctrader_sl_tp_input_mode") == "gooey"
+        else "native"
+    )
+
+
+def set_ctrader_mode_for_profile(
+    config: dict[str, Any], name: str, mode: str
+) -> None:
+    if mode not in {"native", "gooey"}:
+        raise ValueError("不支援的 cTrader SL/TP 輸入方式。")
+    ui = config.setdefault("ui", {})
+    ui["ctrader_sl_tp_input_mode"] = mode
+    ui["ctrader_sl_tp_input_identity"] = ctrader_mode_identity(
+        name, config.get("sheet", {}).get("spreadsheet_url", "")
+    )
+
+
 class ConfigStore:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
@@ -285,7 +325,11 @@ class ProfileStore:
 
     def create(self, name: str, config: dict[str, Any]) -> None:
         self._validate_new_name(name)
-        self.data["profiles"][name] = deepcopy(config)
+        fresh = deepcopy(config)
+        # Even if created by duplicating another scheme, defaults start
+        # from native cTrader input until this scheme explicitly opts in.
+        set_ctrader_mode_for_profile(fresh, name, "native")
+        self.data["profiles"][name] = fresh
         self.data["active"] = name
         self.save()
 
@@ -296,6 +340,9 @@ class ProfileStore:
         profiles = self.data["profiles"]
         rebuilt: dict[str, Any] = {}
         for name, config in profiles.items():
+            if name == old_name:
+                config = deepcopy(config)
+                set_ctrader_mode_for_profile(config, new_name, "native")
             rebuilt[new_name if name == old_name else name] = config
         self.data["profiles"] = rebuilt
         if self.active_name == old_name:

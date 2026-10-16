@@ -29,3 +29,12 @@ config.json
 *.json
 !config.example.json
 TradingWorkflowHelper.lnk
+
+# LAB local test and user data
+*.log
+*.png
+vendor/
+ui_design_snapshots/
+_probe*
+_patch*
+_safe_github_bundle*
