@@ -661,6 +661,15 @@ class AutoEntryWorkflow:
                             "時間是 Python 視窗點擊函式，"
                             "不是券商真實成交回報。"
                         )
+                        if "uia_inventory_returned" in ex_t:
+                            # cTrader's last pre-click UIA scan is shared
+                            # across account, symbol, form and button checks.
+                            self.log(
+                                "快速雙邊：場外切窗與取得新 UIA 清單 "
+                                f"{(ex_t['uia_inventory_returned']-ex_t['start'])*1000:.0f}ms，"
+                                "共用清單完成帳戶／商品／表單核對 "
+                                f"{(ex_t['form_verified']-ex_t['uia_inventory_returned'])*1000:.0f}ms。"
+                            )
                 # Check BOTH sides independently. A failed cTrader read
                 # must not suppress our MT5 read-only native inspection.
                 # A confirmed ticket is persisted before checking the other
