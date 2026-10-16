@@ -244,6 +244,7 @@ class UiSignals(QObject):
     external_price_result = Signal(object)
     ctrader_decimal_suggestion = Signal(object)
     duplicate_entry_decision = Signal(object)
+    window_binding_result = Signal(object)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -488,6 +489,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.signals.operation_minimized.connect(self._minimize_after_operation)
+        self.signals.window_binding_result.connect(self._on_window_binding_result)
+        self._window_binding_dialog = None
         self.emergency = EmergencyController(self._emergency_callback)
         self.windows = WindowController(self.emergency)
         threading.Thread(target=self.windows.warm_ocr, daemon=True).start()
@@ -2889,73 +2892,142 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 self.activateWindow()
 
     def bind_role_window(self, role: str) -> bool:
+        """Single small nonmodal panel: current binding, rebind, final receipt."""
         platform = (
-            self.internal_platform.currentText()
-            if role == "internal"
+            self.internal_platform.currentText() if role == "internal"
             else self.external_platform.currentText()
         )
         role_text = "場內" if role == "internal" else "場外"
-        current_pattern = (
-            self.store.data["platforms"]
-            .get(platform, {})
-            .get("window_title", {})
-            .get(role, "")
+        current = str(
+            self.store.data["platforms"].get(platform, {})
+            .get("window_title", {}).get(role, "")
         )
-        if current_pattern:
-            QMessageBox.information(
-                self,
-                f"{role_text}視窗綁定狀態",
-                "目前已綁定。\n"
-                f"平台：{platform}\n"
-                f"角色：{role_text}\n"
-                f"視窗規則：{current_pattern}",
-            )
-            question = "是否要修改這個綁定？"
-        else:
-            QMessageBox.information(
-                self,
-                f"{role_text}視窗綁定狀態",
-                f"目前未綁定 {role_text} {platform} 視窗。",
-            )
-            question = "是否要建立新的綁定？"
-        answer = QMessageBox.question(
-            self,
-            f"修改{role_text}視窗綁定",
-            question,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+        previous = getattr(self, "_window_binding_dialog", None)
+        if previous is not None:
+            previous.close()
+        dialog = QDialog(self)
+        dialog.setObjectName("singleWindowBindingDialog")
+        dialog.setWindowTitle(f"{role_text}視窗綁定｜{platform}")
+        dialog.setMinimumWidth(450)
+        layout = QVBoxLayout(dialog)
+        current_label = QLabel(
+            f"平台：{platform}｜{role_text}\n"
+            f"目前綁定：{current or '尚未綁定'}", dialog
         )
-        if answer != QMessageBox.Yes:
-            self.log(f"已取消修改{role_text} {platform} 視窗綁定。")
-            return False
+        current_label.setWordWrap(True)
+        current_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(current_label)
+        outcome = QLabel(
+            "確認目前綁定後，可在此更改。"
+            "按下更改後，3 秒內將游標移到目標視窗。",dialog
+        )
+        outcome.setWordWrap(True)
+        outcome.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        outcome.setObjectName("windowBindingResultLabel")
+        layout.addWidget(outcome)
+        buttons = QHBoxLayout()
+        change = QPushButton("更改綁定" if current else "建立綁定",dialog)
+        change.setObjectName("windowBindingChangeButton")
+        close = QPushButton("關閉",dialog)
+        close.clicked.connect(dialog.close)
+        buttons.addStretch()
+        buttons.addWidget(change)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        dialog.setProperty("boundRole",role)
+        dialog.setProperty("boundPlatform",platform)
+        self._window_binding_dialog = dialog
 
-        def task() -> None:
-            self.log(
-                f"準備綁定{role_text} {platform} 視窗。"
-                "請在 3 秒內把滑鼠移到目標視窗上。"
+        def begin() -> None:
+            change.setEnabled(False)
+            outcome.setText(
+                "等待擷取：請在 3 秒內將滑鼠游標移到目標平台視窗。"
+                "擷取期間不會下單。"
             )
-            for count in (3, 2, 1):
-                self.log(f"綁定{role_text} {platform}：{count}")
-                time.sleep(1)
-            active = self.windows.window_at_cursor()
-            pattern = _window_title_pattern(platform, active.title)
-            self._save_bound_window(platform, role, pattern)
-            account_message = ""
-            profile = self.store.data["platforms"].get(platform, {})
-            account_point = profile.get("points", {}).get("account_number")
-            if platform == "cTrader" and account_point:
-                account_number = self.windows.read_account_number(active, account_point)
-                self._save_bound_account(platform, role, account_number)
-                account_message = f"；帳號：{account_number}"
-            elif platform == "cTrader":
-                account_message = "；尚未校準帳號位置，未儲存帳號"
-            self.log(
-                f"已綁定{role_text} {platform} 視窗：{active.title}；"
-                f"規則：{pattern}{account_message}"
-            )
-
-        self._start(f"綁定{role_text}視窗", task, hide_during=False)
+            origin_profile = self.profiles.active_name
+            def task() -> None:
+                try:
+                    self.log(f"準備綁定{role_text} {platform}：3 秒後擷取游標下視窗。")
+                    for count in (3,2,1):
+                        self.log(f"綁定{role_text} {platform}：{count}")
+                        time.sleep(1)
+                        self.emergency.guard()
+                    if self.profiles.active_name != origin_profile:
+                        raise AutomationError("方案已切換，請重新開啟綁定。")
+                    selected = (
+                        self.internal_platform.currentText()
+                        if role == "internal" else self.external_platform.currentText()
+                    )
+                    if selected != platform:
+                        raise AutomationError("平台已變更，請重新開啟綁定。")
+                    target = self.windows.window_at_cursor()
+                    pattern = _window_title_pattern(platform,target.title)
+                    # Capture optional account info before writing binding.
+                    account_message = ""
+                    point = self.store.data["platforms"].get(
+                        platform, {}
+                    ).get("points",{}).get("account_number")
+                    account_number = None
+                    if platform == "cTrader" and point:
+                        account_number = self.windows.read_account_number(target,point)
+                        account_message = f"；Demo 帳號已核對：{account_number}"
+                    elif platform == "cTrader":
+                        account_message = "；帳號位置未校準"
+                    self._save_bound_window(platform,role,pattern)
+                    if account_number is not None:
+                        self._save_bound_account(platform,role,account_number)
+                    self.signals.window_binding_result.emit({
+                        "role":role,"platform":platform,
+                        "ok":True,"old":current,
+                        "new":pattern,"title":target.title,
+                        "note":account_message,
+                    })
+                    self.log(
+                        f"已更改{role_text} {platform} 視窗："
+                        f"{current or '未綁定'} → {pattern}"
+                    )
+                except Exception as exc:
+                    self.signals.window_binding_result.emit({
+                        "role":role,"platform":platform,
+                        "ok":False,"old":current,"message":str(exc),
+                    })
+                    self.log(f"{role_text} {platform} 綁定未完成：{exc}")
+            self._start(f"綁定{role_text}視窗",task,hide_during=False)
+        change.clicked.connect(begin)
+        dialog.show()
+        dialog.raise_()
         return True
+
+    def _on_window_binding_result(self, result: dict) -> None:
+        """UI-thread receipt in the SAME panel; no separate success popup."""
+        dialog = getattr(self,"_window_binding_dialog",None)
+        if dialog is None or not dialog.isVisible():
+            return
+        if (dialog.property("boundRole")!=result.get("role") or
+            dialog.property("boundPlatform")!=result.get("platform")):
+            return
+        outcome = dialog.findChild(QLabel,"windowBindingResultLabel")
+        button = dialog.findChild(QPushButton,"windowBindingChangeButton")
+        if button is not None:
+            button.setEnabled(True)
+        if result.get("ok"):
+            platform=result["platform"]
+            role=result["role"]
+            current_label = dialog.layout().itemAt(0).widget()
+            current_label.setText(
+                f"平台：{platform}｜{'場內' if role=='internal' else '場外'}\n"
+                f"目前綁定：{result['new']}"
+            )
+            outcome.setText(
+                f"✓ 已更改完成\n"
+                f"原本：{result['old'] or '未綁定'}\n"
+                f"現在：{result['new']}\n"
+                f"擷取視窗：{result['title']}{result.get('note','')}"
+            )
+        else:
+            outcome.setText(
+                f"未更改原本的綁定。原因：{result.get('message','未知錯誤')}"
+            )
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
@@ -3050,10 +3122,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             reopen_delay = 150
         elif action == "bind_internal":
             started = self.bind_role_window("internal")
-            reopen_delay = 4300 if started else 150
+            reopen_delay = None if started else 150
         elif action == "bind_external":
             started = self.bind_role_window("external")
-            reopen_delay = 4300 if started else 150
+            reopen_delay = None if started else 150
         elif action == "calibrate_ctrader":
             self.open_calibration("cTrader")
             reopen_delay = 150

@@ -436,6 +436,9 @@ class AutoEntryWorkflow:
                 # We do NOT wait for first-side position polling to finish
                 # before dispatching the other side. If either submit raises,
                 # we stop, never click again or attempt a rescue order.
+                # These are workflow dispatch timestamps, NOT the broker's
+                # real fill times or exact OS mouse-down timestamps.
+                dispatch_start = {}
                 for plat,role,direction,lot in (
                     (internal_platform,"internal",
                      instruction.internal_direction,instruction.internal.lot),
@@ -448,7 +451,17 @@ class AutoEntryWorkflow:
                         key,f"sending_{role}",
                         "快速雙邊送出中，成交狀態仍未知"
                     )
+                    dispatch_start[role]=time.perf_counter()
                     self.port.submit_once(plat,role,direction,lot,key)
+                if len(dispatch_start)==2:
+                    gap_ms=(
+                        dispatch_start["external"]-
+                        dispatch_start["internal"]
+                    )*1000
+                    self.log(
+                        f"快速雙邊：兩側送單呼叫開始間隔 {gap_ms:.0f} ms；"
+                        "非實際成交價差或券商成交延遲。"
+                    )
                 # Check BOTH sides independently. A failed cTrader read
                 # must not suppress our MT5 read-only native inspection.
                 # A confirmed ticket is persisted before checking the other

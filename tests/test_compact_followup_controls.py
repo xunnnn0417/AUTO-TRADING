@@ -138,6 +138,76 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
         self.assertFalse(self.w.auto_fast_pair.isChecked())
 
+    def test_bound_window_one_panel_no_double_questions(self):
+        self.w._save_bound_window("MT5","external","old-bound-regex")
+        with patch.object(gui.QMessageBox,"information") as info, \
+             patch.object(gui.QMessageBox,"question") as ask:
+            self.assertTrue(self.w.bind_role_window("external"))
+            info.assert_not_called()
+            ask.assert_not_called()
+        box=self.w._window_binding_dialog
+        self.assertEqual(box.objectName(),"singleWindowBindingDialog")
+        self.assertIn("old-bound-regex",box.layout().itemAt(0).widget().text())
+        self.assertEqual(box.findChild(QPushButton,"windowBindingChangeButton").text(),
+                         "更改綁定")
+        box.close()
+
+    def test_binding_success_receipt_in_same_panel(self):
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","old-bound-regex")
+        self.w.bind_role_window("external")
+        box=self.w._window_binding_dialog
+        self.w._on_window_binding_result({
+            "role":"external","platform":"MT5","ok":True,
+            "old":"old-bound-regex","new":"new-bound-regex",
+            "title":"Demo Terminal - XAUUSD"})
+        receipt=box.findChild(QLabel,"windowBindingResultLabel").text()
+        for part in ("已更改完成","old-bound-regex","new-bound-regex","Demo Terminal"):
+            self.assertIn(part,receipt)
+        self.assertIn("\n",receipt)
+        self.assertTrue(box.findChild(QPushButton,"windowBindingChangeButton").isEnabled())
+        box.close()
+
+    def test_simulated_window_capture_changes_binding_only(self):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","old-bound-regex")
+        self.w.bind_role_window("external")
+        box=self.w._window_binding_dialog
+        with patch.object(self.w.windows,"window_at_cursor",
+                          return_value=SimpleNamespace(title="ICMarkets Terminal - 7777")), \
+             patch.object(gui.time,"sleep",return_value=None), \
+             patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()), \
+             patch.object(gui.QMessageBox,"question") as ask:
+            box.findChild(QPushButton,"windowBindingChangeButton").click()
+            self.qtapp.processEvents()
+            ask.assert_not_called()
+        self.assertIn(
+            "ICMarkets",self.w.store.data["platforms"]["MT5"]["window_title"]["external"]
+        )
+        self.assertIn(
+            "已更改完成",box.findChild(QLabel,"windowBindingResultLabel").text()
+        )
+        box.close()
+
+    def test_failed_capture_keeps_existing_binding_and_shows_error_inline(self):
+        from PySide6.QtWidgets import QLabel
+        self.w._save_bound_window("MT5","external","old-bound-regex")
+        self.w.bind_role_window("external")
+        box=self.w._window_binding_dialog
+        with patch.object(self.w.windows,"window_at_cursor",
+                          side_effect=RuntimeError("無效視窗")), \
+             patch.object(gui.time,"sleep",return_value=None), \
+             patch.object(self.w,"_start",side_effect=lambda name,task,**kw:task()):
+            box.findChild(QPushButton,"windowBindingChangeButton").click()
+            self.qtapp.processEvents()
+        self.assertEqual(
+            self.w.store.data["platforms"]["MT5"]["window_title"]["external"],
+            "old-bound-regex"
+        )
+        self.assertIn("未更改",box.findChild(QLabel,"windowBindingResultLabel").text())
+        box.close()
+
     def test_confirmed_fast_pair_preference_persists_without_repeat_prompt(self):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
