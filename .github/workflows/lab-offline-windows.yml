@@ -4,7 +4,13 @@ on:
   push:
     branches:
       - lab/2026-10-16-safe-defaults-preflight
+    paths-ignore:
+      - "**/*.md"
   workflow_dispatch:
+
+concurrency:
+  group: lab-windows-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
