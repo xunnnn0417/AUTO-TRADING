@@ -352,6 +352,51 @@ class AutoEntryWorkflow:
             "both_confirmed",
         }
 
+    def _visual_second_chance(
+        self, platform: str, role: str, baseline: tuple[Position, ...],
+        direction: str, volume: Decimal, account: DemoAccount,
+        symbol: str, key: str,
+    ) -> Position | None:
+        """Two READ-ONLY checks after an ambiguous confirm; never resend.
+
+        A position may become visible slightly after the original 12-second
+        observation window or after a transient UIA read failure. A unique,
+        correct *new* position is positive evidence. An empty or unreadable
+        grid is UNKNOWN, never a terminal rejection. No broker order clicks.
+        """
+        previous = {p.ticket for p in baseline}
+        for attempt in range(2):
+            self.guard()
+            try:
+                observed = self.port.snapshot_positions(platform, role)
+            except AutomationError as exc:
+                # The adapter failed to read an authoritative current
+                # snapshot. Allow another read; never treat this as empty.
+                self.log(f"{role} {platform} 持倉補讀未成功：{exc}")
+            else:
+                newly_seen = [p for p in observed if p.ticket not in previous]
+                if len(newly_seen) == 1 and len(observed) == len(baseline) + 1:
+                    position = newly_seen[0]
+                    self._validate_position(
+                        position, platform, direction, volume, account, symbol
+                    )
+                    self.journal.record_verified_leg(key, role, position)
+                    self.log(
+                        f"{role} {platform} 補讀辨識到原本已成交持倉："
+                        f"{position.ticket}；沒有重新送單。"
+                    )
+                    return position
+                if newly_seen or len(observed) != len(baseline) or (
+                    {p.ticket for p in observed} != previous
+                ):
+                    raise RecoveryRequired(
+                        f"{role} {platform} 補讀發現不唯一／不符合基準的"
+                        "持倉變化，不能推定未成交或自動補單。"
+                    )
+            if attempt == 0:
+                time.sleep(0.15)
+        return None
+
     def _submit_and_confirm(self, platform: str, role: str, direction: str,
                             volume: Decimal, account: DemoAccount,
                             before: tuple[Position,...], symbol: str,
@@ -600,6 +645,24 @@ class AutoEntryWorkflow:
                         verified[role]=pos
                     except Exception as exc:
                         uncertainty[role]=str(exc)
+                # First prefer a fresh visual/native position readback:
+                # delayed display is not a failed order and needs no rescue.
+                for plat,role,direction,lot,baseline,account in (
+                    (internal_platform,"internal",
+                     instruction.internal_direction,instruction.internal.lot,
+                     before_i,account_i),
+                    (external_platform,"external",
+                     instruction.external_direction,instruction.external.lot,
+                     before_e,account_e),
+                ):
+                    if role in uncertainty:
+                        recovered=self._visual_second_chance(
+                            plat,role,baseline,direction,lot,account,
+                            instruction.symbol,key
+                        )
+                        if recovered is not None:
+                            verified[role]=recovered
+                            uncertainty.pop(role)
                 if len(uncertainty)==1 and len(verified)==1:
                     missing_role=next(iter(uncertainty))
                     remaining={
@@ -675,7 +738,16 @@ class AutoEntryWorkflow:
                         external_platform,"external",instruction.external_direction,
                         instruction.external.lot,account_e,before_e,instruction.symbol,key)
                 except Exception:
-                    second=self._rescue_only_proven_rejection(
+                    # Recheck the existing Positions tab first: a delayed
+                    # fill is success, not proof that we should click twice.
+                    second=self._visual_second_chance(
+                        external_platform,"external",before_e,
+                        instruction.external_direction,
+                        instruction.external.lot,account_e,
+                        instruction.symbol,key
+                    )
+                    if second is None:
+                        second=self._rescue_only_proven_rejection(
                         key=key,platform=external_platform,role="external",
                         direction=instruction.external_direction,
                         lot=instruction.external.lot,account=account_e,
@@ -683,9 +755,9 @@ class AutoEntryWorkflow:
                         other_platform=internal_platform,other_role="internal",
                         other_account=account_i,
                         other_direction=instruction.internal_direction,
-                        other_lot=instruction.internal.lot,
-                        instruction=instruction,
-                    )
+                            other_lot=instruction.internal.lot,
+                            instruction=instruction,
+                        )
                     if second is None:
                         raise
                 self.guard()
