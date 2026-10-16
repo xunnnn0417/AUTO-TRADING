@@ -709,10 +709,17 @@ class DemoUiBrokerPort:
             profile,win=self._form_window(platform,role)
             self.automation.emergency.guard()
             self.automation.windows.focus(win)
-            from pywinauto import Desktop
-            controls=Desktop(backend="uia").window(
-                handle=win.handle
-            ).descendants()
+            try:
+                from pywinauto import Desktop
+                controls=Desktop(backend="uia").window(
+                    handle=win.handle
+                ).descendants()
+            except Exception as exc:
+                # Failed UIA traversal is UNKNOWN broker state, not proof
+                # of rejection or an excuse to send another order.
+                raise AutomationError(
+                    "cTrader 送單前無法安全讀取原生 UIA 清單；未送單。"
+                ) from exc
             if not isinstance(controls, list) or not controls:
                 raise AutomationError(
                     "cTrader 最終送單前無法取得完整 UIA 控制項清單，"
