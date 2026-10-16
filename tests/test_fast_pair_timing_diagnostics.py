@@ -57,6 +57,7 @@ class FastPairTimingTests(unittest.TestCase):
         parent1=Ancestor("AspPlaceOrderButton_AId",parent2)
         class Button:
             element_info=SimpleNamespace(
+                control_type="Button",
                 automation_id=(
                     "Orders_Create_MarketOrderPlaceButtonControl__Button_NewOrdersWindowPlaceOrder_AId"
                 )
@@ -70,6 +71,7 @@ class FastPairTimingTests(unittest.TestCase):
         desktop=SimpleNamespace(window=lambda **kwargs:native_root)
         window=SimpleNamespace(handle=123)
         windows=SimpleNamespace(
+            focus=MagicMock(),
             screen_point=MagicMock(return_value=(50,50)),
             click=MagicMock(),
         )
@@ -92,7 +94,12 @@ class FastPairTimingTests(unittest.TestCase):
             adapter.submit_once("cTrader","external","BUY",
                                 Decimal("0.1"),"fake-key")
         adapter.verify_order_form.assert_called_once()
+        self.assertEqual(
+            adapter.verify_order_form.call_args.kwargs["_controls"],
+            native_root.descendants(),
+        )
         adapter.inspect_account.assert_not_called()
+        windows.focus.assert_called_once_with(window)
         windows.click.assert_called_once()
         timing=adapter.submit_phase_timings["external"]
         self.assertLessEqual(timing["start"],timing["form_verified"])
