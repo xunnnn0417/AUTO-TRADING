@@ -85,3 +85,10 @@
 - 雙邊真實點擊間隔仍未完成數值驗收；先前 cTrader UIA 整樹掃描約 1.6~2.1 秒，多次帳戶／表單／按鈕辨識容易拖慢第二側按鈕。先使用已存在的快速雙邊診斷日志歸因，再做不削弱安全核對的效能優化，不能假稱滑鼠鎖定已加速。
 
 - 安全重啟驗證完成：在 journal 逾 1595 秒未更新、備份 3 份 APPDATA 原始檔後，透過 WM_CLOSE 正常關閉舊 LAB GUI／父子行程 33988/31724；新 LAB 行程 25956/26152 正常啟動，僅有一個 GUI，原始碼存在兩項修正。未操作任何券商、持倉、下單或試算表。正式版不變。最新 LAB GitHub 進度與本機文件需保持一致。
+
+## 2026-10-17 01:57 錄影逐格分析：雙 Demo 送單間隔仍慢
+- User 上傳 45.4 秒、30fps、1920x1020 的 Windows 錄影 `20261016-1757-44.0484426.mp4`（錄影檔 metadata creation UTC 2026-10-16T17:57:48，約台灣 2026-10-17 01:57）。
+- 錄影逐格目視估計：確認「仍要繼續進場」約 16 秒結束後，MT5 下單視窗約 24 秒出現，約 25–26 秒持倉列出現；約 28 秒轉回 cTrader，約 29–30 秒出現第二側持倉列。**MT5 持倉可見至 cTrader 持倉可見約 4 秒；GUI 轉換不等於滑鼠 OS Click 的精確時間，更不能全歸因券商成交。**
+- 現有 LAB `gui.py::_fill_both_task` 先填場內與場外才進 `AutoEntryWorkflow.run`；`auto_entry.py` 預檢會掃描帳戶／持倉／表單，快速雙邊分支先送 MT5 再送 cTrader，不等待 MT5 成交回報，但 `DemoUiBrokerPort.submit_once` 兩側各自又執行完整 freshly-verified readback。尤其 cTrader 的 `inspect_account`、`_verify_instrument`、`read_fill_snapshot`、Place order 按鈕 UIA 定位四類操作，當前為數個獨立 UIA tree scans；前次 cTrader 全樹掃描約 1.6–2.1 秒，屬延遲嫌疑點，尚無錄影同次的精確 timings 或逐掃描 benchmark，不可宣稱已確認瓶頸比例。
+- 安全優化方向：將第二側「唯一帳戶＋Demo＋商品＋表單 Lot/SL/TP＋方向／勾選＋唯一原生 Place order 按鈕」合併進同一份**點擊前立即取得的全新 cTrader UIA snapshot**，重用樹節點做不同語意驗證，不重用上一個交易週期的舊表單值；任何缺失／歧義依舊 fail-closed，不改變一次單、帳戶一致性及不補單限制。切勿直接跳過最後送單核對。另將每項 precheck、form scan、button localization、OS click 前後分開記錄 monotonic timing，以區分 UI delay 和 broker fill。
+- 遠端 Windows Desktop Commander 此時 remote_calls_left_pct=0；因此**未修改本機 LAB 任何交易流程程式、未執行新回歸、未重啟，也未實際送單**。可繼續 GitHub 唯讀研究；待遠端額度恢復才能安全實作／測試／驗收。既有 cTrader 主視窗 1938x1038 安全選擇修正及滑鼠保護仍保留。
