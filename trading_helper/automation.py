@@ -94,7 +94,12 @@ class PlatformAutomation:
                 f"{platform} 尚未完成以下校準：{', '.join(missing)}"
             )
         pattern = profile["window_title"][role]
-        window = self.windows.find(pattern)
+        if _is_ctrader(platform) and isinstance(self.windows, WindowController):
+            window = self.windows.find_calibrated_main(
+                pattern, points["lot_input"], platform=platform
+            )
+        else:
+            window = self.windows.find(pattern)
         bound_window = window
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
@@ -558,6 +563,22 @@ class PlatformAutomation:
             ]
         else:
             patterns = [str(profile["window_title"][role]).strip()]
+        # Every cTrader/GooeyTrade field and position-read entrypoint uses
+        # one canonical calibrated MAIN window resolver, not the first
+        # same-title modal from Win32's Z-order.
+        if (
+            isinstance(self.windows, WindowController)
+            and (profile is self.config["platforms"].get("cTrader")
+                 or profile is self.config["platforms"].get("GooeyTrade"))
+        ):
+            platform = (
+                "GooeyTrade"
+                if profile is self.config["platforms"].get("GooeyTrade")
+                else "cTrader"
+            )
+            return self.windows.find_calibrated_main(
+                str(profile["window_title"][role]), point, platform=platform
+            )
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):
             try:
@@ -1092,7 +1113,16 @@ class PlatformAutomation:
         modify_window = None
         bound_window = None
         if use_position_modify_flow:
-            bound_window = self.windows.find(profile["window_title"]["external"])
+            if (_is_ctrader(external_platform)
+                    and isinstance(self.windows, WindowController)):
+                bound_window = self.windows.find_calibrated_main(
+                    profile["window_title"]["external"],
+                    points["position_order_row"], platform=external_platform
+                )
+            else:
+                bound_window = self.windows.find(
+                    profile["window_title"]["external"]
+                )
             self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")
             if _is_ctrader(external_platform):
                 self._verify_ctrader_account(
