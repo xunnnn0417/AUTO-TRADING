@@ -1861,7 +1861,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
             try:
-                task()
+                mouse_tasks = is_fill or name in (
+                    "繪製 TradingView", "同步場外止盈止損", "同步到場外"
+                )
+                if mouse_tasks:
+                    from .mouse_guard import PhysicalMouseGuard
+                    try:
+                        with PhysicalMouseGuard(self.emergency):
+                            self.log(
+                                "滑鼠保護中：暫停實體滑鼠輸入，"
+                                "程式仍可操作；按 Esc 緊急停止。"
+                            )
+                            task()
+                    finally:
+                        self.log("滑鼠保護已解除。")
+                else:
+                    task()
                 if not self.emergency.event.is_set():
                     self.signals.status.emit("就緒")
             except EmergencyStopped:
