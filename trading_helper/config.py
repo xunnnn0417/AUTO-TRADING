@@ -334,6 +334,16 @@ class ProfileStore:
     def create(self, name: str, config: dict[str, Any]) -> None:
         self._validate_new_name(name)
         fresh = deepcopy(config)
+        # A brand new scheme inherits the non-trading configuration, but
+        # NEVER inherits authorization/preferences for automated trading.
+        # Existing schemes keep their own previously selected toggles.
+        for field in (
+            "auto_entry_on_fill_both",
+            "auto_fast_pair",
+            "auto_sync_sl_tp_after_entry",
+            "auto_draw_tv_after_entry",
+        ):
+            fresh.setdefault("ui", {})[field] = False
         # Even if created by duplicating another scheme, defaults start
         # from native cTrader input until this scheme explicitly opts in.
         set_ctrader_mode_for_profile(fresh, name, "native")

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from trading_helper.config import (
@@ -71,6 +72,30 @@ class ProfileStoreTests(unittest.TestCase):
 
         active = store.delete("新名稱")
         self.assertEqual(active, "預設方案")
+
+    def test_new_scheme_disarms_all_automation_only_for_new_scheme(self):
+        all_auto=(
+            "auto_entry_on_fill_both", "auto_fast_pair",
+            "auto_sync_sl_tp_after_entry", "auto_draw_tv_after_entry",
+        )
+        existing=deepcopy(self.config)
+        for key in all_auto:
+            existing["ui"][key]=True
+        store=ProfileStore(existing,self.path)
+        old_name=store.active_name
+        store.create("新方案",store.load_profile(old_name))
+        new_scheme=store.load_profile()
+        old_scheme=store.load_profile(old_name)
+        for key in all_auto:
+            self.assertFalse(new_scheme["ui"][key],key)
+            self.assertTrue(old_scheme["ui"][key],key)
+        store_again=ProfileStore(existing,self.path)
+        self.assertEqual(store_again.active_name,"新方案")
+        for key in all_auto:
+            self.assertFalse(store_again.load_profile("新方案")["ui"][key])
+            self.assertTrue(store_again.load_profile(old_name)["ui"][key])
+        # Unrelated new scheme settings still carry across.
+        self.assertEqual(new_scheme["sheet"],old_scheme["sheet"])
 
     def test_profile_snapshots_are_independent(self):
         store = ProfileStore(self.config, self.path)

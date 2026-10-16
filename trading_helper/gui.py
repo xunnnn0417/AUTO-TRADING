@@ -1365,12 +1365,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         for button in targets:
             dot = QLabel("●", button)
             dot.setObjectName("calibrationIncompleteDot")
-            dot.setFixedSize(12, 12)
+            dot.setFixedSize(10, 10)
             dot.setStyleSheet(
-                "color:#fa5362;font-size:15px;background:transparent;"
+                "color:#fa5362;font-size:12px;background:transparent;"
             )
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            dot.move(max(0, button.width()-13), 0)
+            dot.move(max(0, button.width()-11), 0)
             dot.hide()
             button.installEventFilter(self)
             self._calibration_badge_labels[button] = dot
@@ -1401,7 +1401,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.action_buttons["校準 TradingView"]: incomplete["TradingView"],
         }
         for button, dot in badges.items():
-            dot.move(max(0, button.width()-13), 0)
+            dot.move(max(0, button.width()-11), 0)
             dot.setVisible(enabled and states[button])
             if dot.isVisible():
                 dot.raise_()
@@ -3292,7 +3292,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.automation.config = self.store.data
             self.automation.profile_name = name
             self._refresh_profile_combo(name)
-            self.log(f"已建立方案：{name}（cTrader 輸入方式重新使用預設）")
+            # Reflect the new scheme's disarmed automation without any broker I/O.
+            self._apply_profile_ui()
+            self.log(f"已建立方案：{name}（自動化預設關閉；cTrader 輸入方式為預設）")
         except Exception as exc:
             QMessageBox.warning(self, "建立方案", str(exc))
 
@@ -3555,9 +3557,9 @@ class CalibrationDialog(QDialog):
             tab_idx = self._calibration_tabs.addTab(page, title)
             dot = QLabel("●")
             dot.setObjectName("stageCalibrationIncompleteDot")
-            dot.setFixedSize(12, 15)
+            dot.setFixedSize(10, 13)
             dot.setStyleSheet(
-                "color:#fa5362;font-size:15px;background:transparent;"
+                "color:#fa5362;font-size:12px;background:transparent;"
             )
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self._calibration_tabs.tabBar().setTabButton(

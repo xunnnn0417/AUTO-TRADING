@@ -106,6 +106,38 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(self.w.store.data["ui"]["auto_draw_tv_after_entry"])
 
+    def test_new_scheme_starts_disabled_and_old_scheme_remembers(self):
+        original=self.w.profiles.active_name
+        with patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+            self.w.auto_fast_pair.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
+            self.w.auto_draw_tv_after_entry.setChecked(True)
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
+        with patch("trading_helper.gui.QInputDialog.getText",
+                   return_value=("新的空白方案",True)), \
+             patch("trading_helper.gui.QMessageBox.question") as dialogs:
+            self.w.create_profile()
+            dialogs.assert_not_called()
+        self.assertEqual(self.w.profiles.active_name,"新的空白方案")
+        for key in ("auto_entry_on_fill_both","auto_fast_pair",
+                    "auto_sync_sl_tp_after_entry","auto_draw_tv_after_entry"):
+            self.assertFalse(getattr(self.w,key).isChecked(),key)
+            self.assertFalse(self.w.profiles.load_profile()["ui"][key])
+            self.assertTrue(self.w.profiles.load_profile(original)["ui"][key])
+        with patch("trading_helper.gui.QMessageBox.question") as dialogs, \
+             patch.object(self.w, "read_sheet",return_value=None):
+            self.w.switch_profile(original)
+            dialogs.assert_not_called()
+        for key in ("auto_entry_on_fill_both","auto_fast_pair",
+                    "auto_sync_sl_tp_after_entry","auto_draw_tv_after_entry"):
+            self.assertTrue(getattr(self.w,key).isChecked(),key)
+        with patch.object(self.w,"read_sheet",return_value=None):
+            self.w.switch_profile("新的空白方案")
+        self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
+        self.assertFalse(self.w.auto_fast_pair.isChecked())
+
     def test_confirmed_fast_pair_preference_persists_without_repeat_prompt(self):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):

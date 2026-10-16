@@ -92,6 +92,25 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(completion(saved,first),(0,9))
         self.assertEqual(completion(saved,all_keys[9:]),(6,6))
 
+    def test_tiny_stage_notification_dot_size(self):
+        parent=QMainWindow()
+        parent.store=SimpleNamespace(data={
+            "platforms":{"cTrader":{"points":{}},"MT5":{"points":{}},
+                         "TradingView":{"points":{}}},
+            "ui":{"show_calibration_badges":True}
+        })
+        dlg=CalibrationDialog(parent,"cTrader")
+        try:
+            for index in range(dlg._calibration_tabs.count()):
+                marker=dlg._calibration_tabs.tabBar().tabButton(
+                    index,QTabBar.RightSide)
+                self.assertIsNotNone(marker)
+                self.assertEqual((marker.width(),marker.height()),(10,13))
+        finally:
+            dlg._hover_outline.close()
+            dlg.close()
+            parent.close()
+
     def test_mt5_four_stages_total_consistent(self):
         parent=QMainWindow()
         parent.store=SimpleNamespace(data={
