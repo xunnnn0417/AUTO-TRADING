@@ -251,6 +251,39 @@ class DemoUiBrokerPort:
     def _ctrader_positions(self, platform, role, account):
         grid=self._ctrader_grid(platform,role)
         rows=grid.descendants(control_type="DataItem")
+        # A hidden zero-size DataItem can be a cTrader empty-grid placeholder.
+        # Never treat a virtualized or unreadable real row as empty.
+        ghosts=bool(rows)
+        for row in rows:
+            try:
+                rect=row.rectangle()
+                if (row.is_visible() or rect.right>rect.left
+                        or rect.bottom>rect.top):
+                    ghosts=False
+                    break
+            except Exception:
+                ghosts=False
+                break
+        if ghosts:
+            try:
+                count=int(grid.iface_grid.CurrentRowCount)
+                time.sleep(0.1)
+                count2=int(grid.iface_grid.CurrentRowCount)
+                any_text=any(
+                    str(node.window_text()).strip()
+                    for row in rows
+                    for node in row.descendants(control_type="Text")
+                )
+            except Exception as exc:
+                raise AutomationError(
+                    "cTrader placeholder cannot be verified; position unknown."
+                ) from exc
+            if count==count2==0 and not any_text:
+                return ()
+            raise AutomationError(
+                "cTrader grid count conflicts with placeholder nodes; "
+                "cannot prove an empty position list."
+            )
         if not rows:return ()
         headers={}
         for h in grid.descendants(control_type="HeaderItem"):
