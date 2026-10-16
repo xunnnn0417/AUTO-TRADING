@@ -113,7 +113,8 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
 
     def test_no_button_never_clicks(self):
         self.buttons=[]
-        with self.assertRaisesRegex(AutomationError,"唯一"):
+        # Empty fresh UIA inventory is rejected before button matching.
+        with self.assertRaisesRegex(AutomationError,"UIA 控制項清單"):
             self.submit()
         self.automation.windows.click.assert_not_called()
 
