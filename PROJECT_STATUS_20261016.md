@@ -92,3 +92,12 @@
 - 現有 LAB `gui.py::_fill_both_task` 先填場內與場外才進 `AutoEntryWorkflow.run`；`auto_entry.py` 預檢會掃描帳戶／持倉／表單，快速雙邊分支先送 MT5 再送 cTrader，不等待 MT5 成交回報，但 `DemoUiBrokerPort.submit_once` 兩側各自又執行完整 freshly-verified readback。尤其 cTrader 的 `inspect_account`、`_verify_instrument`、`read_fill_snapshot`、Place order 按鈕 UIA 定位四類操作，當前為數個獨立 UIA tree scans；前次 cTrader 全樹掃描約 1.6–2.1 秒，屬延遲嫌疑點，尚無錄影同次的精確 timings 或逐掃描 benchmark，不可宣稱已確認瓶頸比例。
 - 安全優化方向：將第二側「唯一帳戶＋Demo＋商品＋表單 Lot/SL/TP＋方向／勾選＋唯一原生 Place order 按鈕」合併進同一份**點擊前立即取得的全新 cTrader UIA snapshot**，重用樹節點做不同語意驗證，不重用上一個交易週期的舊表單值；任何缺失／歧義依舊 fail-closed，不改變一次單、帳戶一致性及不補單限制。切勿直接跳過最後送單核對。另將每項 precheck、form scan、button localization、OS click 前後分開記錄 monotonic timing，以區分 UI delay 和 broker fill。
 - 遠端 Windows Desktop Commander 此時 remote_calls_left_pct=0；因此**未修改本機 LAB 任何交易流程程式、未執行新回歸、未重啟，也未實際送單**。可繼續 GitHub 唯讀研究；待遠端額度恢復才能安全實作／測試／驗收。既有 cTrader 主視窗 1938x1038 安全選擇修正及滑鼠保護仍保留。
+
+## 2026-10-17 通用視窗入口＋cTrader 最終核對共用快照（僅 GitHub LAB 研發版）
+- 已依使用者桌面《更改前審核標準.txt》盤點 affected set：交易前填值 \`PlatformAutomation.fill\`、逐欄欄位定位 \`_window_for_point\`、獨立場外修改 \`sync_external...\`、Demo position/order adapter \`DemoUiBrokerPort._bound\`，以及送單前 \`inspect_account → _verify_instrument → read_fill_snapshot → Place order button\` 四種 UIA 取證。
+- LAB GitHub 分支 \`lab/2026-10-16-safe-defaults-preflight\` 已改：\`WindowController.find_calibrated_main\` 作為 cTrader/GooeyTrade 按方案尺寸、唯一同名主視窗選擇的共通入口（不硬編目前電腦 1938×1038）；上述交易入口使用這個共用 resolver，遇多個/零個/尺寸不符 fail-closed，保留 mock 相容分支。MT5 原有 order-dialog ownership/geometry 不改。
+- LAB GitHub \`DemoUiBrokerPort.submit_once\` cTrader 最後一刻在 focus 完成後僅取 **一份全新 UIA tree**，供 Demo account+broker binding、商品描述、手數/SL/TP/方向/勾選、唯一 native Place-order Button ID＋父層＋位置核對共用。空白/未知/變帳號/非 Demo/重複/不符仍拒絕點擊，沒有新增 order retries。正常早期 preflight 仍保持獨立 fresh checks，未移除交易必備 guard。
+- \`Windows.read_fill_snapshot\`、\`DemoUiBrokerPort.inspect_account\`、\`_verify_instrument\`、\`verify_order_form\` 新增只給當次最後核對使用的可選 \`_controls\` 參數；未傳入時保留原本讀值行為。快速雙邊 log 補充分段 UIA timing。
+- 新增 \`tests/test_generic_ctrader_final_snapshot.py\` **16 項尚未執行**的合約/防誤送單測試，並更新既有 timing mock 使其能表示最新的一份 UIA tree。原先 497/497 通過屬於**修正前**測試數據，**不代表本批程式碼通過**。
+- Windows Desktop Commander 在修改途中回報 \`You've reached this month's Desktop Commander usage\`，因此**本機 LAB 有少量部分編輯，但未完整同步 GitHub 新版、未完整回歸、未重啟 LAB，也未實際進行 Broker 操作**。不要將 GitHub 改動視為已部署在電腦上的版本；需要能使用 Windows 後先備份、核對 staged diff、同步完成的檔案到 LAB，再跑定向＋全套離線測試與不碰交易的靜態驗證，確認沒有任何作業執行才可安全重啟。不得碰正式版或 GitHub main。
+- 尚未達到 desktop 審核標準的 runtime operational PASS / true click-gap performance benchmark；未完成以前不能宣稱加速秒數或雙邊真實交易全情境安全。現有 MT5/cTrader 持倉不自動重下、補單或平倉。
