@@ -683,6 +683,11 @@ class DemoUiBrokerPort:
             controls=Desktop(backend="uia").window(
                 handle=win.handle
             ).descendants()
+            if not isinstance(controls, list) or not controls:
+                raise AutomationError(
+                    "cTrader 最終送單前無法取得完整 UIA 控制項清單，"
+                    "已停止且不送單。"
+                )
             timestamps["uia_inventory_returned"]=time.perf_counter()
             self.automation.emergency.guard()
             self.verify_order_form(
