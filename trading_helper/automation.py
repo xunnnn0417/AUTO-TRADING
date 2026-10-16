@@ -103,6 +103,10 @@ class PlatformAutomation:
             window = self.windows.find_calibrated_main(
                 pattern, points["lot_input"], platform=platform
             )
+            # Identifying the terminal is not permission to click it.
+            # Detect stale geometry BEFORE any UIA traversal or mutation.
+            # This is read-only and reports both real/calibrated dimensions.
+            self.windows.screen_point(window, points["lot_input"])
         else:
             window = self.windows.find(pattern)
         bound_window = window
