@@ -75,3 +75,11 @@
 - 使用者新回報：填完兩側數值到首次送單仍慢，MT5 按送單到 cTrader 按送單也慢。現有 fast-pair instrumentation 已分記場內／場外填入與預檢時間、兩個 click_started 的函式級間隔、分別核對耗時；尚未取得當次耗時數值，不能把延遲說成券商成交或斷言某一檢查是唯一瓶頸。實測 cTrader 完整帳戶 UIA 樹讀取每次約 1.6～2.1s，可能貢獻多秒延遲；未取消送單前獨立必要核對。
 - 最新 journal 01:09:06（在 00:54 安全重啟新版 LAB 之後）：confirmed_both 和 internal_protected 已確認，再次因缺少唯一 CTraderAccountNumberTextBlock_AId 而 attention_required；先前兩次讀不到時的限次重查仍未根治，不能宣稱同步完成、也不能自動重下單／平倉。下次需要現場 UIA 隱藏原因／modal／前景狀態診斷與可驗收的安全修復。
 - 不動正式版與 GitHub main，不覆蓋 config/profiles/calibration，不在此開倉、補單、平倉或寫入 Sheets。GitHub 只推 LAB 分支。本次 GUI 需要安全重啟才能載入滑鼠保護；重啟前必須確認自動交易任務停止，保護實機持倉。
+
+## 2026-10-17 P0：證實 cTrader 同標題視窗碰撞，安全選主視窗
+- 唯讀實測 `WindowController.find_all(cTrader window_title)` 同時返回兩個 Windows top-level HWND：彈出／對話視窗 1199x772 只有 52 UIA 節點且沒有帳戶及持倉表控制項；主交易視窗 1938x1038 有 730 UIA 節點，包含唯一 CTraderAccountNumberTextBlock_AId、CTraderAccountTypeTextBlock_AId、PositionListDataGrid_AId。舊實作 `find()` 直接選第一個相同標題視窗，因 Z-order 變動會抓到 1199x772 彈窗，正是「帳號控制項不唯一（0）」的直接可重現原因之一。切到彈窗前景仍無帳戶項，不是單純焦點問題。
+- 已修改 LAB `DemoUiBrokerPort._bound()`：當 cTrader 第一個標題相符視窗和已保存的 `lot_input` 主視窗校準尺寸不符時，透過廉價的 Windows EnumWindows `find_all` 篩選唯一尺寸一致的主 HWND；若 0 或多筆皆 fail-closed。正常第一個符合尺寸時沒有額外掃描。保留所有唯一帳戶／Demo／持倉／SLTP 與送單前核對。
+- 校準資料為 1938x1038，兩側 window candidates 確實可用尺寸區分。UIA 窗口狀態會波動：隨後另一次僅找到 1938x1038 主窗，而其中間一次唯讀嘗試因視窗候選切換未通過。**尚未用新 GUI 完整端對端驗證**，不可宣稱 cTrader SL/TP 已同步或所有 UIA 問題徹底修復。
+- 新增 `tests/test_ctrader_main_window_choice.py` 共 5 項測試，含 popup-first／main-first／無尺寸匹配／多個匹配／MT5 保留原行為；與先前滑鼠保護 8 項測試合計整套 **497/497 PASS**，111.292s，compileall 及 diff check PASS。
+- LAB 滑鼠保護及 cTrader 視窗修正已寫入原始碼、只允許更新 LAB GitHub 分支。正在執行的 LAB GUI 必須安全重啟後才會載入修正；不得觸及正式版或 GitHub main，重啟前確認無自動工作進行中。未自動下單、平倉、補單或寫表格。
+- 雙邊真實點擊間隔仍未完成數值驗收；先前 cTrader UIA 整樹掃描約 1.6~2.1 秒，多次帳戶／表單／按鈕辨識容易拖慢第二側按鈕。先使用已存在的快速雙邊診斷日志歸因，再做不削弱安全核對的效能優化，不能假稱滑鼠鎖定已加速。
