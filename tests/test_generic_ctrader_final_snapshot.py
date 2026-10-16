@@ -210,6 +210,12 @@ class OneInventorySubmitTests(unittest.TestCase):
             self.submit()
         self.windows.click.assert_not_called()
 
+    def test_empty_uia_inventory_cannot_click(self):
+        self.nodes.clear()
+        with self.assertRaises(AutomationError):
+            self.submit()
+        self.windows.click.assert_not_called()
+
     def test_missing_order_button_cannot_click(self):
         self.nodes.remove(self.button)
         with self.assertRaises(AutomationError):
