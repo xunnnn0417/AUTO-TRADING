@@ -1027,7 +1027,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 # down to a minor glyph rather than a dashboard centerpiece.
                 button.setIcon(themed_icon(action_icons[text], "#f7f5ff", 13))
                 button.setIconSize(QSize(13, 13))
-                button.setToolTip("填寫場內與場外；自動送單流程目前尚未實作")
+                button.setToolTip("先填寫兩邊；只有明確勾選自動進場且雙 Demo 核對通過後才會嘗試送單。")
             elif text not in {"填入場內", "填入場外"}:
                 button.setIcon(themed_icon(action_icons[text]))
                 button.setIconSize(QSize(16, 16))
@@ -1344,7 +1344,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
              "不受「繪製 TV」自動選項影響。"),
             (self.action_buttons["填入兩邊"],
              "根據目前方案與校準位置，依序填寫場內、場外欄位。"
-             "自動送單尚未接入；單次點擊不會自動下最後的送單指令。"),
+             "若已勾選自動進場，且雙 Demo 帳戶、表單與持倉核對全部通過，可能實際送出兩邊 Demo 訂單。"),
             (self.parameter_update_button,
              "使用目前輸入的交易參數更新試算表相關欄位。"
              "請先檢查所選方案與數值，這不是下單按鈕。"),
@@ -3420,9 +3420,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             second.blockSignals(was_blocked)
         second.setEnabled(first_checked)
         second.setToolTip(
-            "必須先勾選「自動進場」。目前此功能只儲存偏好，尚不自動同步。"
+            "必須先勾選「自動進場」，才能啟用成交後 SL/TP 同步。"
             if not first_checked else
-            "進場確認後預留同步 SL/TP；目前尚未接入自動執行。"
+            "雙 Demo 成交和場內保護核對成功後，會嘗試同步場外 SL/TP 並重新讀回。"
         )
         second_checked = first_checked and second.isChecked()
         if not second_checked and third.isChecked():
@@ -3431,9 +3431,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             third.blockSignals(was_blocked)
         third.setEnabled(second_checked)
         third.setToolTip(
-            "必須先勾選「同步 SL/TP」。目前此功能只儲存偏好，尚不自動繪製。"
+            "必須先勾選「同步 SL/TP」，才能啟用成交後 TradingView 繪圖。"
             if not second_checked else
-            "同步 SL/TP 後預留繪製 TV；目前尚未接入自動執行。"
+            "雙 Demo 成交且場外 SL/TP 同步讀回成功後，才會嘗試自動繪製 TradingView。"
         )
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
@@ -3500,7 +3500,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _confirm_future_auto_option(
         self, checkbox: QCheckBox, enabled: bool, label: str
     ) -> None:
-        """Store future opt-in only; never run broker/TV workflows."""
+        """Store follow-up opt-in; toggling alone never sends orders or draws TV."""
         if enabled:
             if (checkbox is self.auto_sync_sl_tp_after_entry
                     and not self.auto_entry_on_fill_both.isChecked()):
@@ -3522,7 +3522,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         accepted = QMessageBox.question(
             self,
-            "確認預留自動化選項",
+            "確認自動化後續選項",
             f"要記住「{label}」為勾選狀態嗎？\n\n"
             "此選項會在雙 Demo 自動進場並核對持倉後依順序執行。\n"
             "必須唯一辨識正確持倉、再次確認修改結果；"
