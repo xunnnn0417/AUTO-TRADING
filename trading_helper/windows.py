@@ -270,20 +270,30 @@ class WindowController:
             raise AutomationError(
                 f"{platform} 缺少主視窗校準尺寸，禁止操作未知視窗。"
             )
-        marker = "GooeyTrade" if platform == "GooeyTrade" else "cTrader"
+        # MAIN identity and mouse-coordinate validity are separate facts.
+        # Window size cannot identify a broker: maximize/DPI changes it,
+        # and a popup might coincidentally share the old dimensions.
+        # Match the native main-window title convention; reject dialogs
+        # independently of Z-order or their geometry.
+        main_title = (
+            r"^GooeyTrade(?:\s|$)"
+            if platform == "GooeyTrade"
+            else r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$"
+        )
         candidates = self.find_all(title_pattern)
         matches = [
             window for window in candidates
-            if re.match(r"^" + re.escape(marker) + r"(?:\s|$)",
-                        str(window.title or ""), re.IGNORECASE)
-            and abs(window.width - width) <= 2
-            and abs(window.height - height) <= 2
+            if re.match(main_title, str(window.title or ""), re.IGNORECASE)
         ]
         if len(matches) != 1:
             raise AutomationError(
-                f"{platform} 主視窗校準尺寸 {width}x{height}"
-                f" 未找到唯一符合者（{len(matches)} 個），不操作。"
+                f"{platform} 視窗標題符合 {len(candidates)} 個，"
+                f"但可辨識的主交易視窗有 {len(matches)} 個。"
+                "請確認真正主視窗可見並重新綁定；不操作。"
             )
+        # Do NOT scale/guess calibrated mouse coordinates when resized.
+        # screen_point() and click()/click_and_type() continue to enforce
+        # exact calibrated geometry before any physical broker action.
         return matches[0]
 
     def find(self, title_pattern: str) -> WindowInfo:
