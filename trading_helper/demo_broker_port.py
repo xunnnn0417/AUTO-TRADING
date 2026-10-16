@@ -25,7 +25,8 @@ class DemoUiBrokerPort:
         # A position ticket is assigned its role only after the matching
         # new position has been confirmed. Never infer role from the
         # same broker window's possibly shared title binding.
-        self._ticket_role: dict[str, str] = {}
+        # Ticket values can overlap across two separate brokers.
+        self._ticket_role: dict[tuple[str, str], str] = {}
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
         self._expected_symbol: str | None = None
 
@@ -36,6 +37,22 @@ class DemoUiBrokerPort:
         # exposed by the current GUI-only adapter. An empty Positions grid
         # or timeout is NOT a definitive rejection. Fail closed.
         return None
+
+    def remember_verified_position_role(
+        self, platform: str, role: str, position: Position
+    ) -> None:
+        """Local bookkeeping after a separately verified read-only fill."""
+        if (role not in ("internal","external")
+            or position.platform != platform or not position.ticket):
+            raise AutomationError("成交持倉與場別不一致，拒絕修改止盈止損。")
+        expected=self._account_binding.get((platform,role))
+        if expected is None or expected.account_id != position.account_id:
+            raise AutomationError("持倉帳戶與已核對 Demo 帳戶不一致。")
+        key=(platform,position.ticket)
+        current=self._ticket_role.get(key)
+        if current is not None and current!=role:
+            raise AutomationError("同一持倉在兩邊場別的對應關係矛盾。")
+        self._ticket_role[key]=role
 
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
@@ -630,7 +647,9 @@ class DemoUiBrokerPort:
             observed=self.snapshot_positions(platform,role)
             newer=[p for p in observed if p.ticket not in previous]
             if len(newer)==1 and len(observed)==len(baseline)+1:
-                self._ticket_role[newer[0].ticket]=role
+                self.remember_verified_position_role(
+                    platform,role,newer[0]
+                )
                 return newer[0]
             if len(newer)>1 or len(observed)<len(baseline):
                 raise AutomationError("持倉變化不只一筆，無法確認唯一成交。")
@@ -655,7 +674,7 @@ class DemoUiBrokerPort:
             raise AutomationError("場內持倉 SL／TP 方向不合理。")
 
     def set_position_sl_tp(self,pos,sl,tp):
-        role=self._ticket_role.get(pos.ticket)
+        role=self._ticket_role.get((pos.platform,pos.ticket))
         if role not in ("internal","external"):
             raise AutomationError("缺少經過成交確認的持倉場別，拒絕修改。")
         positions=self.snapshot_positions(pos.platform,role)
@@ -703,7 +722,7 @@ class DemoUiBrokerPort:
         self.automation.windows.click(modify,points["position_modify_confirm"])
 
     def verify_position_sl_tp(self,pos,sl,tp):
-        role=self._ticket_role.get(pos.ticket)
+        role=self._ticket_role.get((pos.platform,pos.ticket))
         if role not in ("internal","external"):
             raise AutomationError("缺少經過成交確認的持倉場別，拒絕讀回。")
         deadline=time.monotonic()+8

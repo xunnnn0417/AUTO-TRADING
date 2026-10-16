@@ -1052,8 +1052,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.auto_fast_pair = QCheckBox("快速雙邊")
         self.auto_fast_pair.setObjectName("auto_fast_pair")
         self.auto_fast_pair.setToolTip(
-            "只限 cTrader 場內 + MT5 場外雙 Demo。"
+            "支援 cTrader + MT5 雙 Demo，場內場外可以互換。"
             "先檢查兩邊，再連續送出兩邊，之後核對成交。"
+            "MT5 場內須在雙邊成交後依實際成交價修正 SL/TP。"
             "其中一邊未成交可能造成單邊曝險。"
         )
         self.auto_fast_pair.setChecked(
@@ -3424,7 +3425,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "危險：如果第一邊被拒單，第二邊仍可能成交，"
                 "也可能短暫沒有確認任何一邊的止損。"
                 "本模式不保證同時成交，不會自動重試、平倉或補單。\n"
-                "目前僅限 cTrader 場內 + MT5 場外、雙 Demo。\n\n"
+                "支援 cTrader / MT5 場內場外互換、雙 Demo。\n"
+                "MT5 當場內時，會在兩邊送單後依實際成交價修正"
+                "場內 SL/TP；修正完成前仍可能有單邊／"
+                "保護價格偏差風險。\n\n"
                 "確認仍要為本次測試啟用快速進場？",
                 QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
             )

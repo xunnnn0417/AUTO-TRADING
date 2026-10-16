@@ -380,6 +380,11 @@ class AutoEntryWorkflow:
                     self._validate_position(
                         position, platform, direction, volume, account, symbol
                     )
+                    remember=getattr(
+                        self.port,"remember_verified_position_role",None
+                    )
+                    if callable(remember):
+                        remember(platform,role,position)
                     self.journal.record_verified_leg(key, role, position)
                     self.log(
                         f"{role} {platform} 補讀辨識到原本已成交持倉："
@@ -431,12 +436,12 @@ class AutoEntryWorkflow:
             self.port.set_expected_symbol(instruction.symbol)
         if draw_tv and not sync_sl_tp:
             raise AutomationError("自動繪製 TV 必須先啟用並完成 SL/TP 同步。")
-        if fast_pair and not (
-            internal_platform=="cTrader" and external_platform=="MT5"
-        ):
+        if fast_pair and (internal_platform, external_platform) not in {
+            ("cTrader", "MT5"), ("MT5", "cTrader"),
+        }:
             raise AutomationError(
-                "快速雙邊模式目前只支援 cTrader 場內、MT5 場外雙 Demo。"
-                "其他組合維持逐邊成交確認，未送單。"
+                "快速雙邊目前只支援 cTrader + MT5 的雙 Demo 配置"
+                "（兩者場內／場外可互換）；本次未送單。"
             )
         # The fill workflow leaves MT5/external on top. Verify its identity
         # first, then switch to internal; never guess stale HWND coordinates.
@@ -708,6 +713,18 @@ class AutoEntryWorkflow:
                 self.journal.record(
                     key,"both_confirmed",first.ticket+"/"+second.ticket
                 )
+                # When MT5 is internal, the preliminary on-form SL/TP
+                # was based on a reference quote. In rapid mode BOTH
+                # clicks have already been sent, so we must amend MT5
+                # using its real executed entry before declaring it safe
+                # or synchronizing the external cTrader position.
+                if "MT5" in internal_platform.upper():
+                    sl_i,tp_i=instruction.estimated_prices(
+                        instruction.internal_direction,
+                        instruction.internal,first.entry_price
+                    )
+                    self.port.set_position_sl_tp(first,sl_i,tp_i)
+                    self.port.verify_position_sl_tp(first,sl_i,tp_i)
                 self.port.verify_internal_protection(
                     first,instruction.internal.sl_points,instruction.internal.tp_points
                 )

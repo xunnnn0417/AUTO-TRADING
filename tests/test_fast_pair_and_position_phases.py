@@ -82,8 +82,8 @@ class FastPairSafetyTests(unittest.TestCase):
         self.assertEqual(entry["status"],"complete")
 
     def test_no_unapproved_platform_pairs(self):
-        with self.assertRaisesRegex(AutomationError,"目前只支援"):
-            self.run_case("MT5","cTrader")
+        with self.assertRaisesRegex(AutomationError,"只支援"):
+            self.run_case("cTrader","cTrader")
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
     def test_failed_first_send_must_not_dispatch_external(self):
         self.port.fail_submit="internal"

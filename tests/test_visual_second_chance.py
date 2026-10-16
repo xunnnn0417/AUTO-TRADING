@@ -105,6 +105,19 @@ class VisualSecondChanceTests(unittest.TestCase):
         self.assertTrue(any("持倉補讀未成功" in msg for msg in logs))
         self.assertEqual(len([x for x in port.events if x[0]=="submit"]),2)
 
+    def test_late_ctrader_external_binding_registered_for_sl_tp_sync(self):
+        from unittest.mock import MagicMock
+        port,journal,flow,logs,_=self.scenario()
+        port.accounts=FakeBrokerPort(mt5_internal=True).accounts
+        remember=MagicMock()
+        port.remember_verified_position_role=remember
+        flow.run(instruction(),"MT5","cTrader","reverse-late",
+                 "fake-sheet",fast_pair=True,sync_sl_tp=False,draw_tv=False)
+        remember.assert_called_once()
+        plat,role,position=remember.call_args.args
+        self.assertEqual((plat,role,position.ticket),
+                         ("cTrader","external","LATE-external"))
+
     def test_empty_twice_is_unknown_not_rejected(self):
         port,journal,flow,logs,run=self.scenario(missing=True)
         with self.assertRaises(RecoveryRequired):
