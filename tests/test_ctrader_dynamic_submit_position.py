@@ -11,6 +11,7 @@ from trading_helper.windows import AutomationError, WindowInfo
 class FakeNativeButton:
     def __init__(self, rect=(1471, 720, 1867, 743), parents=None):
         self.element_info=SimpleNamespace(
+            control_type="Button",
             automation_id=(
                 "Orders_Create_MarketOrderPlaceButtonControl__Button_"
                 "NewOrdersWindowPlaceOrder_AId"
@@ -62,7 +63,7 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
 
     def submit(self):
         desktop=SimpleNamespace(window=lambda handle:SimpleNamespace(
-            descendants=lambda control_type:list(self.buttons)
+            descendants=lambda **kwargs:list(self.buttons)
         ))
         with patch("pywinauto.Desktop",return_value=desktop):
             self.port.submit_once("cTrader","internal","BUY",0.16,"key")
