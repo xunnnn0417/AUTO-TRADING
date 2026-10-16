@@ -49,3 +49,12 @@
 - **使用者已取消場內／場外止盈情境預覽圖，不能再列為待辦。**
 
 最新 LAB 全套回歸：472／472 PASS（2026-10-16，速度診斷與重複掃描精簡後）；compileall 與 git diff --check 均 PASS。此數字僅代表離線與模擬測試，**不代表反向快速雙 Demo 實際成交驗收完成**。
+
+## 2026-10-17 P0 更新：cTrader Positions 空白占位列
+- 新的異常通知顯示「cTrader symbol 欄沒有唯一原生讀值（0）」，源自 `DemoUiBrokerPort._ctrader_positions()` 的持倉讀取，不是下單商品欄位一定填錯。
+- Windows 唯讀實測：可見的 Positions DataGrid 唯一，UIA GridPattern.CurrentRowCount=0，卻回報一個不可見、不可操作、矩形 (0,0,0,0)、沒有 Text 子節點的 DataItem 占位列。先前程式誤將其當作真實持倉列解析。
+- LAB 已新增嚴格的空白占位列分支：要求節點皆不可見且無尺寸、原生列數兩次相隔約 100ms 均為 0、且沒有原生文字，才視為空持倉表；如列數非 0、文字存在或讀值衝突，繼續 fail-closed。
+- 已新增 7 項離線測試；全套 479/479 PASS（114.720 秒），編譯及 git diff --check PASS。這不是實際送單驗收。
+- 修正後重新唯讀執行 cTrader 場外 snapshot_positions：成功，Positions 筆數 0（約 3617ms）；MT5 場內唯讀 snapshot_positions：成功，Positions 筆數 0（約 2036ms）。僅為當時持倉快照，未檢查所有掛單、歷史成交，也不保證之後狀態不變。
+- 無任何交易、補單、平倉、Google Sheets 寫入或 LAB 重啟；正式版與 GitHub main 未修改。LAB 執行中舊程序若未重新啟動，仍可能使用先前載入的舊版本。
+- 原有 P0 不變：快速雙邊真實點擊計時與雙 Demo 端對端驗收、cTrader 場外同步核對、可信拒單證據後才可首次補單、單邊未知時人工安全應變；P1 遠端手機/Telegram 控制及右側快捷面板仍待開發。已取消的情境預覽圖不恢復。
