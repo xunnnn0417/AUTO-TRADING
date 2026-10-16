@@ -94,9 +94,11 @@ class FastPairTimingTests(unittest.TestCase):
             adapter.submit_once("cTrader","external","BUY",
                                 Decimal("0.1"),"fake-key")
         adapter.verify_order_form.assert_called_once()
+        controls=adapter.verify_order_form.call_args.kwargs["_controls"]
+        self.assertEqual(len(controls),1)
         self.assertEqual(
-            adapter.verify_order_form.call_args.kwargs["_controls"],
-            native_root.descendants(),
+            controls[0].element_info.automation_id,
+            Button.element_info.automation_id,
         )
         adapter.inspect_account.assert_not_called()
         windows.focus.assert_called_once_with(window)
