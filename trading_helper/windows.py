@@ -254,6 +254,38 @@ class WindowController:
         user32.EnumWindows(callback_type(callback), 0)
         return windows
 
+    def find_calibrated_main(
+        self, title_pattern: str, point: dict, platform: str = "cTrader"
+    ) -> WindowInfo:
+        """One calibrated broker MAIN HWND, never a same-title dialog.
+
+        Shared by fill, independent SL/TP sync and Demo order submission.
+        A resized window or more than one matching main terminal is UNKNOWN.
+        This fast Win32 enumeration does NOT traverse the UIA tree.
+        """
+        self.emergency.guard()
+        width = int(point.get("window_width", 0))
+        height = int(point.get("window_height", 0))
+        if width <= 0 or height <= 0:
+            raise AutomationError(
+                f"{platform} 缺少主視窗校準尺寸，禁止操作未知視窗。"
+            )
+        marker = "GooeyTrade" if platform == "GooeyTrade" else "cTrader"
+        candidates = self.find_all(title_pattern)
+        matches = [
+            window for window in candidates
+            if re.match(r"^" + re.escape(marker) + r"(?:\s|$)",
+                        str(window.title or ""), re.IGNORECASE)
+            and abs(window.width - width) <= 2
+            and abs(window.height - height) <= 2
+        ]
+        if len(matches) != 1:
+            raise AutomationError(
+                f"{platform} 主視窗校準尺寸 {width}x{height}"
+                f" 未找到唯一符合者（{len(matches)} 個），不操作。"
+            )
+        return matches[0]
+
     def find(self, title_pattern: str) -> WindowInfo:
         if not title_pattern.strip():
             raise AutomationError("視窗標題規則不可空白。")
@@ -394,6 +426,7 @@ class WindowController:
         points: dict[str, dict[str, float]],
         *,
         ctrader: bool = False,
+        _controls=None,
     ) -> dict[str, object]:
         """One FRESH UIA inventory to verify every input on the same window.
 
@@ -421,9 +454,14 @@ class WindowController:
             self._validate_calibrated_window(focused,point)
             coords[key]=self.screen_point(focused,point)
         try:
-            controls=Desktop(backend="uia").window(
-                handle=focused.handle
-            ).descendants()
+            # A final pre-click cTrader validation may supply its single,
+            # newly captured inventory for account, instrument and form.
+            controls=(
+                _controls if _controls is not None
+                else Desktop(backend="uia").window(
+                    handle=focused.handle
+                ).descendants()
+            )
         except Exception as exc:
             raise AutomationError(
                 f"無法一次讀取交易視窗欄位清單：{exc}"
