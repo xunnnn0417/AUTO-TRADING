@@ -103,7 +103,8 @@ class DemoUiBrokerPort:
             controls=_controls
         matches=[
             item for item in controls
-            if str(item.element_info.control_type)=="Text"
+            if (_controls is None or
+                str(getattr(item.element_info,"control_type",""))=="Text")
             and item.is_visible() and
             str(item.element_info.automation_id).endswith(
                 "SymbolQuickInfoTemplates__TextBlock_Description_AId"
