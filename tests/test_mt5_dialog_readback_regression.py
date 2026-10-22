@@ -11,7 +11,7 @@ from trading_helper.windows import WindowInfo, AutomationError
 class Mt5OrderWindowTests(unittest.TestCase):
     def setUp(self):
         self.main = WindowInfo(
-            800, "55512345 - ICMarketsSC-Demo: Test - Hedge",
+            800, "53099775 - ICMarketsSC-Demo: Test - Hedge",
             -9, -9, 1929, 1029,
         )
         self.dialog = WindowInfo(
@@ -98,6 +98,37 @@ class Mt5OrderWindowTests(unittest.TestCase):
         with patch.object(self.port, "_mt5_owned_order_dialog", return_value=False):
             with self.assertRaises(AutomationError):
                 self.port._form_window("MT5", "external")
+
+    def test_lab_test_override_uses_btcusd_without_spreadsheet_symbol_match(self):
+        btc = WindowInfo(
+            801, "Order: BTCUSD - Bitcoin", 389, 229, 1531, 792,
+        )
+        self.automation.windows.list_windows.return_value = [self.main, btc]
+        with patch.dict("os.environ", {
+            "TRADING_HELPER_TEST_SYMBOL_OVERRIDE": "BTCUSD",
+        }):
+            port = DemoUiBrokerPort(self.automation, lambda _: None)
+            port.set_expected_symbol("XAUUSD")
+            with patch.object(
+                port, "_mt5_owned_order_dialog", return_value=True,
+            ):
+                _, selected = port._form_window("MT5", "external")
+        self.assertEqual(selected.handle, btc.handle)
+
+        other = WindowInfo(
+            801, "Order: EURUSD - Euro", 389, 229, 1531, 792,
+        )
+        self.automation.windows.list_windows.return_value = [self.main, other]
+        with patch.dict("os.environ", {
+            "TRADING_HELPER_TEST_SYMBOL_OVERRIDE": "BTCUSD",
+        }):
+            port = DemoUiBrokerPort(self.automation, lambda _: None)
+            port.set_expected_symbol("XAUUSD")
+            with patch.object(
+                port, "_mt5_owned_order_dialog", return_value=True,
+            ):
+                with self.assertRaises(AutomationError):
+                    port._form_window("MT5", "external")
 
     def test_multiple_owned_order_dialogs_are_rejected(self):
         second = WindowInfo(

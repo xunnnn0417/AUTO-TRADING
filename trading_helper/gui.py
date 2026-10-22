@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal, QSize
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal, QSize, QPointF, QRectF
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -90,6 +90,7 @@ from .config import (
     ConfigStore, ProfileStore, ctrader_mode_for_profile,
     set_ctrader_mode_for_profile,
 )
+from .test_mode import effective_test_symbol
 from .models import TradeInstruction, ValidationError
 from .automation import REQUIRED_POINTS
 from .sheets import SheetReader
@@ -118,7 +119,8 @@ MT5_TARGETS = [
     ("positions_entry_price", "已進場持倉的進場價（Trade 列，未開修改視窗）"),
     ("new_order_button", "新訂單按鈕（填單前必需）"),
     ("lot_input", "交易量輸入欄"),
-    ("ask_price", "目前價格（單一參考價格）"),
+    ("bid_price_left", "左側報價 Bid（賣價）"),
+    ("ask_price_right", "右側報價 Ask（買價）"),
     ("trade_tab", "MT5 交易欄位 / 交易分頁"),
     ("sl_input", "止損價格輸入欄"),
     ("tp_input", "止盈價格輸入欄"),
@@ -129,6 +131,7 @@ MT5_TARGETS = [
     ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
     ("position_order_lot", "場外已進場訂單手數（第一筆）"),
     ("position_order_row", "持倉列表的 SL 欄位（雙擊開啟持倉修改視窗）"),
+    ("position_close_button", "已進場持倉的平倉按鈕（自動尋找不到時手動擷取）"),
 ]
 CALIBRATION_TARGETS = {
     "GooeyTrade": [
@@ -161,6 +164,7 @@ CALIBRATION_TARGETS = {
         ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
         ("position_order_lot", "已進場持倉手數（需唯一持倉）"),
         ("position_order_row", "持倉列表 TP 欄位（雙擊開啟修改視窗）"),
+        ("position_close_button", "已進場持倉的平倉按鈕（自動尋找不到時手動擷取）"),
         ("position_modify_confirm", "修改持倉視窗的 Protect／套用按鈕"),
     ],
     "MT5": MT5_TARGETS,
@@ -177,6 +181,23 @@ CALIBRATION_TARGETS = {
         ("confirm_button", "部位設定確認按鈕"),
     ],
 }
+
+
+def manual_capture_confirmation_rect(
+    x: int, y: int, control_rect: tuple[int, int, int, int] | None,
+) -> tuple[tuple[int, int, int, int], str]:
+    """Use a small UIA control bound if available, otherwise frame the saved point."""
+    if control_rect:
+        left, top, right, bottom = map(int, control_rect)
+        width, height = right-left, bottom-top
+        if (left <= x < right and top <= y < bottom
+                and 6 <= width <= 180 and 6 <= height <= 100):
+            return (left, top, right, bottom), "UI 控制項外框"
+    # Manual calibration saves a point, not button edges. This square confirms
+    # the selected point only and must not be described as detected boundaries.
+    half = 16
+    return (int(x)-half, int(y)-half, int(x)+half, int(y)+half), "手動擷取點"
+
 
 FIELD_LABELS = {
     "status": "狀態",
@@ -292,6 +313,34 @@ class ToolbarMenuButton(QToolButton):
         y = self.height() // 2
         painter.drawLine(x - 3, y - 1, x, y + 2)
         painter.drawLine(x, y + 2, x + 3, y - 1)
+        painter.end()
+
+
+class ExpectedSlWarningBadge(QLabel):
+    """Draw a tiny warning mark directly, avoiding font-baseline offsets."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self.setObjectName("expectedSlWarningBadge")
+        self.setFixedSize(12, 12)
+        self.setAccessibleName("預期止損提醒")
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#fa5362"))
+        painter.drawEllipse(0, 0, self.width() - 1, self.height() - 1)
+
+        center_x = (self.width() - 1) / 2
+        center_y = (self.height() - 1) / 2
+        pen = QPen(QColor("#ffffff"), 1.0)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(center_x, center_y - 2), QPointF(center_x, center_y))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(QRectF(center_x - 0.55, center_y + 0.9, 1.1, 1.1))
         painter.end()
 
 
@@ -795,8 +844,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         sheet_values = QWidget(data_box)
         sheet_values.setObjectName("sheetDataValues")
         data_layout = QVBoxLayout(sheet_values)
-        data_layout.setContentsMargins(0, 8, 0, 3)
-        data_layout.setSpacing(6)
+        # Keep the final SL row comfortably clear of the account-progress
+        # section below, especially when the window is shown at compact size.
+        data_layout.setContentsMargins(0, 0, 0, 2)
+        data_layout.setSpacing(2)
         data_shell.addWidget(sheet_values, 1)
         self.data_labels: dict[str, QLabel] = {}
 
@@ -821,7 +872,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # Platform selectors are the first content row, with wider inputs.
         # Keep exactly two matched columns for the detailed data below.
         data_layout.addWidget(platforms)
-        data_layout.addSpacing(5)
+        data_layout.addSpacing(0)
         # Three equally spaced, optically centered summary cells. Labels
         # and values share the same center; none are right-pinned anymore.
         summary_layout = QHBoxLayout()
@@ -923,6 +974,27 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             ("場內進場點位", "internal_entry_price"),
         ]
         positions = [(0, 1), (1, 0), (1, 1), (2, 0)]
+        self.expected_sl_warning_badge = ExpectedSlWarningBadge(parameter_box)
+        self.expected_sl_warning_badge.setCursor(Qt.PointingHandCursor)
+        self.expected_sl_warning_badge.setToolTip(
+            "預期止損距離比原始 SL 短，手數可能增加；請留意保證金限額。"
+        )
+        self.expected_sl_warning_badge.installEventFilter(self)
+        self.expected_sl_warning_badge.hide()
+        self.expected_sl_warning_container: QWidget | None = None
+
+        def parameter_cell(label_text: str, widget: QWidget) -> QWidget:
+            cell = QWidget()
+            layout = QHBoxLayout(cell)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+            label = QLabel(label_text)
+            label.setProperty("role", "caption")
+            label.setMinimumWidth(91)
+            layout.addWidget(label)
+            layout.addWidget(widget, 1)
+            return cell
+
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(34)
@@ -937,8 +1009,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 )
             entry.returnPressed.connect(self._confirm_fill_text_inputs)
             entry.returnPressed.connect(self.update_all_trade_parameters)
+            field_widget: QWidget = entry
+            if key == "expected_sl_combined":
+                # Reserve a small clear area inside the edit so the corner
+                # badge never covers the last digit of a right-aligned value.
+                entry.setTextMargins(0, 0, 18, 0)
+                field_widget = QWidget(parameter_box)
+                field_widget.setObjectName("expectedSlField")
+                field_layout = QGridLayout(field_widget)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(0)
+                field_layout.addWidget(entry, 0, 0)
+                self.expected_sl_warning_container = field_widget
+                self.expected_sl_warning_badge.setParent(field_widget)
+                self.expected_sl_warning_badge.setFixedSize(12, 12)
+                field_widget.installEventFilter(self)
+                entry.textChanged.connect(self._refresh_expected_sl_warning)
             self.parameter_inputs[key] = entry
-            parameter_layout.addWidget(parameter_cell(label, entry), row, column)
+            parameter_layout.addWidget(
+                parameter_cell(label, field_widget), row, column
+            )
         # Place compact secondary actions DIRECTLY next to the entry-price
         # field, sharing that row's visual baseline. No separate button row.
         param_inline = QWidget(parameter_box)
@@ -1027,7 +1117,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 # down to a minor glyph rather than a dashboard centerpiece.
                 button.setIcon(themed_icon(action_icons[text], "#f7f5ff", 13))
                 button.setIconSize(QSize(13, 13))
-                button.setToolTip("先填寫兩邊；只有明確勾選自動進場且雙 Demo 核對通過後才會嘗試送單。")
+                button.setToolTip(
+                    "依校準位置填寫場內與場外。若勾選「自動進場」，"
+                    "通過雙 Demo 與表單核對後會嘗試送單；未勾選時只填欄位。"
+                )
             elif text not in {"填入場內", "填入場外"}:
                 button.setIcon(themed_icon(action_icons[text]))
                 button.setIconSize(QSize(16, 16))
@@ -1344,7 +1437,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
              "不受「繪製 TV」自動選項影響。"),
             (self.action_buttons["填入兩邊"],
              "根據目前方案與校準位置，依序填寫場內、場外欄位。"
-             "若已勾選自動進場，且雙 Demo 帳戶、表單與持倉核對全部通過，可能實際送出兩邊 Demo 訂單。"),
+             "若勾選「自動進場」，會在雙 Demo 與表單核對通過後嘗試送單；"
+             "未勾選時只填欄位。"),
             (self.parameter_update_button,
              "使用目前輸入的交易參數更新試算表相關欄位。"
              "請先檢查所選方案與數值，這不是下單按鈕。"),
@@ -1372,14 +1466,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.action_buttons["校準 TradingView"],
         ]
         for button in targets:
-            dot = QLabel("●", button)
+            dot = QLabel(button)
             dot.setObjectName("calibrationIncompleteDot")
-            dot.setFixedSize(10, 10)
-            dot.setStyleSheet(
-                "color:#fa5362;font-size:12px;background:transparent;"
-            )
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            dot.move(max(0, button.width()-11), 0)
+            dot.move(max(2, button.width()-9), 3)
             dot.hide()
             button.installEventFilter(self)
             self._calibration_badge_labels[button] = dot
@@ -1410,7 +1502,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.action_buttons["校準 TradingView"]: incomplete["TradingView"],
         }
         for button, dot in badges.items():
-            dot.move(max(0, button.width()-11), 0)
+            dot.move(max(2, button.width()-9), 3)
             dot.setVisible(enabled and states[button])
             if dot.isVisible():
                 dot.raise_()
@@ -1525,14 +1617,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
             return
         dialog=QMessageBox(self)
-        dialog.setWindowTitle("是否調整數值再進場？")
+        dialog.setWindowTitle("發現相同方案的進場紀錄")
         dialog.setIcon(QMessageBox.Question)
         dialog.setText(
-            "這組方案之前已有自動進場紀錄。\n"
-            "要回主畫面調整數值，還是維持原有數值重新進場？"
+            "這是同一組方案之前留下的紀錄，不代表目前一定有持倉。"
+            "為避免重複進場，每次重試前都會再請你確認。\n"
+            "請選擇返回調整，或核對後繼續。"
         )
+        entry = data.get("entry") or {}
+        record_summary = "之前紀錄："
+        if entry.get("time"):
+            record_summary += str(entry["time"])
+        else:
+            record_summary += "時間不明"
+        if entry.get("status"):
+            record_summary += f"；狀態：{entry['status']}"
+        if entry.get("details"):
+            record_summary += f"；內容：{entry['details']}"
         if manual_needed:
             dialog.setInformativeText(
+                record_summary + "\n"
                 "上一次可能已在 cTrader 或 MT5 成交，但程式讀取失敗。"
                 "請先在兩個 Demo 平台自行核對「目前持倉、掛單與成交歷史」。"
                 "若兩邊都有與本方案完全對應的既有持倉，"
@@ -1542,6 +1646,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
         else:
             dialog.setInformativeText(
+                record_summary + "\n"
                 "選擇「仍要繼續進場」後，程式會再次確認雙 Demo "
                 "身分、空倉、校準及兩邊表單，通過才會下單。"
             )
@@ -1671,11 +1776,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         badges = getattr(self, "_calibration_badge_labels", {})
+        if (
+            watched is getattr(self, "expected_sl_warning_badge", None)
+            and event.type() == QEvent.MouseButtonRelease
+            and event.button() == Qt.LeftButton
+        ):
+            self._show_expected_sl_warning()
+            event.accept()
+            return True
+        if (
+            watched is getattr(self, "expected_sl_warning_container", None)
+            and event.type() in (QEvent.Resize, QEvent.Show)
+        ):
+            self._position_expected_sl_warning()
         if watched in badges and event.type() in (
             QEvent.Resize, QEvent.Show,
         ):
             dot = badges[watched]
-            dot.move(max(0, watched.width()-13), 0)
+            dot.move(max(2, watched.width()-9), 3)
             dot.raise_()
         if (
             event.type() == QEvent.KeyPress
@@ -2015,6 +2133,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         }
         for key, value in parameter_values.items():
             self.parameter_inputs[key].setPlaceholderText("" if value is None else str(value))
+        self._refresh_expected_sl_warning()
         pending_price = self._primary_entry_price_pending
         if pending_price is not None and item.internal_entry_price == pending_price:
             self.manual_entry_price = pending_price
@@ -2149,6 +2268,58 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return None
         return str(points if points is not None else percent)
 
+    def _expected_sl_warning_values(self) -> tuple[Decimal, Decimal] | None:
+        """Return original and adjusted SL distances when the latter is tighter."""
+        if self.instruction is None or self.instruction.original_sl_points is None:
+            return None
+        original = self.instruction.original_sl_points
+        raw = self.parameter_inputs["expected_sl_combined"].text().strip()
+        try:
+            adjusted = (
+                self._parse_expected_sl_combined(raw)[0]
+                if raw
+                else self.instruction.expected_sl_points
+            )
+        except (AutomationError, InvalidOperation, ValueError):
+            return None
+        if adjusted is None or abs(adjusted) >= abs(original) or abs(original) == 0:
+            return None
+        return original, adjusted
+
+    def _refresh_expected_sl_warning(self, *_args: object) -> None:
+        values = self._expected_sl_warning_values()
+        self.expected_sl_warning_badge.setVisible(values is not None)
+        if values is not None:
+            self._position_expected_sl_warning()
+
+    def _position_expected_sl_warning(self) -> None:
+        container = self.expected_sl_warning_container
+        if container is None:
+            return
+        badge = self.expected_sl_warning_badge
+        # Match the small calibration markers: a red dot over the field's
+        # upper-right corner, with no separate slot in the parameter layout.
+        badge.move(max(0, container.width() - 14), 1)
+        badge.raise_()
+
+    def _show_expected_sl_warning(self) -> None:
+        values = self._expected_sl_warning_values()
+        if values is None:
+            self.expected_sl_warning_badge.hide()
+            return
+        original, adjusted = values
+        reduction = (Decimal("1") - abs(adjusted) / abs(original)) * Decimal("100")
+        detail = (
+            f"原始 SL：{original} 點\n"
+            f"預期 SL：{adjusted} 點\n"
+            f"止損距離縮短：約 {reduction:.1f}%\n\n"
+            "止損距離縮短時，若依固定風險重新計算，所需手數可能增加，"
+            "也可能碰到帳戶或平台的保證金限額。\n\n"
+            "目前程式沒有可靠的即時保證金資料，無法替你確認是否超限。"
+            "請在交易平台核對預計手數與可用保證金。"
+        )
+        QMessageBox.warning(self, "預期止損與保證金提醒", detail)
+
     def _confirm_fill_text_inputs(self) -> None:
         """An Enter confirms all visible parameter fields for fill previews.
 
@@ -2192,8 +2363,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 required.extend(("buy_button", "sell_button"))
             if platform in ("MT5", "BYBIT MT5", "原版MT5"):
                 required.append("new_order_button")
-                if item.estimated_price is None:
-                    required.append("ask_price")
+                quote_keys = ("bid_price_left", "ask_price_right")
+                has_quote_pair = all(
+                    isinstance(points.get(key), dict) and points[key]
+                    for key in quote_keys
+                )
+                has_partial_quote_pair = any(
+                    isinstance(points.get(key), dict) and points[key]
+                    for key in quote_keys
+                )
+                test_symbol = effective_test_symbol(item.symbol).strip().upper()
+                test_price_pair = test_symbol in {"BTCUSD", "ETHUSD"}
+                if test_price_pair or has_partial_quote_pair or item.estimated_price is None:
+                    required.extend(quote_keys)
                 # The MT5 order dialog can also be opened manually, so its
                 # launcher is not required by the CURRENT fill routine.
             labels = dict(CALIBRATION_TARGETS.get(platform, []))
@@ -3420,9 +3602,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             second.blockSignals(was_blocked)
         second.setEnabled(first_checked)
         second.setToolTip(
-            "必須先勾選「自動進場」，才能啟用成交後 SL/TP 同步。"
+            "必須先勾選「自動進場」。目前此功能只儲存偏好，尚不自動同步。"
             if not first_checked else
-            "雙 Demo 成交和場內保護核對成功後，會嘗試同步場外 SL/TP 並重新讀回。"
+            "雙 Demo 進場核對成功後，會依場內實際成交價修改場外 SL/TP，"
+            "並讀回確認。"
         )
         second_checked = first_checked and second.isChecked()
         if not second_checked and third.isChecked():
@@ -3431,9 +3614,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             third.blockSignals(was_blocked)
         third.setEnabled(second_checked)
         third.setToolTip(
-            "必須先勾選「同步 SL/TP」，才能啟用成交後 TradingView 繪圖。"
+            "必須先勾選「同步 SL/TP」。目前此功能只儲存偏好，尚不自動繪製。"
             if not second_checked else
-            "雙 Demo 成交且場外 SL/TP 同步讀回成功後，才會嘗試自動繪製 TradingView。"
+            "進場及 SL/TP 同步完成後，會接續執行 TradingView 繪圖。"
         )
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
@@ -3500,7 +3683,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _confirm_future_auto_option(
         self, checkbox: QCheckBox, enabled: bool, label: str
     ) -> None:
-        """Store follow-up opt-in; toggling alone never sends orders or draws TV."""
+        """Store future opt-in only; never run broker/TV workflows."""
         if enabled:
             if (checkbox is self.auto_sync_sl_tp_after_entry
                     and not self.auto_entry_on_fill_both.isChecked()):
@@ -3522,7 +3705,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         accepted = QMessageBox.question(
             self,
-            "確認自動化後續選項",
+            "確認預留自動化選項",
             f"要記住「{label}」為勾選狀態嗎？\n\n"
             "此選項會在雙 Demo 自動進場並核對持倉後依順序執行。\n"
             "必須唯一辨識正確持倉、再次確認修改結果；"
@@ -3786,7 +3969,8 @@ class CalibrationDialog(QDialog):
             # inventory makes one of them appear "not found" every time.
             launcher = ("new_order_button", "trade_tab")
             order_fields = (
-                "lot_input", "ask_price", "sl_input", "tp_input",
+                "lot_input", "bid_price_left", "ask_price_right",
+                "sl_input", "tp_input",
                 "order_submit_buy", "order_submit_sell",
             )
             grid = tuple(key for key in keys_all if key in POSITION_GRID_KEYS)
@@ -3818,12 +4002,42 @@ class CalibrationDialog(QDialog):
                 page_layout.addWidget(QLabel(
                     "請先開啟 MT5「新訂單」視窗，再按自動尋找。"
                 ))
+                page_layout.addWidget(QLabel(
+                    "BTCUSD／ETHUSD 測試必須分別校準左側 Bid 與右側 Ask；"
+                    "請讓黃色框只框住各自的完整報價數字。"
+                ))
             if set(stage_keys)==set(POSITION_GRID_KEYS):
                 row_name="TP" if platform=="cTrader" else "SL"
                 page_layout.addWidget(QLabel(
-                    "先在平台顯示 Positions／交易列表，先校準進場價、手數及訂單列；"
-                    f"訂單列以 {row_name} 欄為雙擊候選，這裡不會實際雙擊。"
+                    "先顯示 Positions／交易列表，再校準進場價、手數與訂單列；"
+                    f"雙擊訂單列的 {row_name} 欄可開啟修改視窗。"
                 ))
+                close_help_text = (
+                    "游標停在目標持倉列最右側的關閉圖示中央；cTrader 圖示會變色。"
+                    if platform == "cTrader" else
+                    "游標停在目標持倉列最右側的關閉按鈕中央。"
+                )
+                close_help = QLabel(
+                    close_help_text + "擷取後用黃框核對，不會點擊或平倉。"
+                )
+                close_help.setWordWrap(True)
+                close_help.setObjectName("positionCloseCalibrationHelp")
+                close_help.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                page_layout.addWidget(close_help)
+                capture_close = QPushButton(
+                    "手動擷取平倉按鈕（5 秒）",
+                    page,
+                )
+                capture_close.setObjectName("capturePositionCloseButton")
+                capture_close.setToolTip(
+                    "倒數時對準按鈕；完成後用黃框核對，不會點擊或平倉。"
+                )
+                capture_close.clicked.connect(
+                    lambda checked=False, close_radio=self.radios[
+                        "position_close_button"
+                    ]: (close_radio.setChecked(True), self.capture())
+                )
+                page_layout.addWidget(capture_close)
             elif set(stage_keys)==set(POSITION_EDIT_KEYS):
                 page_layout.addWidget(QLabel(
                     "你必須先自行雙擊持倉列開啟修改視窗，再掃止損、止盈、確認按鈕。"
@@ -3843,12 +4057,10 @@ class CalibrationDialog(QDialog):
             self._stage_keys.append(tuple(stage_keys))
             self._stage_titles.append(title)
             tab_idx = self._calibration_tabs.addTab(page, title)
-            dot = QLabel("●")
+            dot = QLabel()
             dot.setObjectName("stageCalibrationIncompleteDot")
-            dot.setFixedSize(10, 13)
-            dot.setStyleSheet(
-                "color:#fa5362;font-size:12px;background:transparent;"
-            )
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self._calibration_tabs.tabBar().setTabButton(
                 tab_idx, QTabBar.RightSide, dot
@@ -4458,11 +4670,17 @@ class CalibrationDialog(QDialog):
 
     def capture(self) -> None:
         key = next(key for key, radio in self.radios.items() if radio.isChecked())
+        guided_close_capture = key == "position_close_button"
+        if guided_close_capture:
+            self.result.setText(
+                "請將滑鼠停在這筆持倉的關閉按鈕中央；倒數結束只記錄位置，不會點擊。"
+            )
         self.showMinimized()
 
         def task() -> None:
             try:
-                for count in (3, 2, 1):
+                countdown = (5, 4, 3, 2, 1) if guided_close_capture else (3, 2, 1)
+                for count in countdown:
                     self.app.log(f"正在校準 {self.platform}「{key}」：{count}")
                     time.sleep(1)
                 active = self.app.windows.window_at_cursor()
@@ -4470,6 +4688,19 @@ class CalibrationDialog(QDialog):
                 point = self.app.windows.relative_point(active, x, y)
                 point["window_title"] = re.escape(active.title)
                 point["calibration_window_title"] = re.escape(active.title)
+                preview_rect = None
+                preview_source = ""
+                if guided_close_capture:
+                    try:
+                        snapshot = hover_snapshot(
+                            process_id_for_window(active.handle)
+                        )
+                        detected_rect = snapshot.rectangle
+                    except Exception:
+                        detected_rect = None
+                    preview_rect, preview_source = manual_capture_confirmation_rect(
+                        x, y, detected_rect
+                    )
                 profile = self.app.store.data["platforms"][self.platform]
                 if self.platform == "TradingView":
                     stable_title = r"/\s*常用$"
@@ -4503,10 +4734,16 @@ class CalibrationDialog(QDialog):
                 else:
                     sync_target = f"{self.platform} 與所有方案"
                 self.app.log(f"已同步「{key}」到 {sync_target}。")
-                self.capture_finished.emit(key)
+                self.capture_finished.emit({
+                    "key": key,
+                    "preview_rect": preview_rect,
+                    "preview_source": preview_source,
+                } if guided_close_capture else key)
             except Exception as exc:
                 self.app.signals.error.emit(str(exc))
-                self.capture_finished.emit("")
+                self.capture_finished.emit(
+                    {"key": ""} if guided_close_capture else ""
+                )
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -4529,8 +4766,12 @@ class CalibrationDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "顯示位置", str(exc))
             return
-        self.app.windows.show_marker(x, y, duration_ms=5000)
-        self.result.setText(f"正在顯示：{key}")
+        if key == "position_close_button":
+            rect, source = manual_capture_confirmation_rect(x, y, None)
+            self._show_manual_capture_preview(rect, source)
+        else:
+            self.result.setText(f"正在顯示：{key}")
+            self.app.windows.show_marker(x, y, duration_ms=5000)
 
     def _display_role(self, key: str) -> str:
         if key.startswith("position_") or key == "positions_entry_price":
@@ -4544,9 +4785,47 @@ class CalibrationDialog(QDialog):
             return "internal"
         return "external"
 
-    def _finish_capture(self, key: str) -> None:
+    def _finish_capture(self, result: object) -> None:
+        if isinstance(result, dict):
+            key = str(result.get("key", ""))
+            preview_rect = result.get("preview_rect")
+            preview_source = str(result.get("preview_source", ""))
+        else:
+            key = str(result or "")
+            preview_rect = None
+            preview_source = ""
         self._refresh_stage_progress()
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
+        if key == "position_close_button" and preview_rect:
+            self._show_manual_capture_preview(
+                tuple(preview_rect), preview_source
+            )
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _show_manual_capture_preview(
+        self, rect: tuple[int, int, int, int], source: str,
+    ) -> None:
+        self.result.setText(
+            f"黃色框為{source}；請確認中心位置落在正確的平倉按鈕上。"
+        )
+        self.app.showMinimized()
+        self.showMinimized()
+
+        def show_outline() -> None:
+            try:
+                self._hover_outline.display(rect, 1500)
+            except Exception as exc:
+                self._manual_preview_error = str(exc)
+
+        QTimer.singleShot(150, show_outline)
+        QTimer.singleShot(1850, self._restore_manual_capture_preview)
+
+    def _restore_manual_capture_preview(self) -> None:
+        self._hover_outline.hide()
+        self.app.showNormal()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -4880,5 +5159,3 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
-
-

@@ -60,12 +60,38 @@ class BrokerPositionCalibrationTests(unittest.TestCase):
         )
 
     def test_mt5_native_position_title_not_confused_with_order(self):
-        main=NS(handle=3,title="55512345 - ICMarketsSC-Demo - [XAUUSD,H1]")
-        modal=NS(handle=4,title="持倉: #8765432101 buy 0.16 XAUUSD 4169.30 sl: 4135.57 tp: 4174.62")
+        main=NS(handle=3,title="53099775 - ICMarketsSC-Demo - [XAUUSD,H1]")
+        modal=NS(handle=4,title="持倉: #2012988031 buy 0.16 XAUUSD 4169.30 sl: 4135.57 tp: 4174.62")
         order=NS(handle=5,title="Order: XAUUSD")
         lookup=lambda h:987
         self.assertEqual(select_broker_main_window(modal,[main,modal,order],"MT5",lookup),main)
         self.assertEqual(select_modify_dialog(main,[order,modal],"MT5",lookup),modal)
+
+    def test_mt5_main_caption_without_active_chart_suffix_is_supported(self):
+        main=NS(
+            handle=3,
+            title="53099775 - ICMarketsSC-Demo: Demo Account - Hedge - Raw Trading Ltd",
+        )
+        order=NS(handle=5,title="訂單: BTCUSD - Bitcoin (USD)")
+        lookup=lambda h:987
+        self.assertEqual(
+            select_broker_main_window(
+                order,[order,main],"MT5",lookup,
+                binding_pattern=r"53099775.*ICMarketsSC-Demo",
+            ),
+            main,
+        )
+
+    def test_mt5_ambiguous_account_main_windows_remain_rejected(self):
+        first=NS(handle=3,title="53099775 - ICMarketsSC-Demo: Demo Account")
+        second=NS(handle=6,title="53099775 - ICMarketsSC-Demo: Demo Account 2")
+        lookup=lambda h:987
+        self.assertIsNone(
+            select_broker_main_window(
+                first,[first,second],"MT5",lookup,
+                binding_pattern=r"53099775.*ICMarketsSC-Demo",
+            )
+        )
 
     def test_ctrader_grid_ignores_two_empty_action_headers(self):
         grid=Node("DataGrid","PositionListDataGrid_AId")
@@ -81,8 +107,22 @@ class BrokerPositionCalibrationTests(unittest.TestCase):
             mock.return_value.window.return_value=root
             result=scan_position_grid(100,"cTrader",tuple((k,k) for k in POSITION_GRID_KEYS))
         self.assertFalse(result.warnings)
-        self.assertEqual(set(result.candidates),set(POSITION_GRID_KEYS))
+        self.assertEqual(
+            set(result.candidates),set(POSITION_GRID_KEYS)-{"position_close_button"}
+        )
+        self.assertIn("position_close_button",result.reasons)
+        self.assertIn("手動校準",result.reasons["position_close_button"])
         self.assertEqual(result.candidates["position_order_row"].rect,(480,60,580,90))
+
+    def test_ctrader_missing_positions_grid_explains_how_to_rescan(self):
+        root=Node("Window")
+        with patch("pywinauto.Desktop") as mock:
+            mock.return_value.window.return_value=root
+            result=scan_position_grid(
+                100,"cTrader",(("position_close_button","close"),)
+            )
+        self.assertFalse(result.candidates)
+        self.assertIn("Positions 頁面",result.warnings[0])
 
     def test_ctrader_pips_first_price_second_and_disabled_protect(self):
         root=Node("Window")
@@ -137,6 +177,8 @@ class BrokerPositionCalibrationTests(unittest.TestCase):
         self.assertEqual(result.candidates["position_order_row"].rect,(1107,841,1287,866))
         self.assertIn("低信度",result.candidates["position_order_row"].evidence)
         self.assertIn("不可用於自動成交",result.candidates["position_order_row"].evidence)
+        self.assertIn("position_close_button",result.reasons)
+        self.assertIn("手動校準",result.reasons["position_close_button"])
 
 if __name__=="__main__":
     unittest.main()

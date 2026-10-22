@@ -92,18 +92,18 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(item.format_price(sl), "4204.24")
         self.assertEqual(item.format_price(tp), "4166.84")
 
-    def test_mt5_estimate_always_reads_ask(self) -> None:
+    def test_mt5_buy_uses_ask_and_sell_uses_bid(self) -> None:
         self.assertEqual(
             PlatformAutomation._mt5_price_point("external", "BUY"),
-            "ask_price",
+            "ask_price_right",
         )
         self.assertEqual(
             PlatformAutomation._mt5_price_point("external", "SELL"),
-            "ask_price",
+            "bid_price_left",
         )
         self.assertEqual(
             PlatformAutomation._mt5_price_point("internal", "SELL"),
-            "ask_price",
+            "bid_price_left",
         )
 
     def test_rejects_unknown_direction(self) -> None:

@@ -13,6 +13,7 @@ from typing import Callable
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 SW_RESTORE = 9
+SW_MAXIMIZE = 3
 GA_ROOT = 2
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
@@ -259,10 +260,9 @@ class WindowController:
     ) -> WindowInfo:
         """Identify one native broker MAIN HWND, never a same-title dialog.
 
-        Shared by fill, independent SL/TP sync and Demo order submission.
-        Resized main windows are identified, but saved point coordinates
-        must STILL be revalidated by screen_point before any mouse action.
-        This Win32 enumeration does not traverse the UIA tree.
+        Shared by fill, independent SL/TP sync and Demo submit/reconciliation.
+        Window identity and saved click-coordinate validity are separate.
+        This Win32 enumeration does not traverse UIA or change broker state.
         """
         self.emergency.guard()
         width = int(point.get("window_width", 0))
@@ -271,17 +271,16 @@ class WindowController:
             raise AutomationError(
                 f"{platform} 缺少主視窗校準尺寸，禁止操作未知視窗。"
             )
-        # MAIN identity and mouse-coordinate validity are separate facts.
-        # Window size cannot identify a broker: maximize/DPI changes it,
-        # and a popup might coincidentally share the old dimensions.
-        # Match the native main-window title convention; reject dialogs
-        # independently of Z-order or their geometry.
-        main_title = (
-            r"^GooeyTrade(?:\s|$)"
-            if platform == "GooeyTrade"
-            else r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$"
-        )
         candidates = self.find_all(title_pattern)
+        if platform == "GooeyTrade":
+            main_title = r"^GooeyTrade(?:\s|$)"
+        elif "MT5" in platform.upper():
+            # MT5's terminal caption starts with the account number; its
+            # order/modify dialogs do not. Keep those modal windows out even
+            # when a user's saved title rule is broad.
+            main_title = r"^\s*\d+\s*[-–]"
+        else:
+            main_title = r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$"
         matches = [
             window for window in candidates
             if re.match(main_title, str(window.title or ""), re.IGNORECASE)
@@ -292,10 +291,87 @@ class WindowController:
                 f"但可辨識的主交易視窗有 {len(matches)} 個。"
                 "請確認真正主視窗可見並重新綁定；不操作。"
             )
-        # Do NOT scale/guess calibrated mouse coordinates when resized.
-        # screen_point() and click()/click_and_type() continue to enforce
-        # exact calibrated geometry before any physical broker action.
-        return matches[0]
+        return self._maximize_and_recheck_main(
+            matches[0], title_pattern, main_title, width, height, platform
+        )
+
+    def _maximize_and_recheck_main(
+        self,
+        window: WindowInfo,
+        title_pattern: str,
+        main_title: str,
+        calibrated_width: int,
+        calibrated_height: int,
+        platform: str,
+    ) -> WindowInfo:
+        """Maximize a uniquely identified undersized main window, then recheck.
+
+        Never changes a window when identity is ambiguous. Existing calibrated
+        click coordinates remain usable only if the maximized client frame
+        returns to the exact saved dimensions; otherwise the caller fails closed.
+        """
+        def matches_calibration(candidate: WindowInfo) -> bool:
+            return (
+                abs(candidate.width - calibrated_width) <= 2
+                and abs(candidate.height - calibrated_height) <= 2
+            )
+
+        if matches_calibration(window):
+            return window
+
+        # Auto-maximize only when the unique main window is smaller than the
+        # saved full-screen calibration. A larger/different-resolution window
+        # cannot be repaired safely by maximizing it again.
+        needs_maximize = (
+            window.width < calibrated_width - 2
+            or window.height < calibrated_height - 2
+        )
+        if not needs_maximize or self._is_maximized(window.handle):
+            self._raise_size_mismatch(window, {
+                "window_width": calibrated_width,
+                "window_height": calibrated_height,
+            })
+
+        self.emergency.guard()
+        self._maximize_window(window.handle)
+        deadline = time.monotonic() + 1.5
+        latest = window
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            try:
+                candidates = self.find_all(title_pattern)
+            except AutomationError:
+                candidates = []
+            fresh = [
+                candidate for candidate in candidates
+                if re.match(main_title, str(candidate.title or ""), re.IGNORECASE)
+            ]
+            if len(fresh) > 1:
+                raise AutomationError(
+                    f"{platform} 最大化後出現多個主視窗，已停止操作。"
+                )
+            if fresh:
+                latest = fresh[0]
+                if latest.handle != window.handle:
+                    raise AutomationError(
+                        f"{platform} 最大化後主視窗識別對象改變，已停止操作。"
+                    )
+                if matches_calibration(latest):
+                    return latest
+            time.sleep(0.025)
+
+        self._raise_size_mismatch(latest, {
+            "window_width": calibrated_width,
+            "window_height": calibrated_height,
+        })
+
+    @staticmethod
+    def _is_maximized(handle: int) -> bool:
+        return bool(user32.IsZoomed(handle))
+
+    @staticmethod
+    def _maximize_window(handle: int) -> None:
+        user32.ShowWindow(handle, SW_MAXIMIZE)
 
     def find(self, title_pattern: str) -> WindowInfo:
         if not title_pattern.strip():
@@ -465,8 +541,9 @@ class WindowController:
             self._validate_calibrated_window(focused,point)
             coords[key]=self.screen_point(focused,point)
         try:
-            # A final pre-click cTrader validation may supply its single,
-            # newly captured inventory for account, instrument and form.
+            # Final cTrader pre-click may already have a freshly captured
+            # single-window UIA tree. Reuse that SAME inventory for account,
+            # instrument, fields and button; never reuse a previous order.
             controls=(
                 _controls if _controls is not None
                 else Desktop(backend="uia").window(
@@ -1151,14 +1228,10 @@ class WindowController:
             if message == WM_PAINT:
                 paint = PAINTSTRUCT()
                 hdc = user32.BeginPaint(hwnd, ctypes.byref(paint))
-                pen = gdi32.CreatePen(PS_SOLID, 4, 0x000000FF)
+                pen = gdi32.CreatePen(PS_SOLID, 2, 0x000000FF)
                 old_pen = gdi32.SelectObject(hdc, pen)
                 old_brush = gdi32.SelectObject(hdc, gdi32.GetStockObject(5))
-                gdi32.Ellipse(hdc, 5, 5, 47, 47)
-                gdi32.MoveToEx(hdc, 26, 0, None)
-                gdi32.LineTo(hdc, 26, 52)
-                gdi32.MoveToEx(hdc, 0, 26, None)
-                gdi32.LineTo(hdc, 52, 26)
+                gdi32.Ellipse(hdc, 3, 3, 15, 15)
                 gdi32.SelectObject(hdc, old_brush)
                 gdi32.SelectObject(hdc, old_pen)
                 gdi32.DeleteObject(pen)
@@ -1183,10 +1256,10 @@ class WindowController:
             class_name,
             "",
             WS_POPUP,
-            x - 26,
-            y - 26,
-            52,
-            52,
+            x - 9,
+            y - 9,
+            18,
+            18,
             None,
             None,
             window_class.hInstance,
@@ -1196,7 +1269,7 @@ class WindowController:
             user32.UnregisterClassW(class_name, window_class.hInstance)
             return
         user32.SetLayeredWindowAttributes(hwnd, 0x00000000, 255, LWA_COLORKEY)
-        user32.SetWindowPos(hwnd, HWND_TOPMOST, x - 26, y - 26, 52, 52, 0x0010)
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, x - 9, y - 9, 18, 18, 0x0010)
         user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
         user32.UpdateWindow(hwnd)
         deadline = time.monotonic() + duration_ms / 1000
@@ -1238,6 +1311,39 @@ class WindowController:
             "無法從校準區域辨識價格。"
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"
         )
+
+    def read_number_candidates(
+        self, window: WindowInfo, point: dict[str, float]
+    ) -> list[Decimal]:
+        """Collect numeric OCR candidates across nearby crops and image variants."""
+        self.emergency.guard()
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        attempts = [
+            (x, y, 150, 70),
+            (x, y + 22, 190, 100),
+            (x, y + 35, 230, 125),
+            (x + 35, y, 230, 95),
+        ]
+        found: list[Decimal] = []
+        last_error: AutomationError | None = None
+        for target_x, target_y, width, height in attempts:
+            try:
+                found.extend(self._read_number_candidates_ocr(
+                    target_x,
+                    target_y,
+                    width=width,
+                    height=height,
+                    all_variants=True,
+                ))
+            except AutomationError as exc:
+                last_error = exc
+        if found:
+            return found
+        if last_error is not None:
+            raise last_error
+        raise AutomationError("無法從校準區域取得價格候選數字。")
 
     def read_account_number(self, window: WindowInfo, point: dict[str, float]) -> str:
         self.emergency.guard()
@@ -1352,6 +1458,7 @@ class WindowController:
         *,
         width: int = 150,
         height: int = 70,
+        all_variants: bool = False,
     ) -> list[Decimal]:
         try:
             import cv2
@@ -1380,6 +1487,7 @@ class WindowController:
                 cv2.COLOR_GRAY2BGR,
             ),
         ]
+        all_parsed: list[Decimal] = []
         with WindowController._ocr_lock:
             if WindowController._ocr_engine is None:
                 WindowController._ocr_engine = RapidOCR()
@@ -1391,7 +1499,11 @@ class WindowController:
                 )
                 parsed = _extract_decimal_candidates(candidates)
                 if parsed:
-                    return parsed
+                    if not all_variants:
+                        return parsed
+                    all_parsed.extend(parsed)
+        if all_parsed:
+            return all_parsed
         raise AutomationError(
             "無法從校準區域辨識價格。"
             "請把校準點放在成交價數字或懸浮觸發位置後重試。"

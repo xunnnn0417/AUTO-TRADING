@@ -53,14 +53,11 @@ class MainWindowTests(unittest.TestCase):
     def test_resized_main_identified_but_stale_calibration_cannot_click(self):
         resized = WindowInfo(66, "cTrader 5.6.0", 0, 0, 1580, 900)
         self.ctrl.find_all.return_value = [self.dialog, resized]
-        selected = self.ctrl.find_calibrated_main("cTrader", self.point)
-        self.assertEqual(selected.handle, resized.handle)
-        # Identification succeeds, but using the old 1938x1038 mouse
-        # calibration remains forbidden: never scale/guess broker clicks.
-        with self.assertRaises(AutomationError):
-            self.ctrl.screen_point(selected, {
-                **self.point, "x_px": 100, "y_px": 100
-            })
+        # A maximized window on a different resolution still fails closed;
+        # never scale or guess with the old 1938x1038 mouse calibration.
+        with patch.object(self.ctrl, "_is_maximized", return_value=True):
+            with self.assertRaisesRegex(AutomationError, "尺寸"):
+                self.ctrl.find_calibrated_main("cTrader", self.point)
 
     def test_main_with_wrong_native_title_still_fails(self):
         impostor = WindowInfo(
@@ -81,6 +78,83 @@ class MainWindowTests(unittest.TestCase):
             self.ctrl.find_calibrated_main(
                 "GooeyTrade", self.point, platform="GooeyTrade"
             ).handle, 75
+        )
+
+    def test_mt5_maximizes_unique_terminal_and_rechecks_not_order_dialog(self):
+        terminal = WindowInfo(
+            91,
+            "53099775 - ICMarketsSC-Demo: Demo - Hedge - [BTCUSD,H1]",
+            0, 0, 1600, 900,
+        )
+        order_dialog = WindowInfo(
+            92, "Order: BTCUSD - Bitcoin (USD)", 0, 0, 620, 480
+        )
+        current = {"terminal": terminal}
+        controller = WindowController(SimpleNamespace(guard=lambda: None))
+        controller.find_all = MagicMock(
+            side_effect=lambda _pattern: [order_dialog, current["terminal"]]
+        )
+
+        def maximize(handle):
+            self.assertEqual(handle, terminal.handle)
+            current["terminal"] = WindowInfo(
+                91, terminal.title, 0, 0, 1938, 1038
+            )
+
+        with patch.object(controller, "_is_maximized", return_value=False), \
+             patch.object(controller, "_maximize_window", side_effect=maximize) as maximize_call:
+            selected = controller.find_calibrated_main(
+                r"53099775.*ICMarketsSC-Demo",
+                self.point,
+                platform="MT5",
+            )
+
+        self.assertEqual(selected.handle, terminal.handle)
+        self.assertEqual((selected.width, selected.height), (1938, 1038))
+        maximize_call.assert_called_once_with(terminal.handle)
+
+    def test_mt5_duplicate_terminals_fail_closed_without_maximize(self):
+        first = WindowInfo(
+            91, "53099775 - ICMarketsSC-Demo - [BTCUSD,H1]",
+            0, 0, 1600, 900,
+        )
+        second = WindowInfo(
+            92, "53099775 - ICMarketsSC-Demo - [ETHUSD,H1]",
+            0, 0, 1600, 900,
+        )
+        self.ctrl.find_all.return_value = [first, second]
+        with patch.object(self.ctrl, "_maximize_window") as maximize:
+            with self.assertRaisesRegex(AutomationError, "主交易視窗有 2"):
+                self.ctrl.find_calibrated_main(
+                    r"53099775.*ICMarketsSC-Demo",
+                    self.point,
+                    platform="MT5",
+                )
+        maximize.assert_not_called()
+
+    def test_mt5_main_calibration_point_uses_main_window_resolver(self):
+        from trading_helper.automation import PlatformAutomation
+
+        point = {"window_width": 1938, "window_height": 1038}
+        profile = {
+            "window_title": {"internal": r"53099775.*ICMarketsSC-Demo"},
+            "points": {"new_order_button": point},
+        }
+        controller = MagicMock(spec=WindowController)
+        controller.find_calibrated_main.return_value = self.main
+        automation = SimpleNamespace(
+            config={"platforms": {"MT5": profile}}, windows=controller
+        )
+
+        selected = PlatformAutomation._window_for_point(
+            automation, profile, "internal", point
+        )
+
+        self.assertEqual(selected.handle, self.main.handle)
+        controller.find_calibrated_main.assert_called_once_with(
+            r"53099775.*ICMarketsSC-Demo",
+            point,
+            platform="MT5",
         )
 
 
@@ -237,6 +311,25 @@ class OneInventorySubmitTests(unittest.TestCase):
 
     def test_wrong_symbol_cannot_click(self):
         self.symbol._text = "Silver vs US Dollar"
+        with self.assertRaises(AutomationError):
+            self.submit()
+        self.windows.click.assert_not_called()
+
+    def test_btcusd_description_allows_matching_verified_submit(self):
+        self.symbol._text = "Bitcoin vs US Dollar"
+        self.adapter.set_expected_symbol("BTCUSD")
+        self.adapter.automation._last_verified_fills[
+            ("cTrader", "external")
+        ]["symbol"] = "BTCUSD"
+        self.submit()
+        self.windows.click.assert_called_once()
+
+    def test_btcusd_rejects_a_different_bitcoin_pair(self):
+        self.symbol._text = "Bitcoin vs Tether"
+        self.adapter.set_expected_symbol("BTCUSD")
+        self.adapter.automation._last_verified_fills[
+            ("cTrader", "external")
+        ]["symbol"] = "BTCUSD"
         with self.assertRaises(AutomationError):
             self.submit()
         self.windows.click.assert_not_called()

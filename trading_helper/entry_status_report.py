@@ -17,9 +17,17 @@ def build_entry_status_report(
     confirmed = entry.get("confirmed_legs", {})
     if not isinstance(confirmed, dict):
         confirmed = {}
-    both = bool(entry.get("confirmed_both"))
-    internal = success or both or bool(confirmed.get("internal"))
-    external = success or both or bool(confirmed.get("external"))
+    internal_ticket = str(confirmed.get("internal") or "").strip()
+    external_ticket = str(confirmed.get("external") or "").strip()
+    # Each leg is durably recorded as soon as its matching new position is
+    # verified. A crash can occur after the second leg record but before the
+    # combined ``confirmed_both`` milestone, so the two independent tickets
+    # are also sufficient evidence that both entries were confirmed.
+    both = bool(entry.get("confirmed_both")) or bool(
+        internal_ticket and external_ticket
+    )
+    internal = success or both or bool(internal_ticket)
+    external = success or both or bool(external_ticket)
     sync_verified = bool(entry.get("sl_tp_synchronized"))
     protected = bool(entry.get("internal_protected"))
 
@@ -28,6 +36,14 @@ def build_entry_status_report(
             "雙邊開倉及 SL／TP 同步完成"
             if sync_requested and sync_verified else "雙邊開倉已確認"
         )
+    elif both and sync_requested and not protected:
+        title = "雙邊開倉已確認，場內止盈止損尚未確認"
+    elif both and sync_requested and not sync_verified:
+        title = "雙邊開倉已確認，場外 SL／TP 同步未完成"
+    elif both and tv_requested and not success:
+        title = "雙邊開倉已確認，TradingView 繪圖未完成"
+    elif both:
+        title = "雙邊開倉已確認，後續處理未完成"
     elif internal or external:
         title = "開倉後續結果需要核對"
     else:
@@ -40,6 +56,17 @@ def build_entry_status_report(
         side("場內", internal_platform, internal),
         side("場外", external_platform, external),
     ]
+    if both:
+        parts.append("進度判定：兩邊都有獨立成交確認紀錄。")
+    elif internal or external:
+        confirmed_side = "場內" if internal else "場外"
+        unknown_side = "場外" if internal else "場內"
+        parts.append(
+            f"進度判定：{confirmed_side}已確認成交；{unknown_side}尚未確認，"
+            "不能據此判定已成交或已拒單。"
+        )
+    else:
+        parts.append("進度判定：目前沒有可用的成交確認紀錄。")
     if sync_requested:
         parts.append(
             "場內止盈止損：" +

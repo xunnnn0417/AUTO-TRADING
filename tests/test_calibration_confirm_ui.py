@@ -222,7 +222,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         parent=QMainWindow()
         parent.log=lambda _message:None
         dialog=CalibrationDialog(parent,"MT5")
-        win=WindowInfo(700,"持倉: #8765432101 buy 0.16 XAUUSD",200,200,1400,850)
+        win=WindowInfo(700,"持倉: #2012988031 buy 0.16 XAUUSD",200,200,1400,850)
         report=ScanReport("MT5",tuple((k,k) for k in gui.POSITION_EDIT_KEYS))
         report.candidates={
             "position_sl_input":Candidate(

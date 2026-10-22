@@ -10,16 +10,16 @@ from trading_helper.mt5_native_readonly import snapshot_mt5_demo
 from trading_helper.demo_broker_port import DemoUiBrokerPort
 from trading_helper.windows import AutomationError
 
-ACCOUNT=DemoAccount("MT5","55512345","ICMarketsSC-Demo",True,True)
+ACCOUNT=DemoAccount("MT5","53099775","ICMarketsSC-Demo",True,True)
 class FakeNative:
     ACCOUNT_TRADE_MODE_DEMO=0
     POSITION_TYPE_BUY=0
     POSITION_TYPE_SELL=1
     def __init__(self):
         self.events=[]
-        self.account=N(login=55512345,server="ICMarketsSC-Demo",trade_mode=0)
+        self.account=N(login=53099775,server="ICMarketsSC-Demo",trade_mode=0)
         self.positions=(N(
-            ticket=8765432101,symbol="XAUUSD",type=0,volume=0.16,
+            ticket=2012988031,symbol="XAUUSD",type=0,volume=0.16,
             price_open=4169.30,sl=4135.57,tp=4174.62
         ),)
         self.orders=()

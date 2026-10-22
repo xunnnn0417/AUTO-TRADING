@@ -7,7 +7,10 @@ from __future__ import annotations
 import re
 from .calibration_scan import ScanReport, Candidate, inspect_all_targets
 
-POSITION_GRID_KEYS = ("positions_entry_price","position_order_lot","position_order_row")
+POSITION_GRID_KEYS = (
+    "positions_entry_price", "position_order_lot", "position_order_row",
+    "position_close_button",
+)
 POSITION_EDIT_KEYS = ("position_sl_input","position_tp_input","position_modify_confirm")
 
 def scan_position_grid(handle: int, platform: str, targets):
@@ -21,8 +24,15 @@ def scan_position_grid(handle: int, platform: str, targets):
                 if str(x.element_info.automation_id)=="PositionListDataGrid_AId"
                 and x.is_visible()
             ]
+            if not grids:
+                raise ValueError(
+                    "找不到 cTrader Positions 持倉表格；請先在平台底部顯示 "
+                    "Positions 頁面，再重新掃描"
+                )
             if len(grids)!=1:
-                raise ValueError("無法確認唯一的 cTrader Positions 表格")
+                raise ValueError(
+                    f"無法確認唯一的 cTrader Positions 表格，目前辨識 {len(grids)} 個"
+                )
             grid=grids[0]
             rows=grid.descendants(control_type="DataItem")
             if len(rows)!=1:
@@ -44,6 +54,12 @@ def scan_position_grid(handle: int, platform: str, targets):
                 "position_order_row": ("tp",),
             }
             for key,label in targets:
+                if key == "position_close_button":
+                    out.reasons[key] = (
+                        "平倉圖示沒有可靠的唯一 UIA 識別；請用手動校準框選"
+                        "持倉列右側的實際平倉控制，不要選到 SL／TP 清除圖示。"
+                    )
+                    continue
                 names=columns.get(key,())
                 matches=[headers[n] for n in names if n in headers]
                 if len(matches)!=1:
@@ -96,6 +112,12 @@ def scan_position_grid(handle: int, platform: str, targets):
             columns={"positions_entry_price":5,"position_order_lot":4,
                      "position_order_row":6}
             for key,label in targets:
+                if key == "position_close_button":
+                    out.reasons[key] = (
+                        "MT5 平倉控制尚未有可靠的原生辨識；請用手動校準"
+                        "框選你確認的平倉控制，不要選 SL／TP 欄位旁的清除叉號。"
+                    )
+                    continue
                 if key not in columns:continue
                 raw=view.get_item(rows[0],columns[key]).rectangle()
                 rect=(origin.left+raw.left,origin.top+raw.top,
@@ -168,9 +190,11 @@ def select_broker_main_window(
                 r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$",title,re.I
             ))
         else:
-            valid=bool(re.search(
-                r"\[[\w.+-]+,\s*(?:M\d+|H\d+|D1|W1|MN1)\]",
-                title,re.I))
+            # MT5's native terminal caption can omit the active chart suffix
+            # (for example when charts are tiled). The account-number prefix
+            # identifies its main window; order/position dialogs start with
+            # their own localized titles and are excluded.
+            valid=bool(re.match(r"^\s*\d+\s*[-–]\s*\S",title,re.I))
         if valid:
             main.append(win)
     return main[0] if len(main)==1 else None

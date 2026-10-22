@@ -142,8 +142,8 @@ class P2CalibrationDialogTests(unittest.TestCase):
 
     def test_same_simple_calibration_structure_across_platforms(self):
         for platform, expected_tabs, expected_items in (
-            ("cTrader", 3, 15),
-            ("MT5", 4, 14),
+            ("cTrader", 3, 16),
+            ("MT5", 4, 16),
             ("TradingView", 1, 8),
         ):
             with self.subTest(platform=platform):
@@ -158,6 +158,17 @@ class P2CalibrationDialogTests(unittest.TestCase):
                 self.assertIn("查看已校準位置",labels)
                 self.assertNotIn("測試 UIA 自動辨識",labels)
                 self.assertNotIn("滑鼠指向檢查＋框線預覽",labels)
+                if platform in {"cTrader", "MT5"}:
+                    self.assertEqual(
+                        dialog.radios["position_close_button"].text(),
+                        "已進場持倉的平倉按鈕（自動尋找不到時手動擷取）",
+                    )
+                    close_help=dialog.findChild(
+                        gui.QLabel,"positionCloseCalibrationHelp"
+                    )
+                    self.assertIn("持倉列最右側",close_help.text())
+                    self.assertIn("黃框核對",close_help.text())
+                    self.assertIn("不會點擊或平倉",close_help.text())
                 self.assertEqual(
                     "自動尋找此階段欄位（唯讀）" in labels,
                     platform!="TradingView",
@@ -172,7 +183,7 @@ class P2CalibrationDialogTests(unittest.TestCase):
     def test_mt5_order_stage_requires_existing_same_process_order_window(self):
         from unittest.mock import MagicMock, patch
         from trading_helper.windows import WindowInfo
-        main=WindowInfo(123,"55512345 - ICMarketsSC-Demo - [XAUUSD,H1]",0,0,1400,960)
+        main=WindowInfo(123,"53099775 - ICMarketsSC-Demo - [XAUUSD,H1]",0,0,1400,960)
         order=WindowInfo(124,"Order",350,200,850,750)
         parent=QMainWindow()
         parent.internal_platform=SimpleNamespace(currentText=lambda:"cTrader")
@@ -223,14 +234,15 @@ class P2CalibrationDialogTests(unittest.TestCase):
                 dialog.close()
                 parent.close()
 
-    def test_mt5_second_stage_selects_only_its_five_post_entry_items(self):
+    def test_mt5_second_stage_selects_its_quote_and_order_items(self):
         parent=QMainWindow()
         dialog=CalibrationDialog(parent,"MT5")
         self.assertEqual(len(dialog._stage_keys),4)
         self.assertEqual(tuple(dialog._stage_keys[0]),("new_order_button","trade_tab"))
-        self.assertEqual(len(dialog._stage_keys[1]),6)
+        self.assertEqual(len(dialog._stage_keys[1]),7)
         self.assertEqual(set(dialog._stage_keys[2]),
-                         {"positions_entry_price","position_order_lot","position_order_row"})
+                         {"positions_entry_price","position_order_lot","position_order_row",
+                          "position_close_button"})
         self.assertEqual(set(dialog._stage_keys[3]),
                          {"position_sl_input","position_tp_input","position_modify_confirm"})
         tabs=dialog.findChildren(QTabWidget)[0]
@@ -240,6 +252,18 @@ class P2CalibrationDialogTests(unittest.TestCase):
         self.assertFalse(dialog.radios["new_order_button"].isChecked())
         tabs.setCurrentIndex(2)
         self.assertTrue(dialog.radios["positions_entry_price"].isChecked())
+        close_capture=dialog.findChild(
+            QPushButton,"capturePositionCloseButton"
+        )
+        self.assertIsNotNone(close_capture)
+        close_help=dialog.findChild(gui.QLabel,"positionCloseCalibrationHelp")
+        self.assertIsNotNone(close_help)
+        self.assertIn("持倉列最右側",close_help.text())
+        self.assertIn("黃框核對",close_help.text())
+        with patch.object(dialog,"capture") as capture:
+            close_capture.click()
+        self.assertTrue(dialog.radios["position_close_button"].isChecked())
+        capture.assert_called_once_with()
         tabs.setCurrentIndex(3)
         self.assertTrue(dialog.radios["position_modify_confirm"].isChecked()
                         or dialog.radios["position_sl_input"].isChecked())
@@ -284,7 +308,8 @@ class P2CalibrationDialogTests(unittest.TestCase):
         self.assertIn("進場前",labels[0])
         self.assertIn("持倉列表",labels[1])
         self.assertIn("修改視窗",labels[2])
-        self.assertEqual(len(dialog.radios),15)
+        self.assertEqual(len(dialog.radios),16)
+        self.assertIn("position_close_button",dialog._stage_keys[1])
         wizard=[b for b in dialog.findChildren(QPushButton)
                 if b.text()=="開始辨識進場後欄位（唯讀）"]
         self.assertEqual(len(wizard),0)
@@ -292,11 +317,56 @@ class P2CalibrationDialogTests(unittest.TestCase):
         tabs[0].setCurrentIndex(1)
         self.assertTrue(dialog.radios["positions_entry_price"].isChecked())
         self.assertFalse(dialog.radios["account_number"].isChecked())
+        close_capture=dialog.findChild(QPushButton,"capturePositionCloseButton")
+        self.assertIsNotNone(close_capture)
+        self.assertIn("5 秒",close_capture.text())
+        self.assertIn("黃框核對",close_capture.toolTip())
+        self.assertIn("不會點擊或平倉",close_capture.toolTip())
+        close_help=dialog.findChild(gui.QLabel,"positionCloseCalibrationHelp")
+        self.assertIsNotNone(close_help)
+        self.assertIn("cTrader 圖示會變色",close_help.text())
+        with patch.object(dialog,"capture") as capture:
+            close_capture.click()
+        self.assertTrue(dialog.radios["position_close_button"].isChecked())
+        capture.assert_called_once_with()
         tabs[0].setCurrentIndex(0)
         self.assertTrue(dialog.radios["account_number"].isChecked())
         dialog._hover_outline.close()
         dialog.close()
         parent.close()
+
+    def test_manual_close_capture_completion_requests_yellow_preview(self):
+        for platform in ("cTrader", "MT5"):
+            with self.subTest(platform=platform):
+                parent=QMainWindow()
+                dialog=CalibrationDialog(parent,platform)
+                rect=(400,500,430,530)
+                with patch.object(dialog,"_refresh_stage_progress"), \
+                     patch.object(dialog,"_show_manual_capture_preview") as preview:
+                    dialog._finish_capture({
+                        "key":"position_close_button",
+                        "preview_rect":rect,
+                        "preview_source":"UI 控制項外框",
+                    })
+                preview.assert_called_once_with(rect,"UI 控制項外框")
+                dialog._hover_outline.close()
+                dialog.close()
+                parent.close()
+
+    def test_manual_close_capture_outline_uses_small_uia_bounds_or_point_box(self):
+        point_rect,point_source=gui.manual_capture_confirmation_rect(100,200,None)
+        self.assertEqual(point_rect,(84,184,116,216))
+        self.assertEqual(point_source,"手動擷取點")
+        button_rect,button_source=gui.manual_capture_confirmation_rect(
+            100,200,(90,190,110,210)
+        )
+        self.assertEqual(button_rect,(90,190,110,210))
+        self.assertEqual(button_source,"UI 控制項外框")
+        row_rect,row_source=gui.manual_capture_confirmation_rect(
+            100,200,(0,190,1600,220)
+        )
+        self.assertEqual(row_rect,(84,184,116,216))
+        self.assertEqual(row_source,"手動擷取點")
 
     def test_post_entry_watch_stops_on_multiple_but_keeps_waiting_on_empty(self):
         parent=QMainWindow()
