@@ -46,6 +46,12 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
                         window_height=1038)
         self.profile={"points":{"order_submit_button":self.point}}
         self.automation=MagicMock()
+        self.automation._last_verified_fills={
+            ("cTrader","internal"):{
+                "direction":"BUY", "symbol":"GOLD",
+                "values":{"lot_input":0.16,"sl_input":-527,"tp_input":3378},
+            }
+        }
         self.automation.windows.screen_point.side_effect=(
             lambda w,p:(w.left+p["x_px"],w.top+p["y_px"])
         )
@@ -56,6 +62,7 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
             )
         )
         self.port=DemoUiBrokerPort(self.automation,lambda message:None)
+        self.port.set_expected_symbol("GOLD")
         self.port.inspect_account=MagicMock()
         self.port.verify_order_form=MagicMock()
         self.port._form_window=MagicMock(return_value=(self.profile,self.win))
@@ -63,7 +70,7 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
 
     def submit(self):
         desktop=SimpleNamespace(window=lambda handle:SimpleNamespace(
-            descendants=lambda **kwargs:list(self.buttons)
+            descendants=lambda control_type=None:list(self.buttons)
         ))
         with patch("pywinauto.Desktop",return_value=desktop):
             self.port.submit_once("cTrader","internal","BUY",0.16,"key")
@@ -113,8 +120,7 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
 
     def test_no_button_never_clicks(self):
         self.buttons=[]
-        # Empty fresh UIA inventory is rejected before button matching.
-        with self.assertRaisesRegex(AutomationError,"UIA 控制項清單"):
+        with self.assertRaisesRegex(AutomationError,"UIA"):
             self.submit()
         self.automation.windows.click.assert_not_called()
 

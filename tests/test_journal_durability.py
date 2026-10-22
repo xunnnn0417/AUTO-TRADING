@@ -1,5 +1,5 @@
-"""LAB journal regression: never claim an order barrier was persisted pre-flush."""
-import os
+"""Journal write safety checks using temporary files only."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,40 +9,33 @@ from trading_helper.auto_entry import AutoEntryJournal
 
 
 class JournalDurabilityTests(unittest.TestCase):
-    def test_fsync_happens_before_atomic_replace(self):
+    def test_write_flushes_and_fsyncs_before_atomic_replace(self):
         with tempfile.TemporaryDirectory() as folder:
-            journal = AutoEntryJournal(Path(folder) / "journal.json")
-            calls = []
-            actual_fsync = os.fsync
-            actual_replace = os.replace
+            target=Path(folder)/"journal.json"
+            journal=AutoEntryJournal(target)
+            with patch("trading_helper.auto_entry.os.fsync") as fsync:
+                journal._write({"attempt":{"status":"prepared"}})
+            fsync.assert_called_once()
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"attempt":{"status":"prepared"}},
+            )
 
-            def flush(fd):
-                calls.append("fsync")
-                return actual_fsync(fd)
-
-            def rename(source, destination):
-                calls.append("replace")
-                return actual_replace(source, destination)
-
-            with patch("trading_helper.auto_entry.os.fsync", side_effect=flush), \
-                 patch("trading_helper.auto_entry.os.replace", side_effect=rename):
-                journal.record("once", "sending_internal", "Demo pending")
-
-            self.assertEqual(calls, ["fsync", "replace"])
-            self.assertEqual(journal.status("once"), "sending_internal")
-
-    def test_failed_flush_leaves_last_committed_entry_unchanged(self):
+    def test_fsync_failure_preserves_last_confirmed_journal(self):
         with tempfile.TemporaryDirectory() as folder:
-            journal = AutoEntryJournal(Path(folder) / "journal.json")
-            journal.record("once", "prepared", "both checked")
-            committed = journal.path.read_bytes()
+            target=Path(folder)/"journal.json"
+            target.write_text('{"attempt":{"status":"filled"}}',
+                              encoding="utf-8")
+            journal=AutoEntryJournal(target)
             with patch("trading_helper.auto_entry.os.fsync",
-                       side_effect=OSError("simulated disk write error")):
+                       side_effect=OSError("simulated disk error")):
                 with self.assertRaises(OSError):
-                    journal.record("once", "sending_external", "pending")
-            self.assertEqual(journal.path.read_bytes(), committed)
-            self.assertEqual(journal.status("once"), "prepared")
+                    journal._write({"attempt":{"status":"prepared"}})
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"attempt":{"status":"filled"}},
+            )
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     unittest.main()

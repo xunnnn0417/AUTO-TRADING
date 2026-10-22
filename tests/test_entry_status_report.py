@@ -53,8 +53,33 @@ class ReceiptDataTests(unittest.TestCase):
             self.execute(sync=True)
         report = self.receipt(False)
         self.assertIn("已有成交確認紀錄", report["message"])
+        self.assertIn("進度判定：兩邊都有獨立成交確認紀錄。", report["message"])
+        self.assertEqual(
+            report["title"], "雙邊開倉已確認，場外 SL／TP 同步未完成"
+        )
         self.assertIn("場外止盈止損同步：未證實完成", report["message"])
         self.assertNotIn("雙邊開倉及 SL／TP 同步完成", report["title"])
+        self.assertEqual(
+            len([x for x in self.port.events if x[0] == "submit"]), 2
+        )
+        self.assertFalse(any(x[0] in {"close", "flatten"} for x in self.port.events))
+
+    def test_two_leg_tickets_alone_prove_both_if_combined_marker_was_not_saved(self):
+        report = build_entry_status_report(
+            {
+                "confirmed_legs": {"internal": "I-1", "external": "E-1"},
+                "internal_protected": True,
+            },
+            success=False, sync_requested=True, tv_requested=False,
+            reason="同步讀回失敗",
+            internal_platform="cTrader", external_platform="MT5",
+        )
+        self.assertEqual(
+            report["title"], "雙邊開倉已確認，場外 SL／TP 同步未完成"
+        )
+        self.assertIn("場內（cTrader）：已有成交確認紀錄", report["message"])
+        self.assertIn("場外（MT5）：已有成交確認紀錄", report["message"])
+        self.assertIn("兩邊都有獨立成交確認紀錄", report["message"])
 
     def test_one_unverified_leg_never_implies_rejection_or_rescue(self):
         self.port.fail_confirm = "external"
@@ -66,6 +91,7 @@ class ReceiptDataTests(unittest.TestCase):
         self.assertIn("自動補開：未執行", report["message"])
         self.assertIn("券商回覆不明", report["message"])
         self.assertEqual(len([x for x in self.port.events if x[0]=="submit"]),2)
+        self.assertFalse(any(x[0] in {"close", "flatten"} for x in self.port.events))
 
     def test_sequential_first_side_report_survives_second_side_timeout(self):
         self.port.fail_submit = "external"

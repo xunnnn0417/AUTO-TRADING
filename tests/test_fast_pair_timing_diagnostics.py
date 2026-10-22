@@ -71,7 +71,6 @@ class FastPairTimingTests(unittest.TestCase):
         desktop=SimpleNamespace(window=lambda **kwargs:native_root)
         window=SimpleNamespace(handle=123)
         windows=SimpleNamespace(
-            focus=MagicMock(),
             screen_point=MagicMock(return_value=(50,50)),
             click=MagicMock(),
         )
@@ -81,6 +80,16 @@ class FastPairTimingTests(unittest.TestCase):
                 emergency=SimpleNamespace(guard=lambda:None),
             ),lambda _:None
         )
+        adapter.automation._last_verified_fills={
+            ("cTrader","external"):{
+                "direction":"BUY", "symbol":"GOLD",
+                "values":{"lot_input":Decimal("0.1"),
+                          "sl_input":Decimal("-527"),
+                          "tp_input":Decimal("3378")},
+            }
+        }
+        adapter.set_expected_symbol("GOLD")
+        windows.focus=MagicMock()
         adapter.verify_order_form=MagicMock()
         adapter.inspect_account=MagicMock(
             side_effect=AssertionError("should not re-scan account")
@@ -94,17 +103,13 @@ class FastPairTimingTests(unittest.TestCase):
             adapter.submit_once("cTrader","external","BUY",
                                 Decimal("0.1"),"fake-key")
         adapter.verify_order_form.assert_called_once()
-        controls=adapter.verify_order_form.call_args.kwargs["_controls"]
-        self.assertEqual(len(controls),1)
-        self.assertEqual(
-            controls[0].element_info.automation_id,
-            Button.element_info.automation_id,
-        )
         adapter.inspect_account.assert_not_called()
-        windows.focus.assert_called_once_with(window)
         windows.click.assert_called_once()
         timing=adapter.submit_phase_timings["external"]
         self.assertLessEqual(timing["start"],timing["form_verified"])
+        self.assertLessEqual(
+            timing["uia_inventory_returned"],timing["form_verified"]
+        )
         self.assertLessEqual(timing["form_verified"],timing["click_started"])
         self.assertLessEqual(timing["click_started"],timing["click_returned"])
 

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import re
 import time
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
+from .test_mode import active_test_symbol_override, effective_test_symbol
 from .windows import AutomationError, EmergencyController, WindowController
 
 
@@ -75,10 +77,9 @@ class PlatformAutomation:
         self.windows = windows
         self.emergency = emergency
         self.log = log
-        # Only values read back after the CURRENT fill operation qualify
-        # as expected SL/TP for its later final pre-submit check. Never
-        # rely solely on non-zero SL/TP or on a previous order's settings.
-        self._last_verified_fills: dict[tuple[str, str], dict] = {}
+        # Only a successful full-side UI readback can authorize a matching
+        # final pre-click SL/TP comparison. A new fill attempt invalidates it.
+        self._last_verified_fills: dict[tuple[str, str], dict[str, Any]] = {}
 
     def fill(
         self,
@@ -86,8 +87,8 @@ class PlatformAutomation:
         role: str,
         instruction: TradeInstruction,
     ) -> None:
-        self._last_verified_fills.pop((platform, role), None)
         self.emergency.guard()
+        self._last_verified_fills.pop((platform, role), None)
         profile = self.config["platforms"][platform]
         points = profile.get("points", {})
         required=list(REQUIRED_POINTS[platform])
@@ -98,15 +99,47 @@ class PlatformAutomation:
             raise AutomationError(
                 f"{platform} 尚未完成以下校準：{', '.join(missing)}"
             )
+        if _is_mt5(platform):
+            quote_keys = ("bid_price_left", "ask_price_right")
+            present = [
+                isinstance(points.get(key), dict) and bool(points[key])
+                for key in quote_keys
+            ]
+            test_symbol = effective_test_symbol(instruction.symbol).strip().upper()
+            if test_symbol in {"BTCUSD", "ETHUSD"} and not all(present):
+                raise AutomationError(
+                    f"LAB {test_symbol} 測試需要左右兩側報價校準；"
+                    "不會使用單一舊校準點或表格估算價格代替。"
+                )
+            if any(present) and not all(present):
+                missing_quotes = [
+                    key for key, exists in zip(quote_keys, present) if not exists
+                ]
+                raise AutomationError(
+                    "MT5 必須同時校準左側 Bid 與右側 Ask 報價；"
+                    "目前缺少：" + "、".join(missing_quotes)
+                )
         pattern = profile["window_title"][role]
         if _is_ctrader(platform) and isinstance(self.windows, WindowController):
             window = self.windows.find_calibrated_main(
                 pattern, points["lot_input"], platform=platform
             )
-            # Identifying the terminal is not permission to click it.
-            # Detect stale geometry BEFORE any UIA traversal or mutation.
-            # This is read-only and reports both real/calibrated dimensions.
-            self.windows.screen_point(window, points["lot_input"])
+        elif _is_mt5(platform) and isinstance(self.windows, WindowController):
+            # A main-window calibration point lets the shared resolver
+            # maximize/recheck the MT5 terminal before any modal is reused.
+            main_point = next((
+                points[key]
+                for key in (
+                    "new_order_button", "trade_tab", "positions_entry_price"
+                )
+                if isinstance(points.get(key), dict)
+            ), None)
+            if main_point is not None:
+                window = self.windows.find_calibrated_main(
+                    pattern, main_point, platform=platform
+                )
+            else:
+                window = self.windows.find(pattern)
         else:
             window = self.windows.find(pattern)
         bound_window = window
@@ -195,6 +228,34 @@ class PlatformAutomation:
                 profile, role, points[direction_point]
             )
             self.windows.click(direction_window, points[direction_point])
+        current_price = None
+        if _is_mt5(platform):
+            bid_key, ask_key = "bid_price_left", "ask_price_right"
+            if bid_key in points and ask_key in points:
+                price_window = mt5_order_window or self._window_for_point(
+                    profile, role, points[ask_key]
+                )
+                current_price = self._read_mt5_quote_pair(
+                    price_window,
+                    points[bid_key],
+                    points[ask_key],
+                    instruction,
+                    direction,
+                    role_text,
+                )
+            elif "ask_price" in points:
+                # Compatibility path for non-BTC instructions using profiles
+                # saved before separate Bid/Ask calibration was introduced.
+                price_window = mt5_order_window or self._window_for_point(
+                    profile, role, points["ask_price"]
+                )
+                current_price = self._read_mt5_reference_price(
+                    price_window, points["ask_price"], instruction, role_text
+                )
+            elif instruction.estimated_price is None:
+                raise AutomationError(
+                    "MT5 尚未校準左右報價，也沒有設定備用估算價格。"
+                )
         if _is_mt5(platform):
             self._fill_field(
                 profile,
@@ -207,30 +268,6 @@ class PlatformAutomation:
                 _plain(side.lot),
                 forced_window=mt5_order_window,
             )
-        current_price = None
-        if _is_mt5(platform):
-            price_point_name = self._mt5_price_point(role, direction)
-            if price_point_name in points:
-                price_window = mt5_order_window or self._window_for_point(
-                    profile, role, points[price_point_name]
-                )
-                try:
-                    current_price = self.windows.read_number(
-                        price_window, points[price_point_name]
-                    )
-                    self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
-                except AutomationError as exc:
-                    if instruction.estimated_price is None:
-                        raise
-                    current_price = instruction.estimated_price
-                    self.log(
-                        f"{role_text} MT5 目前價格辨識失敗，"
-                        f"改用表格估算價格：{current_price}。原因：{exc}"
-                    )
-            elif instruction.estimated_price is None:
-                raise AutomationError(
-                    f"MT5 尚未校準 {price_point_name}，也沒有設定備用估算價格。"
-                )
         ctrader_uses_point_size = (
             self._ctrader_uses_point_size(platform, profile, role, points)
             if _is_ctrader(platform)
@@ -264,17 +301,17 @@ class PlatformAutomation:
             profile, role, platform, role_text, points, window,
             mt5_order_window, direction, values,
         )
-        # The MT5 prices here are the actual values written and checked
-        # using this fill's quote (not a later recalculation from a moved
-        # quote). cTrader native/gooey point modes have already been
-        # applied by _field_values. A failed fill never reaches this line.
+        verified_values = {
+            key: self._normalize_numeric_input(value)
+            for key, _label, value in values
+        }
         self._last_verified_fills[(platform, role)] = {
             "direction": direction,
-            "symbol": instruction.symbol,
-            "values": {
-                key: self._normalize_numeric_input(value)
-                for key, _, value in values
-            },
+            # The test override changes only the instrument identity used by
+            # the broker workflow. Lots, direction and SL/TP still come from
+            # the original instruction and were read back above.
+            "symbol": str(effective_test_symbol(instruction.symbol)).strip().upper(),
+            "values": verified_values,
         }
         self.log(f"{role_text} {platform} 欄位全部讀回核對正確，沒有送出訂單。")
 
@@ -333,6 +370,7 @@ class PlatformAutomation:
         repairs). UIA access failure != confirmed value mismatch; stop rather
         than risking blind repeat input or order clicks.
         """
+        verification_started=time.perf_counter()
         attempts={key:1 for key,_,_ in values}
         expected={key:self._normalize_numeric_input(value)
                   for key,_,value in values}
@@ -425,6 +463,11 @@ class PlatformAutomation:
                     verified[point_name]=readback
             if not mismatches:
                 self.log(
+                    f"{role_text} {platform} 單側核對耗時 "
+                    f"{time.perf_counter()-verification_started:.2f} 秒；"
+                    "全部必要欄位已重新讀回。"
+                )
+                self.log(
                     f"{role_text} {platform} 核對通過："
                     + "、".join(
                         f"{label}={verified[key]}"
@@ -515,7 +558,146 @@ class PlatformAutomation:
 
     @staticmethod
     def _mt5_price_point(role: str, direction: str) -> str:
-        return "ask_price"
+        return "ask_price_right" if direction == "BUY" else "bid_price_left"
+
+    def _read_mt5_quote_pair(
+        self,
+        window,
+        bid_point: dict[str, float],
+        ask_point: dict[str, float],
+        instruction: TradeInstruction,
+        direction: str,
+        role_text: str,
+    ) -> Decimal:
+        symbol = effective_test_symbol(instruction.symbol).strip().upper()
+        minimum = (
+            Decimal("1000")
+            if active_test_symbol_override() == symbol
+            else None
+        )
+        last_error = None
+        bid = ask = spread = None
+        for attempt in range(3):
+            try:
+                bid = self.windows.read_number(window, bid_point)
+                ask = self.windows.read_number(window, ask_point)
+                if bid <= 0 or ask <= 0 or ask <= bid:
+                    raise AutomationError(
+                        f"左右報價不合理（Bid {bid}、Ask {ask}）"
+                    )
+                spread = ask - bid
+                mid = (ask + bid) / Decimal("2")
+                if spread / mid > Decimal("0.01"):
+                    raise AutomationError(
+                        f"Bid／Ask 價差超過 1%（{bid}／{ask}），"
+                        "可能讀到截斷數字或校準位置不正確"
+                    )
+                if minimum is not None and min(bid, ask) < minimum:
+                    raise AutomationError(
+                        f"{symbol} 報價低於 LAB 測試下限 {minimum}（{bid}／{ask}）；"
+                        "可能只讀到尾端數字"
+                    )
+                break
+            except (AutomationError, InvalidOperation, TypeError, ValueError) as exc:
+                last_error = exc
+                candidate_reader = getattr(
+                    self.windows, "read_number_candidates", None
+                )
+                if attempt == 0 and callable(candidate_reader):
+                    try:
+                        bid_candidates = candidate_reader(window, bid_point)
+                        ask_candidates = candidate_reader(window, ask_point)
+                        bid_counts = Counter(bid_candidates)
+                        ask_counts = Counter(ask_candidates)
+                        valid_pairs = []
+                        for candidate_bid, bid_count in bid_counts.items():
+                            for candidate_ask, ask_count in ask_counts.items():
+                                if (
+                                    candidate_bid <= 0
+                                    or candidate_ask <= candidate_bid
+                                    or (minimum is not None and min(
+                                        candidate_bid, candidate_ask
+                                    ) < minimum)
+                                ):
+                                    continue
+                                candidate_spread = candidate_ask-candidate_bid
+                                candidate_mid = (
+                                    candidate_ask+candidate_bid
+                                )/Decimal("2")
+                                if candidate_spread/candidate_mid > Decimal("0.01"):
+                                    continue
+                                # A candidate must be seen in multiple OCR crops
+                                # or preprocessing variants before it can repair
+                                # a failed fast read.
+                                if bid_count < 2 or ask_count < 2:
+                                    continue
+                                digits = (
+                                    len(candidate_bid.as_tuple().digits)
+                                    + len(candidate_ask.as_tuple().digits)
+                                )
+                                valid_pairs.append((
+                                    bid_count+ask_count,
+                                    digits,
+                                    -(candidate_spread/candidate_mid),
+                                    candidate_bid,
+                                    candidate_ask,
+                                    candidate_spread,
+                                ))
+                        if valid_pairs:
+                            _, _, _, bid, ask, spread = max(valid_pairs)
+                            self.log(
+                                f"{role_text} MT5 報價經完整 OCR 候選交叉核對："
+                                f"Bid {bid}／Ask {ask}，價差 {spread}。"
+                            )
+                            price_key = self._mt5_price_point(role_text, direction)
+                            return ask if price_key == "ask_price_right" else bid
+                    except Exception as candidate_exc:
+                        last_error = AutomationError(
+                            f"完整 OCR 候選讀取失敗：{candidate_exc}"
+                        )
+                if attempt < 2:
+                    time.sleep(0.05)
+        else:
+            raise AutomationError(
+                f"{role_text} MT5 報價連續 3 次未能可靠核對，已停止填寫。"
+                f"最後結果：{last_error}。請確認商品與校準位置。"
+            ) from last_error
+        self.log(
+            f"已交叉核對{role_text} MT5 報價：Bid {bid}／Ask {ask}，"
+            f"價差 {spread}。"
+        )
+        price_key = self._mt5_price_point(role_text, direction)
+        return ask if price_key == "ask_price_right" else bid
+
+    @staticmethod
+    def _allow_sheet_price_fallback(symbol: str) -> bool:
+        original=str(symbol or "").strip().upper()
+        return effective_test_symbol(original).strip().upper()==original
+
+    def _read_mt5_reference_price(
+        self, window, point: dict[str, float], instruction: TradeInstruction,
+        role_text: str,
+    ) -> Decimal:
+        try:
+            current_price=self.windows.read_number(window,point)
+            self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
+            return current_price
+        except AutomationError as exc:
+            if instruction.estimated_price is None:
+                raise
+            if not self._allow_sheet_price_fallback(instruction.symbol):
+                raise AutomationError(
+                    f"LAB {effective_test_symbol(instruction.symbol).strip().upper()} "
+                    "測試讀不到 MT5 當前報價，已停止填入；"
+                    "不會拿表格原商品的估算價格代替測試商品價格。"
+                    "請重新校準 MT5 目前價格位置後再試。"
+                ) from exc
+            current_price=instruction.estimated_price
+            self.log(
+                f"{role_text} MT5 目前價格辨識失敗，"
+                f"改用表格估算價格：{current_price}。原因：{exc}"
+            )
+            return current_price
 
     def _ensure_ctrader_risk_fields(
         self,
@@ -584,21 +766,33 @@ class PlatformAutomation:
             ]
         else:
             patterns = [str(profile["window_title"][role]).strip()]
-        # Every cTrader/GooeyTrade field and position-read entrypoint uses
-        # one canonical calibrated MAIN window resolver, not the first
-        # same-title modal from Win32's Z-order.
+        # The same calibrated MAIN selection is used by every cTrader
+        # field, checkbox, post-entry SL/TP and price-read operation.
+        # Never allow a same-title order or modify popup to impersonate it.
         if (
             isinstance(self.windows, WindowController)
             and (profile is self.config["platforms"].get("cTrader")
                  or profile is self.config["platforms"].get("GooeyTrade"))
         ):
             platform = (
-                "GooeyTrade"
-                if profile is self.config["platforms"].get("GooeyTrade")
+                "GooeyTrade" if profile is self.config["platforms"].get("GooeyTrade")
                 else "cTrader"
             )
             return self.windows.find_calibrated_main(
                 str(profile["window_title"][role]), point, platform=platform
+            )
+        if (
+            isinstance(self.windows, WindowController)
+            and profile is self.config["platforms"].get("MT5")
+            and any(
+                point is profile.get("points", {}).get(key)
+                for key in (
+                    "new_order_button", "trade_tab", "positions_entry_price"
+                )
+            )
+        ):
+            return self.windows.find_calibrated_main(
+                str(profile["window_title"][role]), point, platform="MT5"
             )
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):

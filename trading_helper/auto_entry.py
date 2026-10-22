@@ -8,6 +8,8 @@ the real GUI readback contract has been proven for BOTH brokers.
 from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
+
+from .test_mode import effective_test_symbol
 from pathlib import Path
 from typing import Protocol, Callable
 import hashlib
@@ -107,10 +109,8 @@ class AutoEntryJournal:
     def _write(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True,exist_ok=True)
         tmp=self.path.with_suffix(".tmp")
-        # The journal is the no-double-submit barrier. A temp-file
-        # rename is atomic, but by itself does not flush unwritten bytes
-        # before the UI is allowed to click the broker. Flush FIRST.
-        # Any disk/write error stops the workflow before another order.
+        # The journal prevents blind duplicate orders after a restart.
+        # Flush its contents before replacing the last confirmed record.
         with tmp.open("w",encoding="utf-8") as stream:
             json.dump(data,stream,ensure_ascii=False,indent=2)
             stream.flush()
@@ -223,6 +223,10 @@ class AutoEntryWorkflow:
         self.guard=guard
         self.log=log
 
+    @staticmethod
+    def _effective_test_symbol(symbol: str) -> str:
+        return effective_test_symbol(symbol)
+
     def _rescue_only_proven_rejection(
         self, *, key: str, platform: str, role: str, direction: str,
         lot: Decimal, account: DemoAccount, baseline: tuple[Position,...],
@@ -236,14 +240,15 @@ class AutoEntryWorkflow:
         All unknown/timeouts remain fail-closed. No place-order click without
         identity, other-leg and zero-pending/fill checks.
         """
+        symbol=self._effective_test_symbol(instruction.symbol)
         certify=getattr(self.port,"prove_terminal_rejection",None)
         if not callable(certify):
             return None
         self.guard()
         proof=validate_terminal_rejection(
-            certify(platform,role,key,account.account_id,instruction.symbol),
+            certify(platform,role,key,account.account_id,symbol),
             attempt_key=key,platform=platform,role=role,
-            account_id=account.account_id,symbol=instruction.symbol,
+            account_id=account.account_id,symbol=symbol,
         )
         if proof is None:
             return None
@@ -262,7 +267,7 @@ class AutoEntryWorkflow:
             raise RecoveryRequired("補單前另一邊已成交持倉不再唯一，停止。")
         self._validate_position(
             matches[0],other_platform,other_direction,
-            other_lot,other_account,instruction.symbol
+            other_lot,other_account,symbol
         )
         current_missing=self.port.snapshot_positions(platform,role)
         if current_missing!=baseline or current_missing:
@@ -275,7 +280,7 @@ class AutoEntryWorkflow:
         self.log(f"{role} 有最終拒單證明，僅嘗試補開一次。")
         pos=self._submit_and_confirm(
             platform,role,direction,lot,account,baseline,
-            instruction.symbol,key
+            symbol,key
         )
         self.journal.record_verified_leg(key,role,pos)
         self.journal.record(key,"rescue_confirmed",role)
@@ -439,8 +444,9 @@ class AutoEntryWorkflow:
         self.journal_current_attempt = False
         precheck_started=time.perf_counter()
         self.guard()
+        execution_symbol=self._effective_test_symbol(instruction.symbol)
         if hasattr(self.port, "set_expected_symbol"):
-            self.port.set_expected_symbol(instruction.symbol)
+            self.port.set_expected_symbol(execution_symbol)
         if draw_tv and not sync_sl_tp:
             raise AutomationError("自動繪製 TV 必須先啟用並完成 SL/TP 同步。")
         if fast_pair and (internal_platform, external_platform) not in {
@@ -506,11 +512,11 @@ class AutoEntryWorkflow:
             first,second=before_i[0],before_e[0]
             self._validate_position(
                 first,internal_platform,instruction.internal_direction,
-                instruction.internal.lot,account_i,instruction.symbol,
+                instruction.internal.lot,account_i,execution_symbol,
             )
             self._validate_position(
                 second,external_platform,instruction.external_direction,
-                instruction.external.lot,account_e,instruction.symbol,
+                instruction.external.lot,account_e,execution_symbol,
             )
             self.port.verify_internal_protection(
                 first,instruction.internal.sl_points,instruction.internal.tp_points
@@ -667,14 +673,13 @@ class AutoEntryWorkflow:
                             "時間是 Python 視窗點擊函式，"
                             "不是券商真實成交回報。"
                         )
-                        if "uia_inventory_returned" in ex_t:
-                            # cTrader's last pre-click UIA scan is shared
-                            # across account, symbol, form and button checks.
+                        inventory_at=ex_t.get("uia_inventory_returned")
+                        if inventory_at is not None:
                             self.log(
-                                "快速雙邊：場外切窗與取得新 UIA 清單 "
-                                f"{(ex_t['uia_inventory_returned']-ex_t['start'])*1000:.0f}ms，"
-                                "共用清單完成帳戶／商品／表單核對 "
-                                f"{(ex_t['form_verified']-ex_t['uia_inventory_returned'])*1000:.0f}ms。"
+                                "快速雙邊 cTrader：送單呼叫至新鮮 UIA 清單"
+                                f" {((inventory_at-ex_t['start'])*1000):.0f}ms；"
+                                "清單回傳至帳戶／商品／欄位核對完成 "
+                                f"{((ex_t['form_verified']-inventory_at)*1000):.0f}ms。"
                             )
                 # Check BOTH sides independently. A failed cTrader read
                 # must not suppress our MT5 read-only native inspection.
@@ -696,7 +701,7 @@ class AutoEntryWorkflow:
                             plat,role,baseline,direction,lot,account.account_id
                         )
                         self._validate_position(
-                            pos,plat,direction,lot,account,instruction.symbol,
+                            pos,plat,direction,lot,account,execution_symbol,
                         )
                         self.journal.record_verified_leg(key,role,pos)
                         verified[role]=pos
@@ -715,7 +720,7 @@ class AutoEntryWorkflow:
                     if role in uncertainty:
                         recovered=self._visual_second_chance(
                             plat,role,baseline,direction,lot,account,
-                            instruction.symbol,key
+                            execution_symbol,key
                         )
                         if recovered is not None:
                             verified[role]=recovered
@@ -784,7 +789,7 @@ class AutoEntryWorkflow:
             else:
                 first=self._submit_and_confirm(
                     internal_platform,"internal",instruction.internal_direction,
-                    instruction.internal.lot,account_i,before_i,instruction.symbol,key)
+                    instruction.internal.lot,account_i,before_i,execution_symbol,key)
             self.guard()
             # MT5 pre-submit SL/TP are based on a *reference quote*. Amend
             # the actual position using its executed price before other side.
@@ -805,7 +810,7 @@ class AutoEntryWorkflow:
                 try:
                     second=self._submit_and_confirm(
                         external_platform,"external",instruction.external_direction,
-                        instruction.external.lot,account_e,before_e,instruction.symbol,key)
+                        instruction.external.lot,account_e,before_e,execution_symbol,key)
                 except Exception:
                     # Recheck the existing Positions tab first: a delayed
                     # fill is success, not proof that we should click twice.
@@ -813,7 +818,7 @@ class AutoEntryWorkflow:
                         external_platform,"external",before_e,
                         instruction.external_direction,
                         instruction.external.lot,account_e,
-                        instruction.symbol,key
+                          execution_symbol,key
                     )
                     if second is None:
                         second=self._rescue_only_proven_rejection(
