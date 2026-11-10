@@ -97,7 +97,9 @@ from .config import (
 from .test_mode import effective_test_symbol, test_symbol_scope
 from .models import TradeInstruction, ValidationError
 from .automation import REQUIRED_POINTS
-from .sheets import SheetReader, spreadsheet_gid_from_url
+from .sheets import (
+    MISSING_SPREADSHEET_URL_MESSAGE, SheetReader, spreadsheet_gid_from_url,
+)
 from .trading_day import trading_day_key
 from .ui_theme import (
     DIALOG_THEME, MAIN_THEME, install_checkmark_only_indicator, themed_icon,
@@ -2037,6 +2039,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self._fill_waiting_for_sheet is not None:
             self._fill_waiting_for_sheet = None
             self.log("已取消待執行填寫：試算表更新失敗。")
+        if message.startswith(MISSING_SPREADSHEET_URL_MESSAGE):
+            QMessageBox.information(self, "請先完成方案設定", message)
+            return
         QMessageBox.critical(self, "對沖小幫手", message)
 
     def _show_duplicate_entry_decision(self, data: dict) -> None:
@@ -6916,6 +6921,12 @@ class SettingsDialog(ThemedDialog):
     def _refresh_sheet_tab_badge(self) -> None:
         url = self.sheet_fields.get("spreadsheet_url")
         missing_url = not url or not url.text().strip()
+        if url is not None:
+            url.set_missing_indicator(
+                missing_url,
+                "目前方案尚未填入 Google 試算表網址。"
+                if missing_url else "",
+            )
         self.sheet_tab_badge.setVisible(bool(missing_url))
         self.settings_tabs.setTabToolTip(
             0,
