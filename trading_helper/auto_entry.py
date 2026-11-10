@@ -1319,8 +1319,21 @@ class AutoEntryWorkflow:
                                      else "尚未確認成交，不能推定拒單")
                         for role in ("internal","external")
                     ]
+                    role_labels={
+                        "internal":f"場內（{internal_platform}）",
+                        "external":f"場外（{external_platform}）",
+                    }
+                    read_details=[
+                        f"{role_labels[role]}：{str(uncertainty[role])[:140]}"
+                        for role in ("internal","external")
+                        if role in uncertainty
+                    ]
+                    detail_summary=(
+                        "持倉核對原因："+"；".join(read_details)+"。"
+                        if read_details else ""
+                    )
                     raise RecoveryRequired(
-                        "；".join(states)+"。"
+                        "；".join(states)+"。"+detail_summary+
                         "已保存可確認的持倉編號；"
                         "無法證明未成交前禁止自動補單。"
                     )
