@@ -41,7 +41,7 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
         self.assertEqual(self.scan(make_grid([make_ghost(), make_ghost()])), ())
 
     def test_placeholder_with_native_position_count_fails_closed(self):
-        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+        with self.assertRaisesRegex(AutomationError, "狀態未知"):
             self.scan(make_grid([make_ghost()], count=1))
 
     def test_hidden_placeholder_with_text_fails_closed(self):
