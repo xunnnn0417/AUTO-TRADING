@@ -219,6 +219,16 @@ class AutoEntryWorkflowTests(unittest.TestCase):
             and "成交確認" in line
             for line in self.logs
         ))
+    def test_fast_pair_receipt_retains_the_unconfirmed_leg_read_reason(self):
+        self.port.fail_confirm="internal"
+        with self.assertRaises(RecoveryRequired) as caught:
+            self.flow.run(
+                self.item,"cTrader","MT5","A","https://docs.google.com/a",
+                sync_sl_tp=False,draw_tv=False,fast_pair=True,
+            )
+        self.assertIn("場內（cTrader）",str(caught.exception))
+        self.assertIn("position missing after order click",str(caught.exception))
+        self.assertIn("不能推定拒單",str(caught.exception))
     def test_failed_preflight_never_clicks(self):
         self.port.bad_form=True
         with self.assertRaises(AutomationError):
