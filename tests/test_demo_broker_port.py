@@ -18,6 +18,7 @@ class FakeGrid(FakeText):
     def __init__(self, rows):
         super().__init__("PositionListDataGrid_AId","")
         self.rows=rows
+        self.iface_grid=SimpleNamespace(CurrentRowCount=len(rows))
     def descendants(self, control_type):
         if control_type=="DataItem":
             return self.rows
@@ -353,3 +354,4 @@ class DemoPortTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
