@@ -64,9 +64,26 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
         with self.assertRaises(AutomationError):
             self.scan(grid)
 
-    def test_genuinely_no_data_items_keeps_existing_behavior(self):
+    def test_no_data_items_requires_two_native_zero_counts(self):
         self.assertEqual(self.scan(make_grid([])), ())
+
+    def test_no_data_items_with_native_position_count_is_unknown(self):
+        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+            self.scan(make_grid([], count=1))
+
+    def test_no_data_items_with_unreadable_count_is_unknown(self):
+        grid = make_grid([])
+        del grid.iface_grid.CurrentRowCount
+        with self.assertRaises(AutomationError):
+            self.scan(grid)
+
+    def test_no_data_items_with_changing_count_is_unknown(self):
+        grid = make_grid([])
+        grid.iface_grid.CurrentRowCount = MagicMock(side_effect=[0, 1])
+        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+            self.scan(grid)
 
 
 if __name__ == "__main__":
     unittest.main()
+
