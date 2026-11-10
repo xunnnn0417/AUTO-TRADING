@@ -1,4 +1,3 @@
 """Windows trading workflow helper MVP."""
 
-__version__ = "0.1.8"
-
+__version__ = "0.1.9"
