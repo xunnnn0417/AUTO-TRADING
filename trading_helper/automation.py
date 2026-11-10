@@ -1606,9 +1606,67 @@ class PlatformAutomation:
                 raise AutomationError(
                     f"{internal_platform} 請先校準交易頁面按鈕。"
                 )
-            self.log(f"正在切到場內 {internal_platform} 交易頁面。")
-            self.windows.click(entry_window, trade_tab)
-            self.windows.wait(0.2)
+            calibrated_size = (
+                int(trade_tab.get("window_width", 0)),
+                int(trade_tab.get("window_height", 0)),
+            )
+            current_size = (entry_window.width, entry_window.height)
+            tab_size_matches = (
+                calibrated_size[0] > 0
+                and calibrated_size[1] > 0
+                and abs(calibrated_size[0] - current_size[0]) <= 2
+                and abs(calibrated_size[1] - current_size[1]) <= 2
+            )
+            if tab_size_matches:
+                self.log(f"正在切到場內 {internal_platform} 交易頁面。")
+                self.windows.click(entry_window, trade_tab)
+                self.windows.wait(0.2)
+            else:
+                # Manual sync can start while the cTrader Positions tab is
+                # already visible. If only the old tab-switch point belongs
+                # to a different window size, never click its stale pixel;
+                # first verify the calibrated lot cell on the current view.
+                lot_point = internal_points.get("position_order_lot")
+                lot_size_matches = bool(
+                    lot_point
+                    and int(lot_point.get("window_width", 0)) > 0
+                    and int(lot_point.get("window_height", 0)) > 0
+                    and abs(int(lot_point["window_width"]) - current_size[0]) <= 2
+                    and abs(int(lot_point["window_height"]) - current_size[1]) <= 2
+                )
+                if not lot_size_matches:
+                    raise CalibrationMismatchError(
+                        f"場內 {internal_platform} 的交易頁按鈕校準尺寸為 "
+                        f"{calibrated_size[0]}×{calibrated_size[1]}，目前主視窗為 "
+                        f"{current_size[0]}×{current_size[1]}；"
+                        "手數位置也無法在目前尺寸下核對。未操作平台，"
+                        "請只重新校準交易頁按鈕。"
+                    )
+                try:
+                    visible_lot = self.windows.read_number_near(
+                        entry_window, lot_point, instruction.internal.lot
+                    )
+                except AutomationError as exc:
+                    raise CalibrationMismatchError(
+                        f"場內 {internal_platform} 的交易頁按鈕校準尺寸為 "
+                        f"{calibrated_size[0]}×{calibrated_size[1]}，目前主視窗為 "
+                        f"{current_size[0]}×{current_size[1]}；"
+                        "未點擊舊位置，也無法確認目前是否顯示持倉列表。"
+                        "請切到持倉列表後重試，或只重新校準交易頁按鈕。"
+                    ) from exc
+                if not _decimal_close(
+                    visible_lot, instruction.internal.lot, Decimal("0.001")
+                ):
+                    raise AutomationError(
+                        f"場內 {internal_platform} 目前持倉列表讀到的手數為 "
+                        f"{_plain(visible_lot)}，預期 "
+                        f"{_plain(instruction.internal.lot)}；"
+                        "無法確認成交價所在列，未繼續同步。"
+                    )
+                self.log(
+                    f"場內 {internal_platform} 交易頁按鈕是舊尺寸校準，"
+                    "未點擊；已在目前顯示的持倉列表核對手數後讀取成交價。"
+                )
             entry_price = self.windows.read_hover_number(
                 entry_window, entry_point
             )
