@@ -6685,6 +6685,7 @@ class SettingsDialog(ThemedDialog):
         self.gid_preview.setObjectName("spreadsheetGidPreview")
         tabs.addTab(self._sheet_tab(), "Google 試算表")
         tabs.addTab(self._defaults_tab(), "預設設定")
+        self.settings_tabs = tabs
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("儲存")
         buttons.button(QDialogButtonBox.Cancel).setText("取消")
@@ -6700,14 +6701,11 @@ class SettingsDialog(ThemedDialog):
             self._update_credential_email
         )
         self.sheet_fields["spreadsheet_url"].textChanged.connect(
-            self._refresh_sheet_setup_badge
-        )
-        self.sheet_fields["service_account_file"].textChanged.connect(
-            self._refresh_sheet_setup_badge
+            self._refresh_sheet_tab_badge
         )
         self._update_gid_preview()
         self._update_credential_email()
-        self._setup_help_badge()
+        self._setup_sheet_tab_badge()
 
     def _sheet_tab(self) -> QWidget:
         tab = QWidget()
@@ -6900,51 +6898,30 @@ class SettingsDialog(ThemedDialog):
         )
         self.credential_email.setText(email or "尚未選擇有效的 JSON 檔案")
 
-    def _setup_help_badge(self) -> None:
-        self.sheet_setup_badge = QToolButton(self)
-        self.sheet_setup_badge.setObjectName("sheetSetupHelpBadge")
-        self.sheet_setup_badge.setText("!")
-        self.sheet_setup_badge.setToolTip("試算表或服務帳戶尚未完成；按此查看設定說明。")
-        self.sheet_setup_badge.setAccessibleName("試算表設定說明")
-        self.sheet_setup_badge.setFixedSize(17, 17)
-        self.sheet_setup_badge.setStyleSheet(
-            "QToolButton { background:#f25362; color:white; border:0;"
-            " border-radius:8px; font-size:11px; font-weight:700; padding:0; }"
-            "QToolButton:hover { background:#ff7580; }"
+    def _setup_sheet_tab_badge(self) -> None:
+        """Mark the Google Sheets tab with the same quiet dot as other setup items."""
+        self.sheet_tab_badge = QLabel()
+        self.sheet_tab_badge.setObjectName("sheetSetupIncompleteDot")
+        self.sheet_tab_badge.setFixedSize(6, 6)
+        self.sheet_tab_badge.setStyleSheet(
+            "background-color:#fa5362;border-radius:3px;"
         )
-        self.sheet_setup_badge.clicked.connect(self._show_service_account_help)
-        self._refresh_sheet_setup_badge()
-        self._position_sheet_setup_badge()
+        self.sheet_tab_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.sheet_tab_badge.setAccessibleName("目前方案尚未填入 Google 試算表網址")
+        self.settings_tabs.tabBar().setTabButton(
+            0, QTabBar.RightSide, self.sheet_tab_badge
+        )
+        self._refresh_sheet_tab_badge()
 
-    def _refresh_sheet_setup_badge(self) -> None:
+    def _refresh_sheet_tab_badge(self) -> None:
         url = self.sheet_fields.get("spreadsheet_url")
-        credential = self.sheet_fields.get("service_account_file")
         missing_url = not url or not url.text().strip()
-        email = _service_account_email(
-            credential.text().strip() if credential else ""
+        self.sheet_tab_badge.setVisible(bool(missing_url))
+        self.settings_tabs.setTabToolTip(
+            0,
+            "目前方案的 Google 試算表尚未填入網址。"
+            if missing_url else "目前方案使用的 Google 試算表。",
         )
-        missing_credential = not email
-        self.sheet_setup_badge.setVisible(missing_url or missing_credential)
-        if missing_url:
-            self.sheet_setup_badge.setToolTip("尚未設定試算表網址；按此查看設定說明。")
-        elif missing_credential:
-            self.sheet_setup_badge.setToolTip("尚未選擇有效的服務帳戶 JSON；按此查看設定說明。")
-        else:
-            self.sheet_setup_badge.setToolTip("按此查看服務帳戶設定說明。")
-
-    def _position_sheet_setup_badge(self) -> None:
-        if not hasattr(self, "sheet_setup_badge") or not hasattr(self, "chrome_close"):
-            return
-        close = self.chrome_close
-        self.sheet_setup_badge.move(
-            max(4, close.x() + close.width() - self.sheet_setup_badge.width()),
-            self.title_bar.height() + 2,
-        )
-        self.sheet_setup_badge.raise_()
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._position_sheet_setup_badge()
 
     def _show_service_account_help(self) -> None:
         dialog = ThemedDialog(self)
