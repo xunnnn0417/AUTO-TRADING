@@ -131,6 +131,17 @@ class FramelessHeaderTests(unittest.TestCase):
         self.assertIn("#101014",box.styleSheet())
         box.close()
 
+    def test_missing_sheet_url_error_uses_clear_setup_notice(self):
+        message=gui.MISSING_SPREADSHEET_URL_MESSAGE
+        with patch.object(gui.QMessageBox,"information") as information, \
+             patch.object(gui.QMessageBox,"critical") as critical:
+            self.w._show_error(message)
+
+        information.assert_called_once_with(
+            self.w,"請先完成方案設定",message
+        )
+        critical.assert_not_called()
+
     def test_settings_dialog_matches_calibration_chrome_and_hides_fixed_options(self):
         dialog=gui.SettingsDialog(self.w)
         dialog.show()
@@ -176,9 +187,15 @@ class FramelessHeaderTests(unittest.TestCase):
         clear_button=url.findChild(QToolButton,"lineEditClearButton")
         self.assertIsNotNone(clear_button)
         self.assertFalse(clear_button.isVisible())
+        missing_dot=url.findChild(gui.QLabel,"missingFieldIndicatorDot")
+        self.assertIsNotNone(missing_dot)
+        self.assertTrue(missing_dot.isVisible())
+        self.assertEqual((missing_dot.width(),missing_dot.height()),(6,6))
+        self.assertIn("尚未填入",missing_dot.toolTip())
         url.setText("https://docs.google.com/spreadsheets/d/example")
         self.app.processEvents()
         self.assertFalse(dialog.sheet_tab_badge.isVisible())
+        self.assertFalse(missing_dot.isVisible())
         self.assertNotIn("尚未填入網址", tabs.tabToolTip(0))
         self.assertTrue(clear_button.isVisible())
         self.assertLessEqual(
@@ -207,6 +224,7 @@ class FramelessHeaderTests(unittest.TestCase):
         clear_button.click()
         self.assertEqual(url.text(),"")
         self.assertFalse(clear_button.isVisible())
+        self.assertTrue(missing_dot.isVisible())
         self.assertTrue(dialog.sheet_tab_badge.isVisible())
         url.setText(
             "https://docs.google.com/spreadsheets/d/example/edit#gid=11111111"
