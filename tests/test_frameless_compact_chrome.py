@@ -161,13 +161,25 @@ class FramelessHeaderTests(unittest.TestCase):
         self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"sheetColumnsDefaults"))
         self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"windowDefaults"))
         self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"ctraderSlTpDefaults"))
-        self.assertTrue(dialog.sheet_setup_badge.isVisible())
+        self.assertTrue(dialog.sheet_tab_badge.isVisible())
+        self.assertEqual(
+            tabs.tabBar().tabButton(0, gui.QTabBar.RightSide),
+            dialog.sheet_tab_badge,
+        )
+        self.assertEqual(
+            (dialog.sheet_tab_badge.width(), dialog.sheet_tab_badge.height()),
+            (6, 6),
+        )
+        self.assertIn("尚未填入網址", tabs.tabToolTip(0))
+        self.assertIsNone(dialog.findChild(QToolButton,"sheetSetupHelpBadge"))
         url=dialog.sheet_fields["spreadsheet_url"]
         clear_button=url.findChild(QToolButton,"lineEditClearButton")
         self.assertIsNotNone(clear_button)
         self.assertFalse(clear_button.isVisible())
         url.setText("https://docs.google.com/spreadsheets/d/example")
         self.app.processEvents()
+        self.assertFalse(dialog.sheet_tab_badge.isVisible())
+        self.assertNotIn("尚未填入網址", tabs.tabToolTip(0))
         self.assertTrue(clear_button.isVisible())
         self.assertLessEqual(
             abs(clear_button.y() * 2 + clear_button.height() - url.height()), 1
@@ -195,6 +207,7 @@ class FramelessHeaderTests(unittest.TestCase):
         clear_button.click()
         self.assertEqual(url.text(),"")
         self.assertFalse(clear_button.isVisible())
+        self.assertTrue(dialog.sheet_tab_badge.isVisible())
         url.setText(
             "https://docs.google.com/spreadsheets/d/example/edit#gid=11111111"
         )
@@ -209,7 +222,7 @@ class FramelessHeaderTests(unittest.TestCase):
             "synthetic-service@example.invalid",
             dialog.credential_email.text(),
         )
-        self.assertFalse(dialog.sheet_setup_badge.isVisible())
+        self.assertFalse(dialog.sheet_tab_badge.isVisible())
         dialog.close()
 
     def test_service_account_picker_uses_shared_popup_chrome(self):
