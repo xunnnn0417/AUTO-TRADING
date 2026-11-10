@@ -11,6 +11,13 @@ from typing import Any
 from .models import TradeInstruction, ValidationError
 
 
+MISSING_SPREADSHEET_URL_MESSAGE = (
+    "目前方案尚未填入 Google 試算表網址。\n"
+    "請到「編輯」→「試算表設定」→「Google 試算表」貼上網址並儲存，"
+    "再按「重新讀取」。"
+)
+
+
 def _column_index(reference: object, headers: list[str]) -> int:
     text = str(reference).strip()
     if not text:
@@ -210,12 +217,12 @@ class SheetReader:
         return TradeInstruction.from_mapping(min(source_rows, default=1), mapped)
 
     def _fetch_rows(self, config: dict[str, Any]) -> list[list[str]]:
+        url = str(config.get("spreadsheet_url", "")).strip()
+        if not url:
+            raise ValidationError(MISSING_SPREADSHEET_URL_MESSAGE)
         mode = config.get("mode", "csv")
         if mode == "service_account":
             return self._fetch_gspread(config)
-        url = config.get("spreadsheet_url", "").strip()
-        if not url:
-            raise ValidationError("請先在試算表設定中填入 Google 試算表網址。")
         request = urllib.request.Request(
             _csv_export_url(url, config.get("gid", "0")),
             headers={"User-Agent": "TradingWorkflowHelper/0.1"},
@@ -234,6 +241,9 @@ class SheetReader:
         return self._run_gspread(lambda: worksheet.get_all_values())
 
     def _open_gspread_worksheet(self, config: dict[str, Any]):
+        spreadsheet_url = str(config.get("spreadsheet_url", "")).strip()
+        if not spreadsheet_url:
+            raise ValidationError(MISSING_SPREADSHEET_URL_MESSAGE)
         try:
             import gspread
         except ImportError as exc:
@@ -241,7 +251,6 @@ class SheetReader:
         credential_file = config.get("service_account_file", "").strip()
         if not credential_file:
             raise ValidationError("必須提供服務帳戶 JSON 檔案路徑。")
-        spreadsheet_url = str(config.get("spreadsheet_url", ""))
         worksheet_name = str(config.get("worksheet", "Sheet1"))
         gid = spreadsheet_gid_from_url(spreadsheet_url)
         use_name_override = bool(config.get("_worksheet_name_override"))
