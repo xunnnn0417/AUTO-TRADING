@@ -383,7 +383,7 @@ class DemoUiBrokerPort:
             except Exception:
                 ghosts=False
                 break
-        if ghosts:
+        if ghosts or not rows:
             try:
                 count=int(grid.iface_grid.CurrentRowCount)
                 time.sleep(0.1)
@@ -400,10 +400,9 @@ class DemoUiBrokerPort:
             if count==count2==0 and not any_text:
                 return ()
             raise AutomationError(
-                "cTrader grid count conflicts with placeholder nodes; "
+                "cTrader grid count conflicts with missing/placeholder rows; "
                 "cannot prove an empty position list."
             )
-        if not rows:return ()
         headers={}
         for h in grid.descendants(control_type="HeaderItem"):
             name=str(h.window_text()).strip().casefold()
@@ -1102,3 +1101,4 @@ class DemoUiBrokerPort:
             instruction,internal_platform=internal_platform,
             entry_price_override=entry,draw_internal=draw_internal
         )
+
