@@ -172,13 +172,31 @@ class ClearButtonLineEdit(QLineEdit):
         self.clear_button = ClearFieldButton(self)
         self.clear_button.clicked.connect(self.clear)
         self.textChanged.connect(self._update_clear_button)
+        self.missing_indicator = QLabel(self)
+        self.missing_indicator.setObjectName("missingFieldIndicatorDot")
+        self.missing_indicator.setFixedSize(6, 6)
+        self.missing_indicator.setStyleSheet(
+            "background-color:#fa5362;border-radius:3px;"
+        )
+        self.missing_indicator.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.missing_indicator.setAccessibleName("此欄位尚未填寫")
+        self.missing_indicator.hide()
         self.setTextMargins(0, 0, 28, 0)
         self._position_clear_button()
+        self._position_missing_indicator()
         self._update_clear_button(self.text())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_clear_button()
+        self._position_missing_indicator()
+
+    def set_missing_indicator(self, visible: bool, tooltip: str = "") -> None:
+        self.missing_indicator.setToolTip(tooltip)
+        self.missing_indicator.setVisible(bool(visible))
+        if visible:
+            self._position_missing_indicator()
+            self.missing_indicator.raise_()
 
     def _position_clear_button(self) -> None:
         button = self.clear_button
@@ -186,6 +204,9 @@ class ClearButtonLineEdit(QLineEdit):
             max(0, self.width() - button.width() - 5),
             max(0, (self.height() - button.height()) // 2),
         )
+
+    def _position_missing_indicator(self) -> None:
+        self.missing_indicator.move(max(0, self.width() - 12), 4)
 
     def _update_clear_button(self, text: str) -> None:
         self.clear_button.setVisible(bool(text))
