@@ -5,9 +5,10 @@ Icons are simple vector paths rendered at runtime; no font or external assets.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QProxyStyle, QStyle
 
 
 ICON_PATHS: dict[str, str] = {
@@ -36,6 +37,55 @@ ICON_PATHS: dict[str, str] = {
 }
 
 
+class CheckmarkOnlyIndicatorStyle(QProxyStyle):
+    """Draw a transparent checkbox with an outline and a separate checkmark."""
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element != QStyle.PrimitiveElement.PE_IndicatorCheckBox:
+            return super().drawPrimitive(element, option, painter, widget)
+
+        state = option.state
+        enabled = bool(state & QStyle.StateFlag.State_Enabled)
+        checked = bool(state & QStyle.StateFlag.State_On)
+        hovered = bool(state & QStyle.StateFlag.State_MouseOver)
+        outline_color = QColor("#aaa3b1" if hovered else "#77717d")
+        check_color = QColor("#ffffff")
+        if not enabled:
+            outline_color.setAlpha(115)
+            check_color.setAlpha(115)
+
+        rect = QRectF(option.rect).adjusted(1.5, 1.5, -1.5, -1.5)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(
+            outline_color, 1.25, Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin,
+        ))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 2.5, 2.5)
+
+        if checked:
+            painter.setPen(QPen(
+                check_color, 1.6, Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin,
+            ))
+            check = QPainterPath()
+            check.moveTo(rect.left() + 2.0, rect.center().y())
+            check.lineTo(rect.left() + 4.2, rect.bottom() - 2.1)
+            check.lineTo(rect.right() - 1.8, rect.top() + 2.1)
+            painter.drawPath(check)
+        painter.restore()
+
+
+def install_checkmark_only_indicator(widget) -> None:
+    """Apply the check-only painting to one checkbox without changing state."""
+    style = CheckmarkOnlyIndicatorStyle()
+    style.setParent(widget)
+    widget.setStyle(style)
+    widget._checkmark_only_indicator_style = style
+    widget.setProperty("checkmarkOnlyIndicator", True)
+
+
 def themed_icon(name: str, color: str = "#bcb5c0", size: int = 18) -> QIcon:
     paths = ICON_PATHS.get(name, ICON_PATHS["settings"])
     markup = (
@@ -57,6 +107,7 @@ def themed_icon(name: str, color: str = "#bcb5c0", size: int = 18) -> QIcon:
 MAIN_THEME = """
 QMainWindow#tradingHelperMain {
     background-color: #0b111b;
+    border: 1px solid #39373f;
     color: #e3edfa;
     font-family: "Segoe UI", "Microsoft JhengHei UI", sans-serif;
     font-size: 12px;
@@ -477,6 +528,182 @@ QToolTip {
     color: #e4dfe8;
     background: #27252a;
     border: 1px solid #514757;
+}
+"""
+
+DIALOG_THEME = """
+QDialog {
+    background: #101014;
+    color: #eae8f0;
+    font-family: "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+    font-size: 12px;
+}
+QDialog[appDialogChrome="true"] {
+    border: 1px solid #36343d;
+    border-radius: 6px;
+}
+QDialog QWidget { color: #d8d5df; }
+QDialog QLabel#messageIcon {
+    background: #282631;
+    border: 1px solid #413d4b;
+    border-radius: 15px;
+    color: #e7e1ef;
+    font-size: 18px;
+    font-weight: 700;
+}
+QDialog QLabel#messageIcon[severity="question"] {
+    background: #263343;
+    border-color: #3a5879;
+    color: #b9d8ff;
+}
+QDialog QLabel#messageIcon[severity="information"] {
+    background: #28313a;
+    border-color: #3d596b;
+    color: #b9e1f1;
+}
+QDialog QLabel#messageIcon[severity="warning"] {
+    background: #3a3024;
+    border-color: #6a5636;
+    color: #f2d08d;
+}
+QDialog QLabel#messageIcon[severity="critical"] {
+    background: #3b292b;
+    border-color: #704246;
+    color: #ffb8bc;
+}
+QDialog QLabel#messagePrimaryText {
+    color: #eeeaf3;
+    font-size: 12px;
+    font-weight: 600;
+}
+QDialog QLabel#messageInformativeText {
+    color: #bcb7c4;
+    font-size: 11px;
+}
+QDialog QPushButton[messageRole="accept"] {
+    background: #302b3a;
+    border-color: #66577d;
+    color: #f0e8fa;
+}
+QDialog QFrame#compactTitleBar {
+    background: #0c0c10;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+QDialog QFrame#compactTitleBar QToolButton#chrome_minimize,
+QDialog QFrame#compactTitleBar QToolButton#chrome_maximize,
+QDialog QFrame#compactTitleBar QToolButton#chrome_close {
+    background: transparent;
+    color: #c9c4cd;
+    border: 0;
+    padding: 0px;
+    margin: 0px;
+    border-radius: 0;
+    min-width: 30px;
+    min-height: 30px;
+    max-width: 30px;
+    max-height: 30px;
+}
+QDialog QFrame#compactTitleBar QToolButton#chrome_minimize:hover,
+QDialog QFrame#compactTitleBar QToolButton#chrome_maximize:hover {
+    background: #1d1b25;
+}
+QDialog QFrame#compactTitleBar QToolButton#chrome_close:hover {
+    background: #38202a;
+}
+QDialog QLabel#dialogTitle {
+    color: #f1eff5;
+    font-size: 13px;
+    font-weight: 600;
+}
+QDialog QLineEdit, QDialog QComboBox, QDialog QPlainTextEdit,
+QDialog QTextEdit, QDialog QTabWidget::pane, QDialog QScrollArea {
+    color: #e7e3ed;
+    background: #111116;
+    border: 1px solid #302e38;
+    border-radius: 6px;
+    selection-background-color: #5d4bd7;
+}
+QDialog QPushButton, QDialog QToolButton {
+    color: #dedbe5;
+    background: #1d1c24;
+    border: 1px solid #36343e;
+    border-radius: 7px;
+    min-height: 27px;
+    padding: 3px 10px;
+}
+QDialog QPushButton:hover, QDialog QToolButton:hover {
+    background: #292733;
+    border-color: #62568e;
+}
+QDialog QLineEdit#spreadsheetUrl QToolButton#lineEditClearButton {
+    background: transparent;
+    border: 0;
+    border-radius: 11px;
+    min-width: 22px;
+    min-height: 22px;
+    max-width: 22px;
+    max-height: 22px;
+    padding: 0;
+    margin: 0;
+}
+QDialog QLineEdit#spreadsheetUrl QToolButton#lineEditClearButton:hover {
+    background: #302d37;
+    border: 0;
+}
+QDialog QLineEdit#spreadsheetUrl QToolButton#lineEditClearButton:pressed {
+    background: #3a3543;
+}
+QDialog QTabBar::tab {
+    color: #c8c4d0;
+    background: #17161d;
+    border: 1px solid #302e38;
+    padding: 6px 11px;
+}
+QDialog QTabBar::tab:selected {
+    color: #ffffff;
+    background: #292536;
+    border-bottom-color: #8068ed;
+}
+QDialog QTabWidget#calibrationTabs::pane {
+    border: none;
+    background: transparent;
+}
+QDialog QFrame#calibrationStageCard {
+    background: #111116;
+    border: 1px solid #302e38;
+    border-radius: 6px;
+}
+QDialog QCheckBox, QDialog QRadioButton { spacing: 7px; }
+QDialog QLabel#ctraderOrderPanelCalibrationHint {
+    color: #c9b577;
+    padding: 3px 0;
+}
+QDialog QComboBox#calibratedPositionViewer,
+QDialog QComboBox#clearSelectedCalibration {
+    min-height: 28px;
+    padding: 2px 24px 2px 8px;
+}
+QDialog QComboBox#calibratedPositionViewer::drop-down,
+QDialog QComboBox#clearSelectedCalibration::drop-down {
+    width: 22px;
+    border: none;
+    background: transparent;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+}
+QDialog QComboBox#calibratedPositionViewer::down-arrow,
+QDialog QComboBox#clearSelectedCalibration::down-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
+    border: none;
+}
+QDialog QComboBox#calibratedPositionViewer QAbstractItemView {
+    background: #111116;
+    color: #e7e3ed;
+    border: 1px solid #4a4750;
+    selection-background-color: #5d4bd7;
 }
 """
 

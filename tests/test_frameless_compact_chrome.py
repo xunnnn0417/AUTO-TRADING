@@ -6,8 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QPushButton, QCheckBox
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication, QPushButton, QCheckBox, QToolButton
 from trading_helper import gui
 from trading_helper.window_chrome import CompactTitleBar, WindowChromeButton, edge_hit_test
 
@@ -34,6 +35,7 @@ class FramelessHeaderTests(unittest.TestCase):
     def setUp(self):
         tmp=tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.temp_dir=Path(tmp.name)
         config=Path(tmp.name)/"config.json"
         profiles=Path(tmp.name)/"profiles.json"
         config_type=gui.ConfigStore
@@ -58,8 +60,8 @@ class FramelessHeaderTests(unittest.TestCase):
         self.assertIsInstance(w.title_bar,CompactTitleBar)
         self.assertEqual(w.title_bar.height(),39)
         # Compact trade page must fit the ruler with reduced empty footer.
-        self.assertEqual(w.minimumHeight(),630)
-        self.assertGreaterEqual(w.height(),630)
+        self.assertEqual(w.minimumHeight(),660)
+        self.assertGreaterEqual(w.height(),660)
         self.assertLessEqual(w.width(),1150)
         for role in ("minimize","maximize","close"):
             button=getattr(w,"chrome_"+role)
@@ -92,6 +94,7 @@ class FramelessHeaderTests(unittest.TestCase):
         w.chrome_maximize.click()
         self.app.processEvents()
         self.assertFalse(w.isMaximized())
+        self.assertEqual(w.geometry(),normal)
         w.chrome_minimize.click()
         self.app.processEvents()
         self.assertTrue(w.isMinimized())
@@ -100,6 +103,146 @@ class FramelessHeaderTests(unittest.TestCase):
         self.assertFalse(w.isMinimized())
         self.assertFalse(w.isMaximized())
         self.assertTrue(w.isVisible())
+
+    def test_message_box_uses_shared_titlebar_and_surface(self):
+        box=gui.QMessageBox(self.w)
+        box.setWindowTitle("校準提醒")
+        box.setIcon(gui.QMessageBox.Warning)
+        box.setText("請確認平台視窗。")
+        title=box.findChild(gui.QLabel,"dialogTitle")
+        icon=box.findChild(gui.QLabel,"messageIcon")
+        self.assertIsNotNone(title)
+        self.assertEqual(title.text(),"校準提醒")
+        self.assertEqual(icon.property("severity"),"warning")
+        self.assertIsNotNone(box.findChild(gui.QFrame,"compactTitleBar"))
+        self.assertIsNotNone(box.findChild(WindowChromeButton,"chrome_close"))
+        self.assertIsNone(box.findChild(WindowChromeButton,"chrome_minimize"))
+        self.assertIsNone(box.findChild(WindowChromeButton,"chrome_maximize"))
+        self.assertIn("#101014",box.styleSheet())
+        box.close()
+
+    def test_settings_dialog_matches_calibration_chrome_and_hides_fixed_options(self):
+        dialog=gui.SettingsDialog(self.w)
+        dialog.show()
+        self.app.processEvents()
+        tabs=dialog.findChild(gui.QTabWidget,"settingsTabs")
+        self.assertEqual(tabs.count(),2)
+        self.assertEqual(
+            [tabs.tabText(i) for i in range(tabs.count())],
+            ["Google 試算表","預設設定"],
+        )
+        self.assertEqual(dialog.windowTitle(),"試算表設定")
+        title_label=dialog.findChild(gui.QLabel,"dialogTitle")
+        self.assertIsNotNone(title_label)
+        self.assertEqual(title_label.text(),"試算表設定")
+        dialog.setWindowTitle("更新標題測試")
+        self.assertEqual(title_label.text(),"更新標題測試")
+        dialog.setWindowTitle("試算表設定")
+        self.assertIsNotNone(dialog.findChild(WindowChromeButton,"chrome_close"))
+        self.assertIsNone(dialog.findChild(WindowChromeButton,"chrome_minimize"))
+        self.assertIsNone(dialog.findChild(WindowChromeButton,"chrome_maximize"))
+        self.assertFalse(dialog.windowFlags() & Qt.WindowMinimizeButtonHint)
+        self.assertNotIn("mode",dialog.sheet_fields)
+        self.assertNotIn("data_layout",dialog.sheet_fields)
+        self.assertNotIn("worksheet",dialog.sheet_fields)
+        self.assertNotIn("gid",dialog.sheet_fields)
+        self.assertNotIn("row_number",dialog.sheet_fields)
+        self.assertNotIn("status_value",dialog.sheet_fields)
+        self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"sheetColumnsDefaults"))
+        self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"windowDefaults"))
+        self.assertIsNotNone(dialog.findChild(gui.QGroupBox,"ctraderSlTpDefaults"))
+        self.assertTrue(dialog.sheet_setup_badge.isVisible())
+        url=dialog.sheet_fields["spreadsheet_url"]
+        clear_button=url.findChild(QToolButton,"lineEditClearButton")
+        self.assertIsNotNone(clear_button)
+        self.assertFalse(clear_button.isVisible())
+        url.setText("https://docs.google.com/spreadsheets/d/example")
+        self.app.processEvents()
+        self.assertTrue(clear_button.isVisible())
+        self.assertLessEqual(
+            abs(clear_button.y() * 2 + clear_button.height() - url.height()), 1
+        )
+        image = QImage(clear_button.size(), QImage.Format_ARGB32_Premultiplied)
+        image.fill(Qt.transparent)
+        clear_button.render(image)
+        drawn = [
+            (x, y)
+            for y in range(image.height())
+            for x in range(image.width())
+            if image.pixelColor(x, y).alpha() > 0
+        ]
+        self.assertTrue(drawn)
+        self.assertLessEqual(
+            abs(min(x for x, _ in drawn) + max(x for x, _ in drawn)
+                - (image.width() - 1)),
+            2,
+        )
+        self.assertLessEqual(
+            abs(min(y for _, y in drawn) + max(y for _, y in drawn)
+                - (image.height() - 1)),
+            2,
+        )
+        clear_button.click()
+        self.assertEqual(url.text(),"")
+        self.assertFalse(clear_button.isVisible())
+        url.setText(
+            "https://docs.google.com/spreadsheets/d/example/edit#gid=11111111"
+        )
+        self.assertIn("11111111",dialog.gid_preview.text())
+        key_file=self.temp_dir/"service-account.json"
+        key_file.write_text(
+            '{"client_email":"synthetic-service@example.invalid"}',
+            encoding="utf-8",
+        )
+        dialog.sheet_fields["service_account_file"].setText(str(key_file))
+        self.assertIn(
+            "synthetic-service@example.invalid",
+            dialog.credential_email.text(),
+        )
+        self.assertFalse(dialog.sheet_setup_badge.isVisible())
+        dialog.close()
+
+    def test_service_account_picker_uses_shared_popup_chrome(self):
+        settings=gui.SettingsDialog(self.w)
+        dialog,picker=settings._create_service_account_file_dialog()
+        self.assertTrue(dialog.windowFlags() & Qt.FramelessWindowHint)
+        self.assertEqual(dialog.windowTitle(),"選擇服務帳戶 JSON")
+        self.assertIsNotNone(dialog.findChild(gui.QLabel,"dialogTitle"))
+        self.assertIsNotNone(dialog.findChild(WindowChromeButton,"chrome_close"))
+        self.assertTrue(picker.testOption(gui.QFileDialog.DontUseNativeDialog))
+        self.assertFalse(picker.isWindow())
+        self.assertIs(picker.parentWidget(),dialog)
+        dialog.close()
+        dialog.deleteLater()
+        settings.close()
+
+    def test_open_calibration_hides_main_and_restores_its_geometry(self):
+        w=self.w
+        original=w.geometry()
+        dialog_class=gui.CalibrationDialog
+        opened=[]
+
+        def create_dialog(parent,platform):
+            self.assertTrue(parent.isHidden())
+            self.assertEqual(platform,"MT5")
+            dialog=dialog_class(parent,platform)
+            opened.append(dialog)
+            def finish():
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(parent.isHidden())
+                dialog.accept()
+            QTimer.singleShot(0,finish)
+            return dialog
+
+        with patch.object(gui,"CalibrationDialog",side_effect=create_dialog):
+            w.open_calibration("MT5")
+        self.app.processEvents()
+        self.assertTrue(w.isVisible())
+        self.assertFalse(w.isMinimized())
+        self.assertEqual(w.geometry(),original)
+        self.assertFalse(w._calibration_dialog_active)
+        self.assertEqual(len(opened),1)
+        opened[0]._hover_outline.close()
 
     def test_always_on_top_does_not_replace_frameless_chrome(self):
         w=self.w
@@ -131,3 +274,4 @@ class FramelessHeaderTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+

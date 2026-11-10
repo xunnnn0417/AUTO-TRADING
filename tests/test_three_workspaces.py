@@ -97,6 +97,23 @@ class ThreeWorkspaceTests(unittest.TestCase):
             {"editSheetGroup","editWindowGroup","editCalibrationGroup","editManualEntryGroup"}
         )
 
+    def test_new_profile_shows_sheet_and_binding_red_dots(self):
+        w=self.win
+        w.save_ui_state()
+        w.profiles.create("空白新方案",w.store.data)
+        w.store.data=w.profiles.load_profile("空白新方案")
+        w.store.save()
+        w._apply_profile_ui()
+        self.page("編輯")
+        w._refresh_calibration_badges()
+        badges=w._calibration_badge_labels
+        for label in ("試算表設定","綁定場內視窗","綁定場外視窗"):
+            with self.subTest(label=label):
+                self.assertTrue(badges[w.action_buttons[label]].isVisible())
+        self.assertEqual(w.store.data["sheet"]["spreadsheet_url"],"")
+        self.assertFalse(w.store.data["platforms"]["cTrader"]["window_bound"]["internal"])
+        self.assertFalse(w.store.data["platforms"]["MT5"]["window_bound"]["external"])
+
     def test_records_page_reuses_original_log_and_pnl_button(self):
         self.page("紀錄")
         w=self.win
@@ -135,14 +152,19 @@ class ThreeWorkspaceTests(unittest.TestCase):
         w=self.win
         self.page("紀錄")
         self.assertLessEqual(w.daily_pnl_history_button.width(),145)
-        self.assertGreaterEqual(w.log_text.minimumHeight(),140)
-        self.assertLessEqual(w.log_text.maximumHeight(),166)
+        self.assertGreaterEqual(w.log_text.minimumHeight(),150)
+        self.assertLessEqual(
+            w.activity_log_box.maximumHeight(),
+            round(w.records_page.height() / 2) + 4,
+        )
         # History is preserved as a callable feature but hidden until redesign.
         self.assertFalse(w.daily_pnl_history_button.isVisible())
         self.assertTrue(callable(w.show_daily_pnl_history))
         log_box=w.records_page.findChild(QGroupBox,"activityCard")
-        self.assertLessEqual(log_box.height(),235)
-        self.assertGreaterEqual(log_box.height(),160)
+        self.assertLessEqual(
+            log_box.maximumHeight(),
+            round(w.records_page.height() / 2) + 4,
+        )
 
     def test_trade_two_column_geometry_preserves_all_existing_values(self):
         from PySide6.QtCore import QPoint
@@ -157,6 +179,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
             return (p.x(),p.y(),widget.width(),widget.height())
 
         info=w.trade_page.findChild(QGroupBox,"dataCard")
+        self.assertGreaterEqual(info.minimumHeight(),320)
         params=w.trade_page.findChild(QGroupBox,"parameterCard")
         actions=w.trade_page.findChild(QGroupBox,"actionsCard")
         manual=w.trade_page.findChild(QGroupBox,"afterEntryCard")
@@ -229,6 +252,20 @@ class ThreeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(abs(pos(heading).y()-pos(w.reload_sheet_button).y()),12)
                 self.assertGreater(w.internal_platform.width(),150)
                 self.assertGreater(w.external_platform.width(),150)
+                self.assertEqual(
+                    w.test_mode_checkbox.parentWidget(),
+                    w.auto_draw_tv_after_entry.parentWidget(),
+                )
+                self.assertEqual(set(w.test_asset_checkboxes), {"BTCUSD", "ETHUSD"})
+                self.assertEqual(len(w.test_scenario_checkboxes), 4)
+                for choice in (
+                    *w.test_asset_checkboxes.values(),
+                    *w.test_scenario_checkboxes.values(),
+                ):
+                    self.assertEqual(
+                        choice.parentWidget(),
+                        w.auto_draw_tv_after_entry.parentWidget(),
+                    )
                 summary=w.trade_page.findChildren(QWidget,"centeredSummaryCell")
                 self.assertEqual(len(summary),3)
                 self.assertLess(pos(platform_row).y(),pos(summary[0]).y())

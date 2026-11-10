@@ -19,8 +19,8 @@ class CalibrationInspectorSmokeTests(unittest.TestCase):
         buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
         self.assertNotIn("測試 UIA 自動辨識", buttons)
         self.assertNotIn("滑鼠指向檢查＋框線預覽", buttons)
-        self.assertIn("自動尋找此階段欄位（唯讀）", buttons)
-        self.assertIn("手動擷取所選欄位", buttons)
+        self.assertIn("自動尋找欄位", buttons)
+        self.assertNotIn("手動擷取所選欄位", buttons)
         self.assertFalse(dialog._inspection_running)
         self.assertTrue(callable(dialog.inspect_fields))
         self.assertTrue(callable(dialog.inspect_hover))

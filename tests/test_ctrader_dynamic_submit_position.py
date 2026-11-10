@@ -46,6 +46,12 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
                         window_height=1038)
         self.profile={"points":{"order_submit_button":self.point}}
         self.automation=MagicMock()
+        self.automation._last_verified_fills={
+            ("cTrader","internal"):{
+                "direction":"BUY", "symbol":"GOLD",
+                "values":{"lot_input":0.16,"sl_input":-527,"tp_input":3378},
+            }
+        }
         self.automation.windows.screen_point.side_effect=(
             lambda w,p:(w.left+p["x_px"],w.top+p["y_px"])
         )
@@ -56,17 +62,21 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
             )
         )
         self.port=DemoUiBrokerPort(self.automation,lambda message:None)
+        self.port.set_expected_symbol("GOLD")
         self.port.inspect_account=MagicMock()
         self.port.verify_order_form=MagicMock()
         self.port._form_window=MagicMock(return_value=(self.profile,self.win))
         self.buttons=[FakeNativeButton()]
 
-    def submit(self):
+    def submit(self,submit_deadline=None):
         desktop=SimpleNamespace(window=lambda handle:SimpleNamespace(
-            descendants=lambda **kwargs:list(self.buttons)
+            descendants=lambda control_type=None:list(self.buttons)
         ))
         with patch("pywinauto.Desktop",return_value=desktop):
-            self.port.submit_once("cTrader","internal","BUY",0.16,"key")
+            self.port.submit_once(
+                "cTrader","internal","BUY",0.16,"key",
+                submit_deadline=submit_deadline,
+            )
 
     def test_132_pixel_vertical_shift_targets_unique_real_button(self):
         self.submit()
@@ -105,6 +115,19 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
             self.submit()
         self.automation.windows.click.assert_not_called()
 
+    def test_expired_recovery_deadline_is_checked_after_final_readback(self):
+        with patch(
+            "trading_helper.demo_broker_port.time.monotonic",
+            return_value=10.0,
+        ):
+            with self.assertRaisesRegex(AutomationError,"未點擊送單鍵"):
+                self.submit(submit_deadline=9.0)
+        self.port.verify_order_form.assert_called_once()
+        self.automation.windows.click.assert_not_called()
+        self.assertIn(
+            "deadline_expired",self.port.submit_phase_timings["internal"]
+        )
+
     def test_multiple_buttons_never_clicks(self):
         self.buttons=[FakeNativeButton(),FakeNativeButton()]
         with self.assertRaisesRegex(AutomationError,"唯一"):
@@ -113,8 +136,7 @@ class DynamicCTraderPlaceOrderTests(unittest.TestCase):
 
     def test_no_button_never_clicks(self):
         self.buttons=[]
-        # Empty fresh UIA inventory is rejected before button matching.
-        with self.assertRaisesRegex(AutomationError,"UIA 控制項清單"):
+        with self.assertRaisesRegex(AutomationError,"UIA"):
             self.submit()
         self.automation.windows.click.assert_not_called()
 

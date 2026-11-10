@@ -64,7 +64,7 @@ class ProfileStoreTests(unittest.TestCase):
 
         store.create("第二方案", second)
         self.assertEqual(store.active_name, "第二方案")
-        self.assertEqual(store.load_profile()["sheet"]["gid"], "123")
+        self.assertEqual(store.load_profile()["sheet"]["gid"], "")
 
         store.rename("第二方案", "新名稱")
         self.assertEqual(store.active_name, "新名稱")
@@ -94,8 +94,68 @@ class ProfileStoreTests(unittest.TestCase):
         for key in all_auto:
             self.assertFalse(store_again.load_profile("新方案")["ui"][key])
             self.assertTrue(store_again.load_profile(old_name)["ui"][key])
-        # Unrelated new scheme settings still carry across.
-        self.assertEqual(new_scheme["sheet"],old_scheme["sheet"])
+        # The sheet columns and credentials carry across, but the URL/GID do not.
+        self.assertEqual(new_scheme["sheet"]["spreadsheet_url"], "")
+        self.assertEqual(new_scheme["sheet"]["gid"], "")
+        self.assertEqual(new_scheme["sheet"]["mode"], "service_account")
+        self.assertEqual(new_scheme["sheet"]["data_layout"], "cells")
+        self.assertEqual(
+            new_scheme["sheet"]["columns"], old_scheme["sheet"]["columns"]
+        )
+
+    def test_new_scheme_clears_window_bindings_but_keeps_calibration_points(self):
+        existing=deepcopy(self.config)
+        existing["sheet"]["service_account_file"] = "credential-for-test.json"
+        existing["sheet"]["gid"] = "11111111"
+        existing["platforms"]["cTrader"]["account_number"] = {
+            "internal": "TEST_ACCOUNT", "external": "TEST_ACCOUNT",
+        }
+        for platform, platform_config in existing["platforms"].items():
+            platform_config.setdefault("window_title", {})["internal"] = (
+                f"{platform} internal window"
+            )
+            platform_config["window_title"]["external"] = (
+                f"{platform} external window"
+            )
+        existing["platforms"]["cTrader"].setdefault("points", {})[
+            "lot_input"
+        ] = {"x": 0.25, "y": 0.75, "window_width": 1938, "window_height": 1038}
+        store=ProfileStore(existing,self.path)
+        store.save_profile("預設方案", existing)
+
+        store.create("新方案", store.load_profile("預設方案"))
+
+        new_scheme=store.load_profile("新方案")
+        old_scheme=store.load_profile("預設方案")
+        for platform_config in new_scheme["platforms"].values():
+            self.assertEqual(platform_config["window_title"]["internal"], "")
+            self.assertEqual(platform_config["window_title"]["external"], "")
+            self.assertEqual(
+                platform_config["window_bound"],
+                {"internal": False, "external": False},
+            )
+        self.assertEqual(new_scheme["sheet"]["spreadsheet_url"], "")
+        self.assertEqual(new_scheme["sheet"]["gid"], "")
+        self.assertEqual(
+            new_scheme["sheet"]["service_account_file"],
+            "credential-for-test.json",
+        )
+        self.assertEqual(
+            new_scheme["platforms"]["cTrader"]["account_number"],
+            {"internal": "", "external": ""},
+        )
+        self.assertEqual(
+            new_scheme["platforms"]["cTrader"]["points"]["lot_input"],
+            {"x": 0.25, "y": 0.75, "window_width": 1938, "window_height": 1038},
+        )
+        self.assertEqual(
+            old_scheme["platforms"]["cTrader"]["window_title"]["internal"],
+            "cTrader internal window",
+        )
+        self.assertEqual(
+            old_scheme["platforms"]["cTrader"]["window_title"]["external"],
+            "cTrader external window",
+        )
 
     def test_profile_snapshots_are_independent(self):
         store = ProfileStore(self.config, self.path)
@@ -135,6 +195,94 @@ class ProfileStoreTests(unittest.TestCase):
             "原版MT5"
         ]["points"]["lot_input"]
         self.assertEqual(original_point["x"], 0.4)
+
+    def test_clear_calibration_point_only_clears_selected_key_across_aliases(self):
+        store = ProfileStore(self.config, self.path)
+        store.create("第二方案", store.load_profile())
+        store.sync_calibration_point(
+            "MT5", "lot_input", {"x": 0.4, "y": 0.6}
+        )
+        store.sync_calibration_point(
+            "MT5", "tp_input", {"x": 0.2, "y": 0.3}
+        )
+
+        store.clear_calibration_point("MT5", "lot_input")
+
+        for name in ("預設方案", "第二方案"):
+            profile = store.load_profile(name)["platforms"]
+            for platform in ("MT5", "BYBIT MT5", "原版MT5"):
+                self.assertNotIn("lot_input", profile[platform]["points"])
+                self.assertIn(
+                    "lot_input", profile[platform]["cleared_calibration_keys"]
+                )
+                self.assertIn("tp_input", profile[platform]["points"])
+
+    def test_clear_calibration_points_clears_only_one_platform_family(self):
+        store = ProfileStore(self.config, self.path)
+        store.create("第二方案", store.load_profile())
+        store.sync_calibration_point(
+            "MT5", "lot_input", {"x": 0.4, "y": 0.6}
+        )
+        store.sync_calibration_point(
+            "MT5", "tp_input", {"x": 0.2, "y": 0.3}
+        )
+        store.sync_calibration_point(
+            "cTrader", "lot_input", {"x": 0.3, "y": 0.5}
+        )
+
+        cleared = store.clear_calibration_points("MT5")
+
+        self.assertEqual(set(cleared), {"lot_input", "tp_input"})
+        for name in ("預設方案", "第二方案"):
+            platforms = store.load_profile(name)["platforms"]
+            for platform in ("MT5", "BYBIT MT5", "原版MT5"):
+                self.assertEqual(platforms[platform]["points"], {})
+                self.assertTrue(
+                    {"lot_input", "tp_input"}.issubset(
+                        platforms[platform]["cleared_calibration_keys"]
+                    )
+                )
+            self.assertIn(
+                "lot_input", platforms["cTrader"]["points"]
+            )
+
+    def test_clear_calibration_stage_clears_only_those_keys_across_profiles(self):
+        store = ProfileStore(self.config, self.path)
+        store.create("第二方案", store.load_profile())
+        store.sync_calibration_point(
+            "MT5", "position_order_lot", {"x": 0.4, "y": 0.6}
+        )
+        store.sync_calibration_point(
+            "MT5", "position_order_row", {"x": 0.2, "y": 0.3}
+        )
+        store.sync_calibration_point(
+            "MT5", "position_close_button", {"x": 0.7, "y": 0.4}
+        )
+        store.sync_calibration_point(
+            "MT5", "lot_input", {"x": 0.3, "y": 0.5}
+        )
+        store.sync_calibration_point(
+            "cTrader", "position_order_row", {"x": 0.6, "y": 0.7}
+        )
+
+        cleared = store.clear_calibration_stage(
+            "MT5",
+            ["position_order_lot", "position_order_row", "position_close_button"],
+        )
+
+        self.assertEqual(
+            set(cleared),
+            {"position_order_lot", "position_order_row", "position_close_button"},
+        )
+        for name in ("預設方案", "第二方案"):
+            platforms = store.load_profile(name)["platforms"]
+            for platform in ("MT5", "BYBIT MT5", "原版MT5"):
+                points = platforms[platform]["points"]
+                self.assertIn("lot_input", points)
+                self.assertNotIn("position_order_lot", points)
+                self.assertNotIn("position_order_row", points)
+                self.assertNotIn("position_close_button", points)
+            self.assertIn("position_order_row", platforms["cTrader"]["points"])
 
     def test_ctrader_calibration_syncs_to_gooeytrade(self):
         store = ProfileStore(self.config, self.path)
@@ -268,8 +416,8 @@ class ProfileStoreTests(unittest.TestCase):
             "platforms": {
                 "MT5": {
                     "window_title": {
-                        "internal": "7344549 - Bybit-Live",
-                        "external": "7344549 - Bybit-Live",
+                        "internal": "TEST_ACCOUNT - Example-Live",
+                        "external": "TEST_ACCOUNT - Example-Live",
                     },
                     "points": {"lot_input": {"x": 0.7, "y": 0.2}},
                     "open_panel_before_fill": True,

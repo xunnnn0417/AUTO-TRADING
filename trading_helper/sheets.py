@@ -48,6 +48,23 @@ def _a1_notation(row_index: int, column_index: int) -> str:
     return f"{letters}{row_index + 1}"
 
 
+def spreadsheet_gid_from_url(url: str) -> str:
+    """Read the selected worksheet ID from a Google Sheets URL, if present."""
+    try:
+        parsed = urllib.parse.urlsplit(str(url).strip())
+    except ValueError:
+        return ""
+    query_values = urllib.parse.parse_qs(parsed.query).get("gid", [])
+    fragment_values = urllib.parse.parse_qs(
+        parsed.fragment.lstrip("?#")
+    ).get("gid", [])
+    for value in (*query_values, *fragment_values):
+        candidate = str(value).strip()
+        if candidate.isdigit():
+            return candidate
+    return ""
+
+
 def _cell_or_literal(
     rows: list[list[str]], reference: object, *, allow_literal: bool
 ) -> tuple[object, int | None]:
@@ -70,9 +87,10 @@ def _csv_export_url(url: str, gid: str) -> str:
     match = re.search(r"/spreadsheets/d/([^/]+)", url)
     if not match:
         raise ValidationError("試算表網址不是有效的 Google 試算表網址。")
+    selected_gid = spreadsheet_gid_from_url(url) or str(gid).strip() or "0"
     return (
         f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export"
-        f"?format=csv&gid={urllib.parse.quote(str(gid))}"
+        f"?format=csv&gid={urllib.parse.quote(selected_gid)}"
     )
 
 
@@ -223,20 +241,33 @@ class SheetReader:
         credential_file = config.get("service_account_file", "").strip()
         if not credential_file:
             raise ValidationError("必須提供服務帳戶 JSON 檔案路徑。")
-        cache_key = (
-            credential_file,
-            str(config.get("spreadsheet_url", "")),
-            str(config.get("worksheet", "Sheet1")),
+        spreadsheet_url = str(config.get("spreadsheet_url", ""))
+        worksheet_name = str(config.get("worksheet", "Sheet1"))
+        gid = spreadsheet_gid_from_url(spreadsheet_url)
+        use_name_override = bool(config.get("_worksheet_name_override"))
+        target = (
+            ("name", worksheet_name) if use_name_override or not gid
+            else ("gid", gid)
         )
+        cache_key = (credential_file, spreadsheet_url, repr(target))
         cached = self._worksheet_cache.get(cache_key)
         if cached is not None:
             return cached
         try:
-            worksheet = self._run_gspread(
-                lambda: gspread.service_account(filename=credential_file)
-                .open_by_url(config["spreadsheet_url"])
-                .worksheet(config.get("worksheet", "Sheet1"))
-            )
+            def open_worksheet():
+                spreadsheet = gspread.service_account(
+                    filename=credential_file
+                ).open_by_url(spreadsheet_url)
+                if target[0] == "gid":
+                    worksheet = spreadsheet.get_worksheet_by_id(int(gid))
+                    if worksheet is None:
+                        raise ValidationError(
+                            f"網址中的工作表 GID {gid} 不存在。"
+                        )
+                    return worksheet
+                return spreadsheet.worksheet(worksheet_name)
+
+            worksheet = self._run_gspread(open_worksheet)
             self._worksheet_cache[cache_key] = worksheet
             return worksheet
         except Exception as exc:

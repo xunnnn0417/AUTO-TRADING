@@ -40,6 +40,8 @@ class CandidatePointTests(unittest.TestCase):
         self.assertEqual(point["window_height"],600)
         self.assertEqual(point["x"],.45)
         self.assertAlmostEqual(point["y"],.216667)
+        self.assertEqual(point["bounds_width"],90)
+        self.assertEqual(point["bounds_height"],20)
         self.assertEqual(point["window_title"],"cTrader")
 
     def test_second_popup_uses_its_own_window_coordinates(self):

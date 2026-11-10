@@ -55,7 +55,7 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.assertTrue(self.parent.auto_entry_on_fill_both.isChecked())
             self.assertEqual(self.parent.save_ui_state.call_count, 1)
             args = question.call_args.args
-            self.assertIn("兩個 Demo 帳戶", args[2])
+            self.assertIn("兩個已確認的 Demo 帳戶", args[2])
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.assertEqual(self.parent.save_ui_state.call_count, 2)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
@@ -186,7 +186,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         dialog.assert_not_called()
         fake.close()
 
-    def test_fast_pair_confirm_newlines_and_only_when_user_enables(self):
+    def test_fast_pair_confirmation_is_concise_and_only_when_user_enables(self):
         self.parent.auto_fast_pair=QCheckBox("快速雙邊")
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.parent.auto_fast_pair.toggled.connect(
@@ -205,15 +205,21 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.parent.auto_fast_pair.setChecked(True)
             self.assertTrue(self.parent.auto_fast_pair.isChecked())
             message=question.call_args.args[2]
-            self.assertIn("\n\n",message)
+            self.assertIn("可能單邊成交",message)
+            self.assertIn("不會自動重試、補單或平倉",message)
             self.assertNotIn(chr(92)+"n",message)
+            self.assertEqual(question.call_args.kwargs["yes_text"],"啟用")
+            self.assertEqual(question.call_args.kwargs["no_text"],"取消")
             question.assert_called_once()
         self.parent.auto_fast_pair.close()
 
     def test_records_log_room_and_no_per_fill_confirmation(self):
         source=inspect.getsource(TradingHelperApp._build)
-        self.assertIn("self.log_text.setMinimumHeight(140)",source)
-        self.assertIn("log_box.setMaximumHeight(235)",source)
+        self.assertIn("self.log_text.setMinimumHeight(150)",source)
+        self.assertIn("record_layout.addWidget(log_box, 0, Qt.AlignTop)",source)
+        resize_source=inspect.getsource(TradingHelperApp._update_activity_log_height)
+        self.assertIn("available / 2",resize_source)
+        self.assertIn("box.setMaximumHeight(maximum)",resize_source)
         fill_source=inspect.getsource(TradingHelperApp._start_fill_worker)
         self.assertNotIn("QMessageBox.question",fill_source)
 

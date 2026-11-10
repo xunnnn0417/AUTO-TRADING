@@ -15,11 +15,11 @@ DEFAULT_PROFILE_NAME = "\u9810\u8a2d\u65b9\u6848"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "sheet": {
-        "mode": "csv",
+        "mode": "service_account",
         "data_layout": "cells",
         "spreadsheet_url": "",
         "worksheet": "Sheet1",
-        "gid": "0",
+        "gid": "",
         "service_account_file": "",
         "row_number": 2,
         "status_value": "",
@@ -334,6 +334,32 @@ class ProfileStore:
     def create(self, name: str, config: dict[str, Any]) -> None:
         self._validate_new_name(name)
         fresh = deepcopy(config)
+        # A new plan must not silently keep reading or writing the previous
+        # spreadsheet copy. Keep its column map and service-account setup,
+        # since those are shared defaults, but require a fresh URL/GID.
+        sheet = fresh.setdefault("sheet", {})
+        sheet["spreadsheet_url"] = ""
+        sheet["gid"] = ""
+        sheet["mode"] = "service_account"
+        sheet["data_layout"] = "cells"
+        # A new scheme keeps its calibration values but must bind both roles
+        # again, so it cannot silently operate on the previous scheme's
+        # internal or external terminal.
+        for platform_config in fresh.get("platforms", {}).values():
+            titles = platform_config.get("window_title")
+            if not isinstance(titles, dict):
+                titles = {}
+                platform_config["window_title"] = titles
+            titles["internal"] = ""
+            titles["external"] = ""
+            platform_config["window_bound"] = {
+                "internal": False,
+                "external": False,
+            }
+            accounts = platform_config.get("account_number")
+            if isinstance(accounts, dict):
+                accounts["internal"] = ""
+                accounts["external"] = ""
         # A brand new scheme inherits the non-trading configuration, but
         # NEVER inherits authorization/preferences for automated trading.
         # Existing schemes keep their own previously selected toggles.
@@ -433,6 +459,106 @@ class ProfileStore:
                         item for item in cleared if item != point_name
                     ]
         self.save()
+
+    def clear_calibration_point(self, platform: str, point_name: str) -> None:
+        """Clear one calibration key everywhere its platform is aliased."""
+        target_platforms = (
+            ("cTrader", "GooeyTrade")
+            if platform in {"GooeyTrade", "cTrader"}
+            else ("MT5", "BYBIT MT5", "原版MT5")
+            if platform in {"MT5", "BYBIT MT5", "原版MT5"}
+            else (platform,)
+        )
+        for config in self.data["profiles"].values():
+            platforms = config.setdefault("platforms", {})
+            for target_platform in target_platforms:
+                platform_config = platforms.setdefault(
+                    target_platform,
+                    deepcopy(
+                        DEFAULT_CONFIG["platforms"].get(
+                            target_platform, DEFAULT_CONFIG["platforms"]["MT5"]
+                        )
+                    ),
+                )
+                platform_config.setdefault("points", {}).pop(point_name, None)
+                cleared = set(platform_config.get("cleared_calibration_keys", ()))
+                cleared.add(point_name)
+                platform_config["cleared_calibration_keys"] = sorted(cleared)
+        self.save()
+
+    def clear_calibration_points(self, platform: str) -> tuple[str, ...]:
+        """Clear every calibration point for one platform family in all profiles."""
+        target_platforms = (
+            ("cTrader", "GooeyTrade")
+            if platform in {"GooeyTrade", "cTrader"}
+            else ("MT5", "BYBIT MT5", "原版MT5")
+            if platform in {"MT5", "BYBIT MT5", "原版MT5"}
+            else (platform,)
+        )
+        point_names = {
+            point_name
+            for config in self.data["profiles"].values()
+            for target_platform in target_platforms
+            for point_name in config.get("platforms", {}).get(
+                target_platform, {}
+            ).get("points", {})
+        }
+        for config in self.data["profiles"].values():
+            platforms = config.setdefault("platforms", {})
+            for target_platform in target_platforms:
+                platform_config = platforms.setdefault(
+                    target_platform,
+                    deepcopy(
+                        DEFAULT_CONFIG["platforms"].get(
+                            target_platform, DEFAULT_CONFIG["platforms"]["MT5"]
+                        )
+                    ),
+                )
+                platform_config["points"] = {}
+                cleared = set(platform_config.get("cleared_calibration_keys", ()))
+                cleared.update(point_names)
+                platform_config["cleared_calibration_keys"] = sorted(cleared)
+        self.save()
+        return tuple(sorted(point_names))
+
+    def clear_calibration_stage(
+        self, platform: str, point_names: tuple[str, ...] | list[str],
+    ) -> tuple[str, ...]:
+        """Clear only the selected stage's keys across profiles and aliases."""
+        target_platforms = (
+            ("cTrader", "GooeyTrade")
+            if platform in {"GooeyTrade", "cTrader"}
+            else ("MT5", "BYBIT MT5", "原版MT5")
+            if platform in {"MT5", "BYBIT MT5", "原版MT5"}
+            else (platform,)
+        )
+        requested = tuple(dict.fromkeys(str(name) for name in point_names if name))
+        cleared: set[str] = set()
+        for config in self.data["profiles"].values():
+            platforms = config.setdefault("platforms", {})
+            for target_platform in target_platforms:
+                platform_config = platforms.setdefault(
+                    target_platform,
+                    deepcopy(
+                        DEFAULT_CONFIG["platforms"].get(
+                            target_platform, DEFAULT_CONFIG["platforms"]["MT5"]
+                        )
+                    ),
+                )
+                points = platform_config.setdefault("points", {})
+                explicitly_cleared = set(
+                    platform_config.get("cleared_calibration_keys", ())
+                )
+                for point_name in requested:
+                    if point_name in points:
+                        points.pop(point_name, None)
+                        cleared.add(point_name)
+                    explicitly_cleared.add(point_name)
+                platform_config["cleared_calibration_keys"] = sorted(
+                    explicitly_cleared
+                )
+        self.save()
+        return tuple(sorted(cleared))
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

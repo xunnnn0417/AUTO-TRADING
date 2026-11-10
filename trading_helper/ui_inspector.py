@@ -54,6 +54,35 @@ def valid_target_rectangle(
     )
 
 
+def select_control_rectangle(
+    candidates: list[tuple[str, tuple[int, int, int, int]]],
+    position: tuple[int, int],
+) -> tuple[tuple[int, int, int, int] | None, str]:
+    """Choose the smallest trustworthy semantic UIA control enclosing a point."""
+    semantic_types = (
+        "Button", "Edit", "ComboBox", "CheckBox", "RadioButton",
+        "TabItem", "Hyperlink", "Text",
+    )
+    valid = [
+        (control_type, rect)
+        for control_type, rect in candidates
+        if valid_target_rectangle(rect, position)
+        and rect[2] - rect[0] <= 600
+        and rect[3] - rect[1] <= 160
+    ]
+    for preferred_type in semantic_types:
+        matches = [item for item in valid if item[0] == preferred_type]
+        if matches:
+            control_type, rect = min(
+                matches,
+                key=lambda item: (
+                    (item[1][2] - item[1][0]) * (item[1][3] - item[1][1])
+                ),
+            )
+            return rect, control_type
+    return None, ""
+
+
 def _get_cursor() -> tuple[int, int]:
     point = wintypes.POINT()
     if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
@@ -99,31 +128,52 @@ def hover_snapshot(expected_process_id: int) -> HoverSnapshot:
     from pywinauto import Desktop
 
     element = Desktop(backend="uia").from_point(x, y)
-    info = element.element_info
-    rect = info.rectangle
-    bounds = int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
     parents: list[str] = []
     current = element
-    for _ in range(5):
+    chain = []
+    for depth in range(9):
         try:
+            info = current.element_info
+            rect = info.rectangle
+            bounds = int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+            control_type = str(info.control_type or "Unknown")
+            chain.append((current, info, control_type, bounds))
+            if depth:
+                parents.append(control_type)
+            if control_type == "Window":
+                break
             current = current.parent()
             if current is None:
                 break
-            parent_info = current.element_info
-            parents.append(str(parent_info.control_type or "Unknown"))
         except Exception:
             break
-    usable = valid_target_rectangle(bounds, position)
+    rectangle, selected_type = select_control_rectangle(
+        [(control_type, bounds) for _, _, control_type, bounds in chain],
+        position,
+    )
+    selected = next(
+        (
+            (control, info)
+            for control, info, control_type, bounds in chain
+            if rectangle is not None
+            and control_type == selected_type
+            and bounds == rectangle
+        ),
+        (element, element.element_info),
+    )
+    _, info = selected
     return HoverSnapshot(
         position=position,
-        rectangle=bounds if usable else None,
-        control_type=str(info.control_type or "Unknown"),
+        rectangle=rectangle,
+        control_type=selected_type or str(info.control_type or "Unknown"),
         name=safe_display_name(str(info.name or "")),
         automation_id=safe_display_name(str(info.automation_id or "")),
         class_name=safe_display_name(str(info.class_name or "")),
         ancestor_types=tuple(parents),
-        note=("已讀取游標處 UIA 元素；仍需要你確認黃色外框是否正確。"
-              if usable else "UIA 元素的框線位置無效；不會當作已找到欄位。"),
+        note=(
+            "已讀取游標所在 UIA 控制項及其上層；請核對黃色完整外框。"
+            if rectangle else "找不到可確認的完整 UIA 控制項外框；不會用小方框代替。"
+        ),
     )
 
 
@@ -246,4 +296,45 @@ class CandidateOutline(QWidget):
         painter.setBrush(QColor(255, 195, 0, 35))
         painter.setPen(QPen(QColor(255, 190, 0, 240), 4))
         painter.drawRect(QRect(2, 2, max(1, self.width() - 4), max(1, self.height() - 4)))
+        painter.end()
+
+
+class CandidatePointMarker(QWidget):
+    """Small click-through marker for a saved coordinate without UIA bounds."""
+
+    DIAMETER = 18
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def display(self, point: tuple[int, int], ms: int = 5500) -> None:
+        x, y = map(int, point)
+        radius = self.DIAMETER // 2
+        physical = (x - radius, y - radius, x + radius, y + radius)
+        self._timer.stop()
+        self.setGeometry(qt_rect_for_physical(physical))
+        self.show()
+        self.raise_()
+        self._timer.start(ms)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        outer = QRect(2, 2, max(1, self.width() - 4), max(1, self.height() - 4))
+        painter.setPen(QPen(QColor(8, 8, 12, 245), 1.5))
+        painter.setBrush(QColor(8, 8, 12, 225))
+        painter.drawEllipse(outer)
+        inner = outer.adjusted(2, 2, -2, -2)
+        painter.setPen(QPen(QColor(255, 232, 164, 245), 1))
+        painter.setBrush(QColor(255, 190, 0, 255))
+        painter.drawEllipse(inner)
         painter.end()

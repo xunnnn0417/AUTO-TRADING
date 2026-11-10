@@ -22,9 +22,13 @@ class CertifiedRejectionBroker(FakeBrokerPort):
         self.reliable=reliable
         self.submit_counts={"internal":0,"external":0}
         self.cert_override=None
-    def submit_once(self,platform,role,direction,lot,key):
+    def submit_once(
+        self,platform,role,direction,lot,key,submit_deadline=None
+    ):
         self.submit_counts[role]+=1
-        return super().submit_once(platform,role,direction,lot,key)
+        return super().submit_once(
+            platform,role,direction,lot,key,submit_deadline=submit_deadline
+        )
     def confirm_new_position(self,platform,role,before,direction,volume,account_id):
         if role==self.reject_role and self.submit_counts[role]==1:
             self.events.append(("confirm",role))
@@ -149,32 +153,105 @@ class IncidentDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app=QApplication.instance() or QApplication([])
-    def test_incident_buttons_are_manual_guidance_not_order_actions(self):
+    def test_incident_buttons_dispatch_the_user_selected_action(self):
         fake=SimpleNamespace(
             _auto_entry_receipt=None,
-            _explain_manual_incident_action=MagicMock(),
+            _start_user_approved_incident_action=MagicMock(),
         )
         report={"title":"結果不明","message":"只確認到場內持倉",
                 "single_confirmed_role":"internal",
-                "internal_platform":"cTrader","external_platform":"MT5"}
+                "internal_platform":"cTrader","external_platform":"MT5",
+                "incident_action_request":{"confirmed_role":"internal",
+                                            "confirmed_ticket":"T-01"}}
         TradingHelperApp._show_auto_entry_result(fake,report)
         box=fake._auto_entry_receipt
         try:
             first=box.findChild(QPushButton,"autoEntryIncidentCloseButton")
-            second=box.findChild(QPushButton,"autoEntryIncidentHedgeButton")
+            second=box.findChild(QPushButton,"autoEntryIncidentReentryButton")
             self.assertIsNotNone(first)
             self.assertIsNotNone(second)
             first.click()
             second.click()
-            self.assertEqual(fake._explain_manual_incident_action.call_count,2)
+            self.assertEqual(
+                fake._start_user_approved_incident_action.call_args_list[0].args,
+                ("close",report["incident_action_request"]),
+            )
+            self.assertEqual(
+                fake._start_user_approved_incident_action.call_args_list[1].args,
+                ("reenter",report["incident_action_request"]),
+            )
         finally: box.close()
+
+    def test_incident_without_verified_action_data_shows_no_active_buttons(self):
+        fake=SimpleNamespace(_auto_entry_receipt=None)
+        report={"title":"結果不明","message":"只確認到場內持倉",
+                "single_confirmed_role":"internal"}
+        TradingHelperApp._show_auto_entry_result(fake,report)
+        box=fake._auto_entry_receipt
+        try:
+            self.assertIsNone(
+                box.findChild(QPushButton,"autoEntryIncidentCloseButton")
+            )
+            self.assertIsNone(
+                box.findChild(QPushButton,"autoEntryIncidentReentryButton")
+            )
+        finally: box.close()
+
+    def test_selected_incident_action_starts_one_locked_recovery_task(self):
+        item=instruction()
+        fake=SimpleNamespace(
+            profiles=SimpleNamespace(active_name="exam"),
+            store=SimpleNamespace(data={"sheet":{"spreadsheet_url":"sheet"}}),
+            instruction=item,
+            internal_platform=SimpleNamespace(currentText=lambda:"cTrader"),
+            external_platform=SimpleNamespace(currentText=lambda:"MT5"),
+            test_asset_checkboxes={},test_scenario_checkboxes={},
+            _auto_entry_receipt=SimpleNamespace(close=MagicMock()),
+            _start=MagicMock(),
+        )
+        request={
+            "item":item,"profile_name":"exam","sheet_url":"sheet",
+            "internal_platform":"cTrader","external_platform":"MT5",
+            "confirmed_role":"internal","confirmed_ticket":"T-1",
+            "account_ids":{"internal":"111111","external":"222222"},
+            "symbol":item.symbol,
+        }
+        TradingHelperApp._start_user_approved_incident_action(
+            fake,"close",request
+        )
+        fake._auto_entry_receipt.close.assert_called_once_with()
+        self.assertEqual(fake._start.call_args.args[0],"異常後平倉")
+        self.assertTrue(fake._start.call_args.kwargs["restore_after"])
+
+    def test_incident_action_is_refused_after_profile_or_platform_changes(self):
+        item=instruction()
+        fake=SimpleNamespace(
+            profiles=SimpleNamespace(active_name="another-profile"),
+            store=SimpleNamespace(data={"sheet":{"spreadsheet_url":"sheet"}}),
+            instruction=item,
+            internal_platform=SimpleNamespace(currentText=lambda:"cTrader"),
+            external_platform=SimpleNamespace(currentText=lambda:"MT5"),
+            test_asset_checkboxes={},test_scenario_checkboxes={},
+        )
+        request={
+            "item":item,"profile_name":"exam","sheet_url":"sheet",
+            "internal_platform":"cTrader","external_platform":"MT5",
+            "confirmed_role":"internal","confirmed_ticket":"T-1",
+            "account_ids":{"internal":"111111","external":"222222"},
+            "symbol":item.symbol,
+        }
+        with patch("trading_helper.gui.QMessageBox.warning") as warning:
+            TradingHelperApp._start_user_approved_incident_action(
+                fake,"close",request
+            )
+        warning.assert_called_once()
     def test_completed_dual_trade_offers_no_unneeded_manual_actions(self):
         fake=SimpleNamespace(_auto_entry_receipt=None)
         TradingHelperApp._show_auto_entry_result(fake,{"title":"完成","message":"OK"})
         try:
             box=fake._auto_entry_receipt
             self.assertIsNone(box.findChild(QPushButton,"autoEntryIncidentCloseButton"))
-            self.assertIsNone(box.findChild(QPushButton,"autoEntryIncidentHedgeButton"))
+            self.assertIsNone(box.findChild(QPushButton,"autoEntryIncidentReentryButton"))
         finally:fake._auto_entry_receipt.close()
 
 if __name__=="__main__":unittest.main()

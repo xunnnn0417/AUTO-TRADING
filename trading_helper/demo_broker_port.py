@@ -9,11 +9,13 @@ and after the click; missing/multiple/unknown IDs fail closed.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
 
 from .auto_entry import DemoAccount, Position
+from .test_mode import effective_test_symbol
 from .windows import AutomationError, WindowInfo, WindowController
 
 
@@ -29,6 +31,25 @@ class DemoUiBrokerPort:
         self._ticket_role: dict[tuple[str, str], str] = {}
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
         self._expected_symbol: str | None = None
+        # Explicit, process-scoped LAB test override. It changes only which
+        # instrument the order window is checked against; all account,
+        # ownership, calibration, field-readback and submit guards remain.
+        requested_override = str(os.environ.get(
+            "TRADING_HELPER_TEST_SYMBOL_OVERRIDE", ""
+        )).strip().upper()
+        self._test_symbol_override = (
+            requested_override
+            if requested_override in {"BTCUSD", "ETHUSD"}
+            else ""
+        )
+        self._test_symbol_override_notice_logged = False
+        self._skip_symbol_check_for_test = (
+            self._test_symbol_override in {"BTCUSD", "ETHUSD"}
+            and str(os.environ.get(
+                "TRADING_HELPER_TEST_SKIP_SYMBOL_CHECK", ""
+            )).strip() == "1"
+        )
+        self._symbol_skip_notice_logged = False
         # Local performance telemetry only. No accounts, quantities or
         # trading data are logged; this never changes order-click behavior.
         self.submit_phase_timings: dict[str, dict[str, float]] = {}
@@ -66,14 +87,38 @@ class DemoUiBrokerPort:
         expected=self._expected_symbol
         if not expected:
             raise AutomationError("沒有可信的本次商品代碼，禁止送單。")
+        verification_symbol = expected
+        if self._test_symbol_override:
+            verification_symbol = self._test_symbol_override
+            if not self._test_symbol_override_notice_logged:
+                self.log(
+                    f"LAB 測試模式：本次訂單視窗商品依 "
+                    f"{verification_symbol} 核對，略過訊號商品 "
+                    f"{expected} 的一致性檢查。"
+                )
+                self._test_symbol_override_notice_logged = True
+        supported_test_platform = (
+            str(platform).strip().casefold() in {"mt5", "ctrader"}
+        )
+        if self._skip_symbol_check_for_test and supported_test_platform:
+            if not self._symbol_skip_notice_logged:
+                self.log(
+                    f"LAB {verification_symbol} 假日測試：暫時略過 MT5 與 cTrader "
+                    "下單視窗的商品名稱核對。完成測試後請關閉測試開關。"
+                )
+                self._symbol_skip_notice_logged = True
+            return
         # Instrument identity MUST match the actual order pane now open,
-        # not merely a chart seen earlier or the spreadsheet label.
+        # not merely a chart seen earlier or the spreadsheet label. A
+        # temporary LAB test override deliberately substitutes an explicit
+        # test ticker for the spreadsheet symbol, while still requiring the
+        # live order pane to match that ticker.
         if "MT5" in platform.upper():
             title=str(win.title or "").upper()
             accepted=(
-                ("XAUUSD",) if expected in ("GOLD","XAUUSD")
-                else ("XAGUSD",) if expected in ("SILVER","XAGUSD")
-                else (expected,)
+                ("XAUUSD",) if verification_symbol in ("GOLD","XAUUSD")
+                else ("XAGUSD",) if verification_symbol in ("SILVER","XAGUSD")
+                else (verification_symbol,)
             )
             if not any(
                 re.search(r"(?<![A-Z])"+re.escape(s)+r"(?![A-Z])",title)
@@ -90,11 +135,13 @@ class DemoUiBrokerPort:
             "XAGUSD":"Silver vs US Dollar",
             "SILVER":"Silver vs US Dollar",
             "EURUSD":"Euro vs US Dollar",
+            "BTCUSD":"Bitcoin vs US Dollar",
+            "ETHUSD":"Ethereum vs US Dollar",
         }
-        wanted=descriptions.get(expected)
+        wanted=descriptions.get(verification_symbol)
         if not wanted:
             raise AutomationError(
-                f"cTrader 尚未驗證 {expected} 商品描述欄位，拒絕送單。"
+                f"cTrader 尚未驗證 {verification_symbol} 商品描述欄位，拒絕送單。"
             )
         if _controls is None:
             info=Desktop(backend="uia").window(handle=win.handle)
@@ -103,8 +150,7 @@ class DemoUiBrokerPort:
             controls=_controls
         matches=[
             item for item in controls
-            if (_controls is None or
-                str(getattr(item.element_info,"control_type",""))=="Text")
+            if str(item.element_info.control_type)=="Text"
             and item.is_visible() and
             str(item.element_info.automation_id).endswith(
                 "SymbolQuickInfoTemplates__TextBlock_Description_AId"
@@ -135,9 +181,9 @@ class DemoUiBrokerPort:
         pattern=profile["window_title"][role]
         if (platform in ("cTrader", "GooeyTrade")
                 and isinstance(self.automation.windows, WindowController)):
-            # Real entrypoints share the same canonical calibrated main
-            # terminal finder as fill and post-entry work; fake adapters
-            # below retain compatibility with existing offline fixtures.
+            # Production entrypoints all share WindowController's
+            # calibrated MAIN HWND resolver. Fake adapters keep the older
+            # shape to preserve offline compatibility without OS windows.
             return profile,self.automation.windows.find_calibrated_main(
                 pattern,profile.get("points",{}).get("lot_input",{}),
                 platform=platform,
@@ -375,15 +421,28 @@ class DemoUiBrokerPort:
         for row in rows:
             rr=row.rectangle()
             children=row.descendants()
+            # cTrader's UIA rectangle call can be slow. Cache each child
+            # geometry once for this read instead of requesting the same
+            # rectangle again for every one of the seven position columns.
+            # Keep value reads and the per-column uniqueness checks fresh.
+            child_geometry=[]
+            for node in children:
+                try:
+                    child_geometry.append((
+                        node,
+                        str(node.element_info.control_type),
+                        node.rectangle(),
+                    ))
+                except Exception:
+                    continue
             values={}
             for name in required:
                 h=headers[name]
                 texts=[]
-                for node in children:
+                for node,control_type,rect in child_geometry:
                     try:
-                        rect=node.rectangle()
                         center=(rect.left+rect.right)//2
-                        if (str(node.element_info.control_type)=="Text"
+                        if (control_type=="Text"
                             and h.left<=center<=h.right
                             and rr.top<=rect.top and rect.bottom<=rr.bottom):
                             val=str(node.window_text()).strip()
@@ -620,8 +679,26 @@ class DemoUiBrokerPort:
         self, platform,role,direction,lot, *,
         _controls=None, _window=None
     ) -> None:
-        # Ordinary preflight still reads independent fresh broker evidence.
-        # Only the final cTrader pre-click path reuses its ONE new UIA tree.
+        verified_fills=getattr(self.automation,"_last_verified_fills",None)
+        expected_form=None
+        if isinstance(verified_fills,dict):
+            expected_form=verified_fills.get((platform,role))
+            expected_values=(
+                expected_form.get("values")
+                if isinstance(expected_form,dict) else None
+            )
+            if (not isinstance(expected_form,dict)
+                or expected_form.get("direction")!=direction
+                or str(expected_form.get("symbol","")).upper()!=
+                   str(self._expected_symbol or "").upper()
+                or not isinstance(expected_values,dict)
+                or expected_values.get("lot_input")!=lot):
+                raise AutomationError(
+                    f"{role} {platform} 沒有對應本次已核對的方向、商品與手數，"
+                    "禁止送單。"
+                )
+        # Normal preflight takes independent fresh inventories. Only the
+        # final cTrader pre-click path supplies one new shared inventory.
         if _controls is None:
             self.inspect_account(platform,role)
         else:
@@ -632,12 +709,17 @@ class DemoUiBrokerPort:
             self._form_window(platform,role) if _window is None
             else (self.automation.config["platforms"][platform],_window)
         )
-        self._verify_instrument(platform,role,win,_controls=_controls)
+        self._verify_instrument(
+            platform,role,win,_controls=_controls
+        )
         points=profile.get("points",{})
         try:
-            kwargs=({"_controls":_controls} if _controls is not None else {})
+            kwargs=(
+                {"_controls":_controls} if _controls is not None else {}
+            )
             snap=self.automation.windows.read_fill_snapshot(
-                win,points,ctrader="MT5" not in platform.upper(),**kwargs
+                win,points,ctrader="MT5" not in platform.upper(),
+                **kwargs
             )
             observed=self.automation._normalize_numeric_input(
                 snap["values"]["lot_input"],lot
@@ -648,31 +730,20 @@ class DemoUiBrokerPort:
             raise AutomationError(
                 f"{role} {platform} 手數被改動：預期 {lot}、實際 {observed}。"
             )
-        verified_fills=getattr(self.automation,"_last_verified_fills",None)
-        expected_form=None
-        if isinstance(verified_fills,dict):
-            # Production PlatformAutomation creates this dict. A missing
-            # value means this side was not freshly filled AND read back
-            # in this operation; block entry, even if nonzero SL/TP exist.
-            expected_form=verified_fills.get((platform,role))
-            if (not isinstance(expected_form,dict)
-                or expected_form.get("direction")!=direction
-                or str(expected_form.get("symbol","")).upper()!=
-                   str(self._expected_symbol or "").upper()
-                or not isinstance(expected_form.get("values"),dict)
-                or expected_form["values"].get("lot_input")!=lot):
-                raise AutomationError(
-                    f"{role} {platform} 沒有對應本次填入且核對成功的"
-                    "方向、商品與手數紀錄，禁止送單。"
-                )
         for key in ("sl_input","tp_input"):
             previous=(
-                expected_form["values"].get(key)
+                expected_values.get(key)
                 if expected_form is not None else None
             )
             number=self.automation._normalize_numeric_input(
-                snap["values"][key],previous
+                snap["values"][key], previous
             )
+            if expected_form is not None:
+                if not isinstance(previous,Decimal) or number!=previous:
+                    raise AutomationError(
+                        f"{role} {platform} {key} 在填入完成後被改動："
+                        f"本次核對值 {previous}、送單前 {number}；不送單。"
+                    )
             if ("MT5" in platform.upper() and number<=0) or (
                 "MT5" not in platform.upper() and number==0
             ):
@@ -681,14 +752,6 @@ class DemoUiBrokerPort:
                 raise AutomationError(
                     f"{role} {key} 沒有有效數值，禁止送單。"
                 )
-            if expected_form is not None and (
-                not isinstance(previous,Decimal)
-                or number!=previous
-            ):
-                raise AutomationError(
-                    f"{role} {platform} {key} 在填入完成後被改動："
-                    f"本次核對值 {previous}、送單前 {number}；不送單。"
-                )
         if "MT5" not in platform.upper():
             if snap["direction"]!=direction:
                 raise AutomationError("cTrader 買賣方向和試算表不一致。")
@@ -696,47 +759,66 @@ class DemoUiBrokerPort:
                        ("sl_checkbox","tp_checkbox")):
                 raise AutomationError("cTrader SL／TP 有未勾選項目。")
 
-    def submit_once(self,platform,role,direction,lot,key):
+    def submit_once(
+        self,platform,role,direction,lot,key,submit_deadline=None
+    ):
+        verified_fills=getattr(self.automation,"_last_verified_fills",None)
+        expected=(
+            verified_fills.get((platform,role))
+            if isinstance(verified_fills,dict) else None
+        )
+        if expected is None:
+            raise AutomationError(
+                f"{role} {platform} 缺少本次填值的完整讀回證據，禁止送單。"
+            )
         # Fresh verify_order_form already calls inspect_account internally.
         # Do not enumerate the same cTrader account controls a second time;
         # keep the independent FULL fresh pre-click form readback unchanged.
         timestamps={"start":time.perf_counter()}
+        # Store the live dict immediately so failures during UIA / image
+        # inspection still leave useful elapsed-time diagnostics.
+        self.submit_phase_timings[role]=timestamps
         controls=None
         if "MT5" not in platform.upper():
-            # One fresh post-focus UIA inventory serves ALL independent
-            # semantic guards: Demo account, instrument, form and order
-            # button. Never reuse an earlier preflight inventory.
+            # One fresh UIA inventory is shared by the final account,
+            # instrument, form and Place order checks. Earlier preflight
+            # evidence is never reused for a click.
             profile,win=self._form_window(platform,role)
+            timestamps["window_bound"]=time.perf_counter()
             self.automation.emergency.guard()
             self.automation.windows.focus(win)
             try:
                 from pywinauto import Desktop
+                timestamps["uia_inventory_started"]=time.perf_counter()
                 controls=Desktop(backend="uia").window(
                     handle=win.handle
                 ).descendants()
             except Exception as exc:
-                # Failed UIA traversal is UNKNOWN broker state, not proof
-                # of rejection or an excuse to send another order.
                 raise AutomationError(
                     "cTrader 送單前無法安全讀取原生 UIA 清單；未送單。"
                 ) from exc
-            if not isinstance(controls, list) or not controls:
+            if not isinstance(controls,list) or not controls:
                 raise AutomationError(
                     "cTrader 最終送單前無法取得完整 UIA 控制項清單，"
                     "已停止且不送單。"
                 )
             timestamps["uia_inventory_returned"]=time.perf_counter()
             self.automation.emergency.guard()
+            timestamps["form_check_started"]=time.perf_counter()
             self.verify_order_form(
                 platform,role,direction,lot,
                 _controls=controls,_window=win,
             )
+            timestamps["form_verified"]=time.perf_counter()
         else:
+            timestamps["form_check_started"]=time.perf_counter()
             self.verify_order_form(platform,role,direction,lot)
+            timestamps["form_verified"]=time.perf_counter()
             profile,win=self._form_window(platform,role)
-        timestamps["form_verified"]=time.perf_counter()
+            timestamps["window_bound"]=time.perf_counter()
         points=profile["points"]
         click_point=None
+        timestamps["submit_target_started"]=time.perf_counter()
         if "MT5" in platform.upper():
             point_key=("order_submit_buy" if direction=="BUY"
                        else "order_submit_sell")
@@ -769,8 +851,6 @@ class DemoUiBrokerPort:
             point=points.get("order_submit_button")
             if not point:
                 raise AutomationError("cTrader 尚未人工校準真正的 Place order。")
-            # Native button from the SAME fresh checked inventory; type,
-            # ID, parent ancestry and calibrated location remain mandatory.
             buttons=[b for b in controls
                 if str(b.element_info.control_type)=="Button"
                 and b.is_visible() and b.is_enabled() and
@@ -820,7 +900,17 @@ class DemoUiBrokerPort:
                     f"已從校準點 ({x},{y}) 對準唯一原生 Place order"
                     f" 中心 ({center_x},{center_y})，不改寫校準。"
                 )
+        timestamps["submit_target_verified"]=time.perf_counter()
         self.automation.emergency.guard()
+        if submit_deadline is not None:
+            remaining=(submit_deadline-time.monotonic())*1000
+            timestamps["deadline_remaining_ms"]=remaining
+            if remaining<=0:
+                timestamps["deadline_expired"]=time.perf_counter()
+                self.submit_phase_timings[role]=timestamps
+                raise AutomationError(
+                    "15 秒補進時限已過；已在送單前停止，未點擊送單鍵。"
+                )
         # The ONLY broker order submission click in this module.
         # Never retry it in case of timeout or uncertain acknowledgement.
         timestamps["click_started"]=time.perf_counter()
@@ -828,25 +918,55 @@ class DemoUiBrokerPort:
         timestamps["click_returned"]=time.perf_counter()
         self.submit_phase_timings[role]=timestamps
 
+    def _snapshot_positions_for_fill_confirmation(self, platform, role):
+        if platform == "MT5":
+            # Preflight snapshots still reject every pending order. After our
+            # single submit, however, a transient pending state must not abort
+            # the 15-second read-only check before an open position appears.
+            # Never infer a fill or rejection from the pending order itself.
+            account = self.inspect_account(platform, role)
+            from .mt5_native_readonly import snapshot_mt5_demo
+            return snapshot_mt5_demo(account, allow_pending_orders=True)
+        return self.snapshot_positions(platform, role)
+
     def confirm_new_position(self,platform,role,baseline,direction,volume,account_id):
         previous={p.ticket for p in baseline}
-        deadline=time.monotonic()+12
-        while True:
-            self.automation.emergency.guard()
-            observed=self.snapshot_positions(platform,role)
-            newer=[p for p in observed if p.ticket not in previous]
-            if len(newer)==1 and len(observed)==len(baseline)+1:
-                self.remember_verified_position_role(
-                    platform,role,newer[0]
-                )
-                return newer[0]
-            if len(newer)>1 or len(observed)<len(baseline):
-                raise AutomationError("持倉變化不只一筆，無法確認唯一成交。")
-            if time.monotonic()>=deadline:
-                raise AutomationError(
-                    "Demo 送單後 12 秒內未確認唯一新持倉，禁止再次送單。"
-                )
-            time.sleep(0.3)
+        deadline=time.monotonic()+15
+        metrics={"confirm_snapshot_count":0,
+                 "confirm_snapshot_total_ms":0.0,
+                 "confirm_snapshot_max_ms":0.0}
+        self.submit_phase_timings.setdefault(role,{}).update(metrics)
+        try:
+            while True:
+                self.automation.emergency.guard()
+                read_started=time.perf_counter()
+                metrics["confirm_snapshot_count"]+=1
+                try:
+                    observed=self._snapshot_positions_for_fill_confirmation(
+                        platform,role
+                    )
+                finally:
+                    read_ms=(time.perf_counter()-read_started)*1000
+                    metrics["confirm_snapshot_total_ms"]+=read_ms
+                    metrics["confirm_snapshot_max_ms"]=max(
+                        metrics["confirm_snapshot_max_ms"],read_ms
+                    )
+                    self.submit_phase_timings.setdefault(role,{}).update(metrics)
+                newer=[p for p in observed if p.ticket not in previous]
+                if len(newer)==1 and len(observed)==len(baseline)+1:
+                    self.remember_verified_position_role(
+                        platform,role,newer[0]
+                    )
+                    return newer[0]
+                if len(newer)>1 or len(observed)<len(baseline):
+                    raise AutomationError("持倉變化不只一筆，無法確認唯一成交。")
+                if time.monotonic()>=deadline:
+                    raise AutomationError(
+                        "Demo 送單後 15 秒內未確認唯一新持倉，禁止再次送單。"
+                    )
+                time.sleep(0.3)
+        finally:
+            self.submit_phase_timings.setdefault(role,{}).update(metrics)
 
     def verify_internal_protection(self,pos,sl_points,tp_points):
         after=self.snapshot_positions(pos.platform,"internal")
@@ -929,6 +1049,53 @@ class DemoUiBrokerPort:
                     "SL／TP 修改送出後，無法從持倉清單確認新價格。"
                 )
             time.sleep(0.25)
+
+    def close_position_once(self, pos: Position, role: str) -> None:
+        """Click one manually calibrated close control and verify that ticket exits."""
+        if role not in ("internal", "external"):
+            raise AutomationError("平倉場別無效，未操作。")
+        self.automation.emergency.guard()
+        account = self.inspect_account(pos.platform, role)
+        if (not account.is_demo or not account.verified
+                or account.account_id != pos.account_id):
+            raise AutomationError("平倉前 Demo 帳戶身分不符，未操作。")
+        self.remember_verified_position_role(pos.platform, role, pos)
+        before = self.snapshot_positions(pos.platform, role)
+        if len(before) != 1 or before[0].ticket != pos.ticket:
+            raise AutomationError(
+                "平倉前持倉不再是唯一且相同的訂單；未點擊平倉。"
+            )
+        profile, window = self._bound(pos.platform, role)
+        point = profile.get("points", {}).get("position_close_button")
+        if not isinstance(point, dict) or not point:
+            raise AutomationError(
+                f"{pos.platform} 尚未校準持倉列右側的平倉按鈕。"
+            )
+        # Fail before clicking if the terminal window no longer matches the
+        # geometry used when the user captured the yellow preview.
+        self.automation.windows.screen_point(window, point)
+        self.automation.emergency.guard()
+        self.automation.windows.click(window, point)
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            self.automation.emergency.guard()
+            current = self.snapshot_positions(pos.platform, role)
+            if not any(item.ticket == pos.ticket for item in current):
+                if current:
+                    raise AutomationError(
+                        "指定持倉已消失，但持倉清單出現其他訂單；"
+                        "停止後續動作並人工核對。"
+                    )
+                return
+            if len(current) != 1:
+                raise AutomationError(
+                    "平倉後持倉清單變成多筆或身分改變；停止重試。"
+                )
+            time.sleep(0.25)
+        raise AutomationError(
+            "已點擊一次校準的平倉按鈕，但 15 秒內仍無法確認指定持倉消失；"
+            "不會再次點擊。"
+        )
 
     def draw_tradingview(self,instruction,internal_platform,entry,draw_internal):
         self.automation.draw_tradingview(

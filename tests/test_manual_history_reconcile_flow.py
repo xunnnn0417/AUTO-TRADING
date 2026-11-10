@@ -29,7 +29,7 @@ class UncertainRetryWorkflowTests(unittest.TestCase):
         self.key=self.flow.fingerprint("A","url",accounts,self.item)
         self.journal.record(
             self.key,"attention_required",
-            "Demo 持倉數值不可辨識：'0.74 Lots'"
+            "Demo 持倉數值不可辨識：'0.01 Lots'"
         )
     def run_case(self, approved=None,manual=False):
         return self.flow.run(
@@ -70,7 +70,7 @@ class UncertainRetryWorkflowTests(unittest.TestCase):
         )
         entry=self.journal.entry(self.key)
         self.assertEqual(entry["status"],"complete")
-        self.assertTrue(entry["history"][-1]["details"].endswith("'0.74 Lots'"))
+        self.assertTrue(entry["history"][-1]["details"].endswith("'0.01 Lots'"))
         self.assertTrue(entry["history"])
         self.assertTrue(entry["manual_reconciliation_confirmed"])
 
@@ -117,8 +117,8 @@ class ManualHistoryDialogTests(unittest.TestCase):
             "key":"key","retryable":False,"manual_review_possible":True,
             "entry":{
                 "status":"attention_required",
-                "time":"2026-10-16 06:02:55",
-                "details":"Demo 持倉數值不可辨識：'0.74 Lots'",
+                "time":"2025-01-01 06:02:55",
+                "details":"Demo 持倉數值不可辨識：'0.01 Lots'",
             },
             "request":{
                 "profile_name":"A","sheet_url":"sheet",
@@ -168,8 +168,8 @@ class ManualHistoryDialogTests(unittest.TestCase):
         self.assertTrue(kw["manual_reconciliation_confirmed"])
         self.assertEqual(
             kw["duplicate_confirmation"],
-            ("key","attention_required","2026-10-16 06:02:55",
-             "Demo 持倉數值不可辨識：'0.74 Lots'")
+            ("key","attention_required","2025-01-01 06:02:55",
+             "Demo 持倉數值不可辨識：'0.01 Lots'")
         )
 
     def test_adjust_values_always_available(self):

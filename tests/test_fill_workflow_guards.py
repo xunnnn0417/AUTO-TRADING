@@ -83,6 +83,20 @@ class FillGuardTests(unittest.TestCase):
             self.w.fill_both()
         start.assert_not_called()
         self.assertIn("場外 MT5",warning.call_args.args[2])
+
+    def test_btc_test_preflight_requires_both_mt5_quote_points(self):
+        self.calibrated()
+        with patch.dict(os.environ, {
+            "TRADING_HELPER_TEST_SYMBOL_OVERRIDE":"BTCUSD",
+            "TRADING_HELPER_TEST_SKIP_SYMBOL_CHECK":"1",
+        }, clear=True):
+            with patch.object(gui.QMessageBox,"warning") as warning,\
+                 patch.object(self.w,"_start") as start:
+                self.w.fill_role("external")
+        start.assert_not_called()
+        message=warning.call_args.args[2]
+        self.assertIn("左側報價 Bid",message)
+        self.assertIn("右側報價 Ask",message)
     def test_confirmed_enter_allows_fill_when_calibrated(self):
         self.calibrated()
         w=self.w

@@ -6,10 +6,14 @@ trading account, open broker windows, or mutate the user's live configuration.
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QGroupBox, QPushButton, QToolButton
 
 import trading_helper.gui as gui
@@ -88,6 +92,84 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertEqual(self.window.internal_direction_input.count(), 2)
         self.assertEqual(self.window.internal_platform.count(), 2)
         self.assertEqual(self.window.external_platform.count(), 2)
+
+    def test_tighter_expected_sl_shows_nonblocking_margin_warning(self):
+        self.window.instruction = SimpleNamespace(
+            original_sl_points=Decimal("-5.57"),
+            expected_sl_points=Decimal("-5.27"),
+        )
+        self.window._refresh_expected_sl_warning()
+        self.assertTrue(self.window.expected_sl_warning_badge.isVisible())
+        expected_sl_field = self.window.expected_sl_warning_container
+        self.assertIsNotNone(expected_sl_field)
+        self.assertIs(self.window.expected_sl_warning_badge.parentWidget(), expected_sl_field)
+        self.assertIsInstance(
+            self.window.expected_sl_warning_badge,
+            gui.ExpectedSlWarningBadge,
+        )
+        self.assertEqual(
+            self.window.expected_sl_warning_badge.accessibleName(),
+            "預期止損提醒",
+        )
+        self.assertEqual(
+            (self.window.expected_sl_warning_badge.width(),
+             self.window.expected_sl_warning_badge.height()),
+            (12, 12),
+        )
+        badge_image = self.window.expected_sl_warning_badge.grab().toImage()
+        mark_pixels = []
+        mark_region_center = (badge_image.width() - 1) / 2
+        for y in range(badge_image.height()):
+            for x in range(badge_image.width()):
+                color = badge_image.pixelColor(x, y)
+                # Exclamation pixels are white composited over red; limit the
+                # scan to the badge center so the pale outside background is
+                # not mistaken for part of the symbol.
+                if (
+                    abs(x - mark_region_center) <= 1
+                    and color.red() > 240
+                    and color.green() > 120
+                    and color.blue() > 130
+                ):
+                    mark_pixels.append((x, y))
+        self.assertTrue(mark_pixels)
+        mark_center_x = sum(x for x, _ in mark_pixels) / len(mark_pixels)
+        mark_center_y = sum(y for _, y in mark_pixels) / len(mark_pixels)
+        self.assertAlmostEqual(
+            mark_center_x, (badge_image.width() - 1) / 2, delta=0.5
+        )
+        self.assertAlmostEqual(
+            mark_center_y, (badge_image.height() - 1) / 2, delta=0.5
+        )
+        self.assertLessEqual(max(y for _, y in mark_pixels) - min(y for _, y in mark_pixels), 5)
+        self.assertLessEqual(max(x for x, _ in mark_pixels) - min(x for x, _ in mark_pixels), 2)
+        self.assertGreaterEqual(
+            self.window.expected_sl_warning_badge.x(), expected_sl_field.width() - 14
+        )
+        self.assertLessEqual(self.window.expected_sl_warning_badge.y(), 2)
+
+        with patch.object(gui.QMessageBox, "warning") as warning:
+            QTest.mouseClick(self.window.expected_sl_warning_badge, Qt.LeftButton)
+        warning.assert_called_once()
+        message = warning.call_args.args[2]
+        self.assertIn("原始 SL：-5.57", message)
+        self.assertIn("預期 SL：-5.27", message)
+        self.assertIn("保證金限額", message)
+        self.assertIn("無法替你確認是否超限", message)
+
+    def test_expected_sl_warning_hides_when_distance_is_not_reduced(self):
+        self.window.instruction = SimpleNamespace(
+            original_sl_points=Decimal("-5.57"),
+            expected_sl_points=Decimal("-5.57"),
+        )
+        self.window._refresh_expected_sl_warning()
+        self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
+
+        self.window.parameter_inputs["expected_sl_combined"].setText("-5.27")
+        self.assertTrue(self.window.expected_sl_warning_badge.isVisible())
+
+        self.window.parameter_inputs["expected_sl_combined"].setText("-5.57")
+        self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
 
     def test_all_old_ui_controls_stay_accessible(self):
         self.assertEqual(

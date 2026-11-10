@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox, QPushButton
 
 from trading_helper import gui
 from trading_helper.config import DEFAULT_CONFIG
@@ -66,6 +66,54 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         ):
             self.assertFalse(DEFAULT_CONFIG["ui"][key])
 
+    def test_automation_checkboxes_use_transparent_checkmark_style(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyle, QStyleOption
+        from trading_helper.ui_theme import CheckmarkOnlyIndicatorStyle
+
+        boxes = (
+            self.w.auto_entry_on_fill_both,
+            self.w.auto_fast_pair,
+            self.w.auto_sync_sl_tp_after_entry,
+            self.w.auto_draw_tv_after_entry,
+            self.w.test_mode_checkbox,
+            *self.w.test_asset_checkboxes.values(),
+            *self.w.test_scenario_checkboxes.values(),
+        )
+        for checkbox in boxes:
+            with self.subTest(checkbox=checkbox.objectName()):
+                self.assertTrue(checkbox.property("checkmarkOnlyIndicator"))
+                self.assertIsInstance(
+                    checkbox._checkmark_only_indicator_style,
+                    CheckmarkOnlyIndicatorStyle,
+                )
+
+        style = CheckmarkOnlyIndicatorStyle()
+        for checked in (False, True):
+            with self.subTest(checked=checked):
+                image = QImage(18, 18, QImage.Format.Format_ARGB32)
+                image.fill(Qt.GlobalColor.transparent)
+                option = QStyleOption()
+                option.rect = image.rect()
+                option.state = QStyle.StateFlag.State_Enabled
+                if checked:
+                    option.state |= QStyle.StateFlag.State_On
+                painter = QPainter(image)
+                style.drawPrimitive(
+                    QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+                    option, painter,
+                )
+                painter.end()
+                # A point inside the indicator but away from the tick stays
+                # transparent; the checked native white fill must not return.
+                self.assertEqual(image.pixelColor(9, 5).alpha(), 0)
+                if checked:
+                    self.assertGreater(image.pixelColor(9, 9).alpha(), 0)
+                    self.assertEqual(image.pixelColor(9, 9).name(), "#ffffff")
+                else:
+                    self.assertEqual(image.pixelColor(9, 9).alpha(), 0)
+
     def test_future_options_are_opt_in_and_saved_per_profile(self):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
@@ -115,7 +163,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.auto_sync_sl_tp_after_entry.setChecked(True)
             self.w.auto_draw_tv_after_entry.setChecked(True)
         self.assertTrue(self.w.auto_fast_pair.isChecked())
-        with patch("trading_helper.gui.QInputDialog.getText",
+        with patch("trading_helper.gui.themed_input_text",
                    return_value=("新的空白方案",True)), \
              patch("trading_helper.gui.QMessageBox.question") as dialogs:
             self.w.create_profile()
@@ -147,7 +195,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             ask.assert_not_called()
         box=self.w._window_binding_dialog
         self.assertEqual(box.objectName(),"singleWindowBindingDialog")
-        self.assertIn("old-bound-regex",box.layout().itemAt(0).widget().text())
+        self.assertIn("old-bound-regex",box.findChild(QLabel,"windowBindingCurrentLabel").text())
         self.assertEqual(box.findChild(QPushButton,"windowBindingChangeButton").text(),
                          "更改綁定")
         box.close()
@@ -277,7 +325,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         with patch.object(
             self.w.windows,"foreground_top_level_window",
             return_value=SimpleNamespace(
-                handle=901,title="ICMarkets MT5 Terminal - 55512345"
+                handle=901,title="Example MT5 Terminal - TEST_ACCOUNT"
             )
         ) as foreground, \
              patch.object(self.w.windows,"window_at_cursor",
@@ -291,7 +339,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.qtapp.processEvents()
             foreground.assert_called_once()
             cursor.assert_not_called()
-        self.assertIn("ICMarkets",self.w.store.data[
+        self.assertIn("Example",self.w.store.data[
             "platforms"]["MT5"]["window_title"]["external"])
         self.assertIn("已更改完成",panel.findChild(
             QLabel,"windowBindingResultLabel").text())

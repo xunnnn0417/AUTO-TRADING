@@ -48,7 +48,18 @@ class FakeBrokerPort:
     def verify_order_form(self,platform,role,direction,lot):
         self.events.append(("preflight",role))
         if self.bad_form:raise AutomationError("bad form")
-    def submit_once(self,platform,role,direction,lot,key):
+    def submit_once(
+        self,platform,role,direction,lot,key,submit_deadline=None
+    ):
+        if submit_deadline is not None:
+            import time
+            if time.monotonic()>=submit_deadline:
+                raise AutomationError(
+                    "15 秒補進時限已過；已在送單前停止。"
+                )
+        # Model the production adapter's mandatory fresh verification inside
+        # the one-click submit call. Workflow code must not repeat this scan.
+        self.verify_order_form(platform,role,direction,lot)
         self.events.append(("submit",role))
         if self.fail_submit==role:
             raise AutomationError("broker timeout after possible fill")
@@ -116,6 +127,26 @@ class AutoEntryWorkflowTests(unittest.TestCase):
         self.assertEqual(ev.count("submit"),2)
         self.assertNotIn("modify",ev)
         self.assertNotIn("tv",ev)
+
+    def test_user_approved_reentry_gets_a_distinct_journal_attempt(self):
+        first=self.flow.run(
+            self.item,"cTrader","MT5","A","https://docs.google.com/a",
+            sync_sl_tp=True,draw_tv=False,
+        )
+        first_key=self.flow.last_key
+        self.assertEqual(len(first),2)
+        second=self.flow.run(
+            self.item,"cTrader","MT5","A","https://docs.google.com/a",
+            sync_sl_tp=True,draw_tv=False,
+            authorized_reentry_id="user-confirmed-2",
+        )
+        second_key=self.flow.last_key
+        self.assertEqual(len(second),2)
+        self.assertNotEqual(first_key,second_key)
+        self.assertEqual(
+            [event[1] for event in self.port.events if event[0]=="submit"],
+            ["internal","external","internal","external"],
+        )
     def test_mt5_internal_protected_with_executed_not_estimated_price(self):
         self.port=FakeBrokerPort(mt5_internal=True)
         self.flow=AutoEntryWorkflow(self.port,self.journal,lambda:None,self.logs.append)
@@ -179,6 +210,15 @@ class AutoEntryWorkflowTests(unittest.TestCase):
         self.assertEqual([x for x in self.port.events if x[0]=="submit"],
                          [("submit","internal"),("submit","external")])
         self.assertFalse(any(x[0]=="tv" for x in self.port.events))
+    def test_failed_fill_confirmation_logs_its_duration_phase(self):
+        self.port.fail_confirm="internal"
+        with self.assertRaises(RecoveryRequired):
+            self.run_case(sync=False,draw=False)
+        self.assertTrue(any(
+            "internal cTrader 進場分段計時" in line
+            and "成交確認" in line
+            for line in self.logs
+        ))
     def test_failed_preflight_never_clicks(self):
         self.port.bad_form=True
         with self.assertRaises(AutomationError):

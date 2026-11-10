@@ -1,8 +1,9 @@
 """Temporary Windows physical-mouse suppression for LAB automation.
 
-Only physical mouse events are swallowed. Programmatic injected mouse
-movement/clicks and all keyboard input (including Escape) remain available.
-The Windows hook is released on every exit or error, with a hard watchdog.
+Only physical mouse events are swallowed. A physical right-click during the
+guard stops the task like Escape and its context-menu click is consumed.
+Injected automation and all keyboard input remain available. The Windows hook
+is released on every exit or error, with a hard watchdog.
 No input suppression occurs merely by importing this module.
 """
 from __future__ import annotations
@@ -15,7 +16,10 @@ from .windows import AutomationError
 
 _WH_MOUSE_LL = 14
 _WM_QUIT = 0x0012
+_WM_RBUTTONDOWN = 0x0204
+_WM_RBUTTONUP = 0x0205
 _LLMHF_INJECTED = 0x01
+_RIGHT_RELEASE_DRAIN_SECONDS = 1.0
 _LRESULT = ctypes.c_ssize_t
 _HOOKPROC = ctypes.WINFUNCTYPE(
     _LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
@@ -42,6 +46,29 @@ def should_block_physical_mouse(flags: int, active: bool,
     return active and not emergency_stopped and not (flags & _LLMHF_INJECTED)
 
 
+def physical_right_click_stops(message: int, flags: int, active: bool,
+                               emergency_stopped: bool) -> bool:
+    """Only a physical right-button press during the guard acts as Escape."""
+    return (
+        message == _WM_RBUTTONDOWN
+        and active
+        and not emergency_stopped
+        and not (flags & _LLMHF_INJECTED)
+    )
+
+
+def physical_right_click_release_consumed(
+    message: int, flags: int, active: bool, right_down_consumed: bool,
+) -> bool:
+    """Consume only the physical release paired with a cancelling right press."""
+    return (
+        message == _WM_RBUTTONUP
+        and active
+        and right_down_consumed
+        and not (flags & _LLMHF_INJECTED)
+    )
+
+
 class PhysicalMouseGuard:
     """Temporary physical-mouse filter for one foreground automation task.
 
@@ -50,9 +77,13 @@ class PhysicalMouseGuard:
     with user Escape and/or the application's own mouse movements.
     """
 
-    def __init__(self, emergency, *, maximum_seconds: float = 180.0):
+    def __init__(
+        self, emergency, *, maximum_seconds: float = 180.0,
+        suppress_physical_mouse: bool = True,
+    ):
         self.emergency = emergency
         self.maximum_seconds = maximum_seconds
+        self.suppress_physical_mouse = bool(suppress_physical_mouse)
         self._active = threading.Event()
         self._ready = threading.Event()
         self._startup_error = None
@@ -60,6 +91,8 @@ class PhysicalMouseGuard:
         self._thread_id = 0
         self._timer = None
         self._hook_proc = None
+        self._right_down_consumed = threading.Event()
+        self._right_release_consumed = threading.Event()
 
     def _hook_loop(self) -> None:
         api = ctypes.WinDLL("user32", use_last_error=True)
@@ -99,8 +132,26 @@ class PhysicalMouseGuard:
                         mouse = ctypes.cast(
                             lparam, ctypes.POINTER(_MOUSE_HOOK_DATA)
                         ).contents
-                        if should_block_physical_mouse(
-                            int(mouse.flags), True,
+                        flags = int(mouse.flags)
+                        if physical_right_click_stops(
+                            int(wparam), flags, True,
+                            self.emergency.event.is_set(),
+                        ):
+                            # Consume the opening edge and its matching release
+                            # so no broker context menu appears after stopping.
+                            self._right_down_consumed.set()
+                            self._right_release_consumed.clear()
+                            self.emergency.stop()
+                            return 1
+                        if physical_right_click_release_consumed(
+                            int(wparam), flags, True,
+                            self._right_down_consumed.is_set(),
+                        ):
+                            self._right_down_consumed.clear()
+                            self._right_release_consumed.set()
+                            return 1
+                        if self.suppress_physical_mouse and should_block_physical_mouse(
+                            flags, True,
                             self.emergency.event.is_set(),
                         ):
                             return 1
@@ -160,6 +211,13 @@ class PhysicalMouseGuard:
         return self
 
     def close(self) -> None:
+        # The caller wakes as soon as the right-button down cancels its task.
+        # Keep the low-level hook alive briefly so Windows cannot deliver the
+        # paired button-up to MT5/cTrader and open their context menu.
+        if self._right_down_consumed.is_set():
+            self._right_release_consumed.wait(
+                timeout=_RIGHT_RELEASE_DRAIN_SECONDS
+            )
         self._active.clear()
         timer = self._timer
         if timer is not None:

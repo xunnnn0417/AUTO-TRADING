@@ -24,7 +24,7 @@ class DuplicateDialogTests(unittest.TestCase):
         self.data={
             "key":"abc",
             "entry":{
-                "status":"complete","time":"2026-10-16 05:25:00",
+                "status":"complete","time":"2025-01-01 05:25:00",
                 "details":"T-1/T-2"
             },
             "retryable":True,
@@ -55,7 +55,14 @@ class DuplicateDialogTests(unittest.TestCase):
         self.ui.showNormal.assert_called_once()
 
     def test_explicit_continue_resumes_safety_workflow(self):
-        self.decision(True)
+        dialog = self.decision(True)
+        self.assertEqual(
+            dialog.setWindowTitle.call_args.args[0],
+            "發現相同方案的進場紀錄",
+        )
+        self.assertIn("每次重試前", dialog.setText.call_args.args[0])
+        self.assertIn("2025-01-01 05:25:00", dialog.setInformativeText.call_args.args[0])
+        self.assertIn("再次確認雙 Demo", dialog.setInformativeText.call_args.args[0])
         self.ui._start.assert_called_once()
         name,task=self.ui._start.call_args.args
         self.assertEqual(name,"重新確認進場")
@@ -64,7 +71,7 @@ class DuplicateDialogTests(unittest.TestCase):
         self.assertEqual(args.args,("cTrader","MT5",self.item))
         self.assertEqual(
             args.kwargs["duplicate_confirmation"],
-            ("abc","complete","2026-10-16 05:25:00","T-1/T-2"),
+            ("abc","complete","2025-01-01 05:25:00","T-1/T-2"),
         )
         self.assertTrue(args.kwargs["sync_sl_tp"])
 
