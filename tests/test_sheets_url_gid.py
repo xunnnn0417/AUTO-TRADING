@@ -5,8 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from trading_helper.sheets import (
-    SheetReader, _csv_export_url, spreadsheet_gid_from_url,
+    MISSING_SPREADSHEET_URL_MESSAGE, SheetReader, _csv_export_url,
+    spreadsheet_gid_from_url,
 )
+from trading_helper.models import ValidationError
 
 
 class SpreadsheetUrlGidTests(unittest.TestCase):
@@ -60,6 +62,34 @@ class SpreadsheetUrlGidTests(unittest.TestCase):
         self.assertIs(found, worksheet)
         spreadsheet.get_worksheet_by_id.assert_called_once_with(1745982444)
         spreadsheet.worksheet.assert_not_called()
+
+    def test_missing_url_has_clear_next_step_before_google_api_call(self):
+        reader = SheetReader()
+        config = {
+            "mode": "service_account",
+            "spreadsheet_url": "  ",
+            "service_account_file": "offline-test.json",
+        }
+
+        with patch.object(
+            reader, "_fetch_gspread", side_effect=AssertionError("API was called")
+        ) as fetch:
+            with self.assertRaises(ValidationError) as caught:
+                reader._fetch_rows(config)
+
+        self.assertEqual(str(caught.exception), MISSING_SPREADSHEET_URL_MESSAGE)
+        self.assertIn("試算表設定", str(caught.exception))
+        fetch.assert_not_called()
+
+    def test_open_gspread_worksheet_rejects_missing_url_before_import(self):
+        reader = SheetReader()
+        config = {"spreadsheet_url": "", "service_account_file": "unused.json"}
+
+        with patch.dict(sys.modules, {"gspread": None}):
+            with self.assertRaises(ValidationError) as caught:
+                reader._open_gspread_worksheet(config)
+
+        self.assertEqual(str(caught.exception), MISSING_SPREADSHEET_URL_MESSAGE)
 
     def test_internal_supplementary_tab_can_override_url_gid_by_name(self):
         worksheet = object()
