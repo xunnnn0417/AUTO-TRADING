@@ -160,6 +160,32 @@ def _extract_decimal_candidates(texts: list[str]) -> list[Decimal]:
     return [value for _, value in ranked]
 
 
+def _nearest_ocr_number(
+    candidates: list[tuple[Decimal, float, float]],
+    target_x: float,
+    target_y: float,
+    expected: Decimal,
+    *,
+    max_distance: float = 55.0,
+) -> Decimal:
+    """Choose the numeric OCR box nearest a calibrated screen point."""
+    ranked = [
+        (
+            abs(center_x - target_x) + abs(center_y - target_y),
+            abs(value - expected),
+            value,
+        )
+        for value, center_x, center_y in candidates
+    ]
+    ranked = [item for item in ranked if item[0] <= max_distance]
+    if not ranked:
+        raise AutomationError(
+            "手數校準位置附近找不到可辨識的數字；"
+            "不會把旁邊的損益或價格當成手數。"
+        )
+    return min(ranked, key=lambda item: (item[0], item[1]))[2]
+
+
 def _alt_shift_right_events() -> list[tuple[int, int]]:
     return [
         (VK_LMENU, 0),
@@ -1415,28 +1441,73 @@ class WindowController:
         focused = self.focus(window)
         self._validate_calibrated_window(focused, point)
         x, y = self.screen_point(focused, point)
-        attempts = [
-            (x, y, 120, 55),
-            (x, y, 150, 70),
-            (x, y + 12, 160, 75),
+        candidates = self._read_positioned_number_candidates_ocr(
+            x,
+            y + 10,
+            width=160,
+            height=80,
+        )
+        return _nearest_ocr_number(candidates, x, y, expected)
+
+    def _read_positioned_number_candidates_ocr(
+        self,
+        target_x: int,
+        target_y: int,
+        *,
+        width: int,
+        height: int,
+    ) -> list[tuple[Decimal, float, float]]:
+        """Return OCR numbers with their screen-space centers preserved."""
+        try:
+            import cv2
+            import numpy as np
+            import pyautogui
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as exc:
+            raise AutomationError(
+                "尚未安裝 OCR 套件，請重新執行 install.bat。"
+            ) from exc
+
+        self.emergency.guard()
+        left = max(0, target_x - width // 2)
+        top = max(0, target_y - height // 2)
+        image = pyautogui.screenshot(region=(left, top, width, height))
+        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        frame = cv2.resize(frame, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        variants = [
+            frame,
+            cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
+            cv2.cvtColor(
+                cv2.threshold(
+                    gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1],
+                cv2.COLOR_GRAY2BGR,
+            ),
         ]
-        last_error: AutomationError | None = None
-        for target_x, target_y, width, height in attempts:
-            try:
-                candidates = self._read_number_candidates_ocr(
-                    target_x,
-                    target_y,
-                    width=width,
-                    height=height,
-                )
-            except AutomationError as exc:
-                last_error = exc
-                continue
-            if candidates:
-                return min(candidates, key=lambda value: abs(value - expected))
-        if last_error is not None:
-            raise last_error
-        raise AutomationError("Could not read a number near the expected value.")
+        found: list[tuple[Decimal, float, float]] = []
+        with WindowController._ocr_lock:
+            if WindowController._ocr_engine is None:
+                WindowController._ocr_engine = RapidOCR()
+            for variant in variants:
+                self.emergency.guard()
+                result, _ = WindowController._ocr_engine(variant)
+                if not result:
+                    continue
+                for item in result:
+                    try:
+                        box, raw_text = item[0], str(item[1])
+                        xs = [float(point[0]) for point in box]
+                        ys = [float(point[1]) for point in box]
+                        center_x = left + (min(xs) + max(xs)) / 6.0
+                        center_y = top + (min(ys) + max(ys)) / 6.0
+                    except (IndexError, TypeError, ValueError):
+                        continue
+                    found.extend(
+                        (value, center_x, center_y)
+                        for value in _extract_decimal_candidates([raw_text])
+                    )
+        return found
 
     def read_hover_number(
         self, window: WindowInfo, point: dict[str, float]
