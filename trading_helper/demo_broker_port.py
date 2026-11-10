@@ -395,13 +395,13 @@ class DemoUiBrokerPort:
                 )
             except Exception as exc:
                 raise AutomationError(
-                    "cTrader placeholder cannot be verified; position unknown."
+                    "cTrader 持倉表列數讀取失敗；目前持倉狀態未知。"
                 ) from exc
             if count==count2==0 and not any_text:
                 return ()
             raise AutomationError(
-                "cTrader grid count conflicts with missing/placeholder rows; "
-                "cannot prove an empty position list."
+                "cTrader 持倉表資料列與原生列數不一致；"
+                "目前持倉狀態未知。"
             )
         headers={}
         for h in grid.descendants(control_type="HeaderItem"):
