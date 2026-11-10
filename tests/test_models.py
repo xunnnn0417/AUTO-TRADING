@@ -799,6 +799,86 @@ class TradeInstructionTests(unittest.TestCase):
         ):
             automation._read_internal_entry_price(item, "cTrader")
 
+    def test_ctrader_manual_price_read_avoids_stale_tab_point_safely(self) -> None:
+        item = TradeInstruction.from_mapping(2, valid_values())
+        main_window = WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
+        points = {
+            "positions_entry_price": {
+                "x": 0.3, "y": 0.6, "window_width": 100, "window_height": 100,
+            },
+            "trade_tab": {
+                "x": 0.1, "y": 0.5, "window_width": 200, "window_height": 100,
+            },
+            "position_order_lot": {
+                "x": 0.2, "y": 0.6, "window_width": 100, "window_height": 100,
+            },
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "cTrader": {
+                        "window_title": {"internal": "cTrader", "external": "cTrader"},
+                        "points": points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+        automation._window_for_point = lambda profile, role, point: main_window
+        automation._verify_ctrader_account = lambda *args: None
+
+        class FakeWindows:
+            clicked = False
+            waited = False
+            lot_read = None
+
+            def click(self, window, point):
+                self.clicked = True
+                raise CalibrationMismatchError("old tab calibration size")
+
+            def read_number_near(self, window, point, expected):
+                self.lot_read = expected
+                return expected
+
+            def read_hover_number(self, window, point):
+                return Decimal("1000.00")
+
+            def wait(self, seconds):
+                self.waited = True
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        result = automation._read_internal_entry_price(item, "cTrader")
+
+        self.assertEqual(result, Decimal("1000.00"))
+        self.assertFalse(fake.clicked)
+        self.assertFalse(fake.waited)
+        self.assertEqual(fake.lot_read, item.internal.lot)
+
+    def test_read_number_near_selects_text_near_point_not_distant_pnl(self) -> None:
+        controller = WindowController(FakeEmergency())
+        window = WindowInfo(1, "test", 0, 0, 100, 100)
+        controller.focus = lambda current: current
+        controller._validate_calibrated_window = lambda current, point: None
+        controller.screen_point = lambda current, point: (50, 50)
+        controller._read_positioned_number_candidates_ocr = (
+            lambda *args, **kwargs: [
+                (Decimal("26.904"), 84.0, 50.0),
+                (Decimal("0.10"), 51.0, 50.0),
+            ]
+        )
+
+        result = controller.read_number_near(
+            window,
+            {"x": 0.5, "y": 0.5, "window_width": 100, "window_height": 100},
+            Decimal("0.1"),
+        )
+
+        self.assertEqual(result, Decimal("0.10"))
+
     def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
         self.assertEqual(
             _window_title_pattern("GooeyTrade", "GooeyTrade cTrader 5.7.10"),
@@ -895,12 +975,24 @@ class TradeInstructionTests(unittest.TestCase):
         )
         item = TradeInstruction.from_mapping(2, values)
         points = {
-            "positions_entry_price": {"id": "entry"},
-            "trade_tab": {"id": "trade"},
-            "position_order_lot": {"id": "lot"},
-            "position_order_row": {"id": "row"},
-            "position_sl_input": {"id": "sl"},
-            "position_tp_input": {"id": "tp"},
+            "positions_entry_price": {
+                "id": "entry", "window_width": 100, "window_height": 100,
+            },
+            "trade_tab": {
+                "id": "trade", "window_width": 100, "window_height": 100,
+            },
+            "position_order_lot": {
+                "id": "lot", "window_width": 100, "window_height": 100,
+            },
+            "position_order_row": {
+                "id": "row", "window_width": 100, "window_height": 100,
+            },
+            "position_sl_input": {
+                "id": "sl", "window_width": 100, "window_height": 100,
+            },
+            "position_tp_input": {
+                "id": "tp", "window_width": 100, "window_height": 100,
+            },
         }
         automation = PlatformAutomation(
             {
