@@ -109,12 +109,22 @@ class FramelessHeaderTests(unittest.TestCase):
         box.setWindowTitle("校準提醒")
         box.setIcon(gui.QMessageBox.Warning)
         box.setText("請確認平台視窗。")
+        box.show()
+        self.app.processEvents()
         title=box.findChild(gui.QLabel,"dialogTitle")
         icon=box.findChild(gui.QLabel,"messageIcon")
+        title_bar=box.findChild(gui.QFrame,"compactTitleBar")
         self.assertIsNotNone(title)
         self.assertEqual(title.text(),"校準提醒")
         self.assertEqual(icon.property("severity"),"warning")
-        self.assertIsNotNone(box.findChild(gui.QFrame,"compactTitleBar"))
+        self.assertIsNotNone(title_bar)
+        self.assertEqual(title_bar.geometry().x(),0)
+        self.assertEqual(title_bar.geometry().width(),box.width())
+        margins=box.layout().contentsMargins()
+        self.assertEqual(
+            (margins.left(),margins.top(),margins.right(),margins.bottom()),
+            (18,14,18,12),
+        )
         self.assertIsNotNone(box.findChild(WindowChromeButton,"chrome_close"))
         self.assertIsNone(box.findChild(WindowChromeButton,"chrome_minimize"))
         self.assertIsNone(box.findChild(WindowChromeButton,"chrome_maximize"))
@@ -274,4 +284,3 @@ class FramelessHeaderTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
-

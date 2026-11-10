@@ -286,7 +286,11 @@ class ThemedDialog(FramelessNativeMixin, QDialog):
             self.chrome_maximize.clicked.connect(self.toggle_maximized)
             row.addWidget(self.chrome_maximize)
         row.addWidget(self.chrome_close)
-        layout.insertWidget(0, self.title_bar)
+        # A normal layout widget inherits the dialog's content margins, which
+        # leaves the titlebar (and its close button) visibly inset.  QLayout's
+        # menu-bar slot spans the dialog edge while preserving those margins
+        # for the actual content below it.
+        layout.setMenuBar(self.title_bar)
         self.setProperty("appDialogChrome", True)
         self._app_chrome_installed = True
 
