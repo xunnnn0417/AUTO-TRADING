@@ -1023,8 +1023,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.auto_entry_on_fill_both = QCheckBox("兩邊自動進場")
         self.auto_entry_on_fill_both.setObjectName("auto_entry_on_fill_both")
         self.auto_entry_on_fill_both.setToolTip(
-            "僅在按「填入兩邊」時生效；先核對雙 Demo 帳戶與所有欄位，"
-            "確認唯一持倉識別後才允許嘗試送單；可能真的在 Demo 開倉。"
+            "僅在按「填入兩邊」時生效；進場前先核對兩個 Demo 或 Live 帳戶與所有欄位，"
+            "確認唯一持倉識別後才允許嘗試送單；Live 帳戶會建立真實倉位。"
             "任何結果不確定會停止，不會重送或自行平倉。"
         )
         # Restore the user's previously confirmed preference. This only
@@ -1439,7 +1439,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 button.setIconSize(QSize(13, 13))
                 button.setToolTip(
                     "依校準位置填寫場內與場外。若勾選「自動進場」，"
-                    "通過雙 Demo 與表單核對後會嘗試送單；未勾選時只填欄位。"
+                    "通過雙邊帳戶與表單核對後會嘗試送單；Live 帳戶會建立真實倉位；未勾選時只填欄位。"
                 )
             elif text not in {"填入場內", "填入場外"}:
                 button.setIcon(themed_icon(action_icons[text]))
@@ -1459,13 +1459,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.setSpacing(1)
         self.auto_entry_on_fill_both.setText("自動進場")
         self.auto_entry_on_fill_both.setToolTip(
-            "填入兩邊後自動進場；需要先核對兩側 Demo 與表單。"
+            "填入兩邊後自動進場；先核對兩側帳戶與表單。Live 會建立真實倉位。"
         )
         automation_layout.addWidget(self.auto_entry_on_fill_both)
         self.auto_fast_pair = QCheckBox("快速雙邊")
         self.auto_fast_pair.setObjectName("auto_fast_pair")
         self.auto_fast_pair.setToolTip(
-            "支援 cTrader + MT5 雙 Demo，場內場外可以互換。"
+            "支援 cTrader + MT5 已核對帳戶，場內場外可以互換。Live 會建立真實倉位。"
             "先檢查兩邊，再連續送出兩邊，之後核對成交。"
             "MT5 場內須在雙邊成交後依實際成交價修正 SL/TP。"
             "其中一邊未成交可能造成單邊曝險。"
@@ -1815,13 +1815,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         details = (
             (self.auto_entry_on_fill_both,
              "按「填入兩邊」會依已儲存位置填寫場內、場外欄位。"
-             "僅對已驗證的雙 Demo 帳戶執行自動進場，可能真的開啟 Demo 倉位。"
+             "對已核對的雙 Demo 或 Live 帳戶執行自動進場；Live 可能建立真實倉位。"
              "任何持倉資料不確定會停止，不會重複送單。"),
             (self.auto_sync_sl_tp_after_entry,
-             "在雙 Demo 自動進場核對完成後，先確認場內保護，"
-             "再以場內實際成交價同步場外 SL/TP，並再次讀回核對。"),
+             "在雙邊自動進場核對完成後，先確認場內保護，"
+             "再以場內實際成交價同步場外 SL/TP，並再次讀回核對。"
+             "Live 帳戶會修改真實持倉的止盈止損。"),
             (self.auto_draw_tv_after_entry,
-             "在雙 Demo 進場且 SL/TP 同步確認後，自動繪製 TradingView 部位；"
+             "在雙邊進場且 SL/TP 同步確認後，自動繪製 TradingView 部位；"
              "前置核對失敗就不繪製。"),
             (sync_sl_tp_button,
              "手動執行既有的「同步場外止盈止損」。"
@@ -1833,7 +1834,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
              "不受「繪製 TV」自動選項影響。"),
             (self.action_buttons["填入兩邊"],
              "根據目前方案與校準位置，依序填寫場內、場外欄位。"
-             "若勾選「自動進場」，會在雙 Demo 與表單核對通過後嘗試送單；"
+             "若勾選「自動進場」，會在雙邊帳戶與表單核對通過後嘗試送單；"
              "未勾選時只填欄位。"),
             (self.parameter_update_button,
              "使用目前輸入的交易參數更新試算表相關欄位。"
@@ -2087,7 +2088,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             dialog.setInformativeText(
                 record_summary + "\n"
                 "上一次可能已在 cTrader 或 MT5 成交，但程式讀取失敗。"
-                "請先在兩個 Demo 平台自行核對「目前持倉、掛單與成交歷史」。"
+                    "請先在已選的兩個平台自行核對「目前持倉、掛單與成交歷史」。"
                 "若兩邊都有與本方案完全對應的既有持倉，"
                 "只接續成交後的檢查／已勾選的同步，不會送新訂單。"
                 "若兩邊確認空倉，才可按既有安全流程重新進場；"
@@ -2096,7 +2097,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         else:
             dialog.setInformativeText(
                 record_summary + "\n"
-                "選擇「仍要繼續進場」後，程式會再次確認雙 Demo "
+                "選擇「仍要繼續進場」後，程式會再次確認兩個帳戶 "
                 "身分、空倉、校準及兩邊表單，通過才會下單。"
             )
         adjust=dialog.addButton("調整數值，返回主畫面",QMessageBox.RejectRole)
@@ -2151,10 +2152,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if manual_needed:
             options["manual_reconciliation_confirmed"]=True
             self.log(
-                "使用者已明確確認自行核對兩邊 Demo 持倉、掛單與歷史紀錄；"
+                "使用者已明確確認自行核對兩邊持倉、掛單與歷史紀錄；"
                 "仍需重新檢查帳戶與空倉，才能進場。"
             )
-        self.log("使用者明確確認繼續；重新檢查兩邊 Demo 與訂單，確認後才進場。")
+        self.log("使用者明確確認繼續；重新檢查兩個帳戶與訂單，確認後才進場。")
         self._start(
             "重新確認進場",
             lambda: self._auto_entry_after_fill_both_pending(
@@ -4504,7 +4505,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             不是交易安全驗收。紅點可在「顯示設定」關閉。</p>
             <h2>填入與進場</h2>
             <p>未勾選「自動進場」時，填入只會寫入交易欄位；
-            勾選後雙 Demo 自動進場功能可能真的送出模擬訂單。
+            勾選後會在帳戶與表單核對通過時自動進場；若使用 Live 帳戶，會送出真實訂單。
             缺校準點會列出清單；數值未按 Enter 則會先詢問確認。
             按 ESC 可中止後續動作。</p>
             <h2>交易參數與工具</h2>
@@ -4639,8 +4640,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         second.setToolTip(
             "必須先勾選「自動進場」。目前此功能只儲存偏好，尚不自動同步。"
             if not first_checked else
-            "雙 Demo 進場核對成功後，會依場內實際成交價修改場外 SL/TP，"
-            "並讀回確認。"
+            "雙邊進場核對成功後，會依場內實際成交價修改場外 SL/TP，"
+            "並讀回確認；使用 Live 時會修改真實持倉。"
         )
         second_checked = first_checked and second.isChecked()
         if not second_checked and third.isChecked():
@@ -4664,8 +4665,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             accepted=QMessageBox.No
         else:
             accepted=QMessageBox.question(
-                self,"確認快速雙邊進場（僅 Demo）",
-                "啟用快速雙邊 Demo 進場？兩邊核對後會連續送出；可能單邊成交，"
+                self,"確認快速雙邊進場",
+                "啟用快速雙邊進場？核對後會連續送出；Live 帳戶會建立真實倉位，"
+                "可能單邊成交，"
                 "也可能暫時未確認 SL／TP。程式不會自動重試、補單或平倉。",
                 QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
                 yes_text="啟用", no_text="取消",
@@ -4677,7 +4679,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if hasattr(self,"save_ui_state"):
             self.save_ui_state()
-        self.log("已明確啟用快速雙邊 Demo 偏好；送單仍須按填入兩邊並通過核對。")
+        self.log("已啟用快速雙邊偏好；送單仍須按填入兩邊並通過核對。")
 
     def _confirm_auto_entry_toggle(self, enabled: bool) -> None:
         """Explicit opt-in; switching off takes effect immediately."""
@@ -4689,7 +4691,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         accepted = QMessageBox.question(
             self,
             "確認啟用自動進場選項",
-            "啟用「填入兩邊時自動進場」？只限兩個已確認的 Demo 帳戶；"
+            "啟用「填入兩邊時自動進場」？只限兩個已核對的帳戶；"
+            "若是 Live，會建立真實倉位。"
             "雙邊表單與 SL／TP 核對成功才送出。結果不明時停止，不重送或平倉。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -4703,7 +4706,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         TradingHelperApp._refresh_auto_option_dependencies(self)
         self.save_ui_state()
-        self.log("已開啟 Demo 自動進場；只有雙 Demo、持倉辨識與表單均可靠確認後才允許送單。")
+        self.log("已開啟自動進場；只有雙邊帳戶、持倉辨識與表單均核對通過才送單。")
 
     def _confirm_future_auto_option(
         self, checkbox: QCheckBox, enabled: bool, label: str
@@ -4731,7 +4734,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         accepted = QMessageBox.question(
             self,
             "確認預留自動化選項",
-            f"啟用「{label}」？只在雙 Demo 進場並確認持倉後執行；"
+            f"啟用「{label}」？只在雙邊進場並確認持倉後執行；"
+            "若是 Live，自動同步可能修改真實持倉的 SL/TP。"
             "辨識或核對失敗會停止，不補單。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -4745,7 +4749,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         TradingHelperApp._refresh_auto_option_dependencies(self)
         self.save_ui_state()
-        self.log(f"已啟用 Demo 自動化後續步驟：「{label}」；未通過安全核對會停止。")
+        self.log(f"已啟用自動化後續步驟：「{label}」；未通過安全核對會停止。")
 
     def _save_bound_account(self, platform: str, role: str, account_number: str) -> None:
         platform_config = self.store.data["platforms"][platform]

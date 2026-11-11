@@ -1,8 +1,9 @@
 """DEMO identity and safe no-position UIA probe, mocked entirely."""
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock,patch
-from trading_helper.auto_entry import AutoEntryWorkflow
+from trading_helper.auto_entry import AutoEntryWorkflow,DemoAccount,Position
 from trading_helper.demo_broker_port import DemoUiBrokerPort
 from trading_helper.windows import AutomationError
 
@@ -71,12 +72,14 @@ class DemoPortTests(unittest.TestCase):
             self.port.inspect_account("MT5","external")
         self.automation.windows.click.assert_not_called()
 
-    def test_mt5_live_is_rejected(self):
+    def test_mt5_live_identity_is_verified(self):
         self.automation.windows.find.return_value=FakeWindow(
-            "11111111 - Example-Live - Hedge"
+            "11111111 - Example-Live: Test Account - Hedge"
         )
-        with self.assertRaisesRegex(AutomationError,"Demo"):
-            self.port.inspect_account("MT5","external")
+        result=self.port.inspect_account("MT5","external")
+        self.assertFalse(result.is_demo)
+        self.assertTrue(result.verified)
+        self.assertEqual(result.server,"Example-Live")
     def test_ctrader_demo_verified_only_with_unique_native_labels(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader 5.10.20")
         with self.with_uia(self.ui_text):
@@ -84,12 +87,113 @@ class DemoPortTests(unittest.TestCase):
         self.assertTrue(result.is_demo)
         self.assertEqual(result.account_id,"11111111")
         self.assertEqual(result.server,"Example Broker Ltd")
-    def test_ctrader_real_account_rejected(self):
+    def test_ctrader_live_account_identity_is_verified(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         self.ui_text[0].content="Live"
         with self.with_uia(self.ui_text):
-            with self.assertRaisesRegex(AutomationError,"Demo"):
+            result=self.port.inspect_account("cTrader","internal")
+        self.assertFalse(result.is_demo)
+        self.assertTrue(result.verified)
+
+    def test_unknown_account_type_stays_unverified(self):
+        self.automation.windows.find.return_value=FakeWindow("cTrader")
+        self.ui_text[0].content="Contest"
+        with self.with_uia(self.ui_text):
+            with self.assertRaisesRegex(AutomationError,"Demo/Live"):
                 self.port.inspect_account("cTrader","internal")
+
+    def test_mt5_position_row_is_matched_by_readonly_ticket(self):
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        unrelated=Position(
+            "654321","11111111","MT5","ETHUSD.x","BUY",
+            Decimal("26.904"),Decimal("3100"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(unrelated,expected))
+        self.port._mt5_position_rows=MagicMock(return_value=(
+            (0,unrelated),(4,expected),
+        ))
+        row,matched=self.port.find_mt5_position_row(
+            "MT5","external",expected_symbol="ETHUSD",
+            expected_direction="SELL",expected_volume=Decimal("0.1"),
+            window=FakeWindow("11111111 - Example-Demo"),
+        )
+        self.assertEqual(row,4)
+        self.assertEqual(matched.ticket,"123456")
+        self.port.snapshot_positions.assert_called_once_with(
+            "MT5","external",_window=self.port._mt5_position_rows.call_args.kwargs["window"],
+            allow_pending_orders=False,
+        )
+
+    def test_mt5_position_row_match_fails_closed_for_no_or_duplicate_matches(self):
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port._mt5_position_rows=MagicMock(return_value=((0,expected),))
+        self.port.snapshot_positions=MagicMock(return_value=())
+        with self.assertRaisesRegex(AutomationError,"符合筆數 0"):
+            self.port.find_mt5_position_row(
+                "MT5","external",expected_symbol="ETHUSD",
+                expected_direction="SELL",expected_volume=Decimal("0.1"),
+                window=FakeWindow("11111111 - Example-Demo"),
+            )
+        self.port.snapshot_positions.return_value=(expected,expected)
+        with self.assertRaisesRegex(AutomationError,"符合筆數 2"):
+            self.port.find_mt5_position_row(
+                "MT5","external",expected_symbol="ETHUSD",
+                expected_direction="SELL",expected_volume=Decimal("0.1"),
+                window=FakeWindow("11111111 - Example-Demo"),
+            )
+
+    def test_blank_mt5_table_uses_calibrated_first_row_only_for_single_position(self):
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(expected,))
+        self.port._mt5_position_rows=MagicMock(return_value=())
+
+        row,matched=self.port.find_mt5_position_row(
+            "MT5","external",expected_symbol="ETHUSD",
+            expected_direction="SELL",expected_volume=Decimal("0.1"),
+            window=FakeWindow("11111111 - Example-Demo"),
+        )
+
+        self.assertEqual(row,0)
+        self.assertEqual(matched.ticket,"123456")
+        self.assertTrue(
+            self.port._mt5_position_rows.call_args.kwargs["allow_blank_rows"]
+        )
+
+    def test_blank_mt5_table_still_fails_closed_when_multiple_positions_exist(self):
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        one=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        other=Position(
+            "234567","11111111","MT5","GOLD","BUY",
+            Decimal("0.2"),Decimal("2000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(one,other))
+        self.port._mt5_position_rows=MagicMock(return_value=())
+
+        with self.assertRaisesRegex(AutomationError,"多筆持倉.*無法安全對應"):
+            self.port.find_mt5_position_row(
+                "MT5","external",expected_symbol="ETHUSD",
+                expected_direction="SELL",expected_volume=Decimal("0.1"),
+                window=FakeWindow("11111111 - Example-Demo"),
+            )
     def test_duplicate_account_label_rejected(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         with self.with_uia(self.ui_text+[self.ui_text[1]]):

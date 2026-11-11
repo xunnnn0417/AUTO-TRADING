@@ -81,7 +81,7 @@ class UncertainRetryWorkflowTests(unittest.TestCase):
             ),
         )
         self.port.events.clear()
-        with self.assertRaisesRegex(Exception,"已存在持倉"):
+        with self.assertRaisesRegex(Exception,"帳戶存在持倉"):
             self.run_case(self.approval(),manual=True)
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
         self.assertEqual(self.journal.entry(self.key)["status"],"attention_required")

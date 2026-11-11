@@ -10,9 +10,26 @@ from trading_helper.phase_timing_report import (
 )
 from trading_helper.gui import TradingHelperApp
 from test_auto_entry_state_machine import FakeBrokerPort, instruction
+from trading_helper.windows import AutomationError
 
 
 class PhaseTimingReportTests(unittest.TestCase):
+    def test_automation_failure_summary_is_saved_without_private_values(self):
+        report = PhaseTimingRun("fill", {})
+        error = AutomationError(
+            "cTrader 缺少唯一帳戶控制項 12345678；"
+            "路徑 C:\\Users\\User\\private.json；"
+            "網址 https://example.test/token=secret"
+        )
+
+        report.finish("interrupted", error)
+        payload = report.as_dict()
+
+        self.assertIn("缺少唯一帳戶控制項", payload["error_summary"])
+        self.assertNotIn("12345678", payload["error_summary"])
+        self.assertNotIn("C:\\Users", payload["error_summary"])
+        self.assertNotIn("secret", payload["error_summary"])
+
     def test_nested_fill_phase_is_recorded_with_platform_and_role(self):
         report = PhaseTimingRun("fill", {})
         token = _ACTIVE_REPORT.set(report)
@@ -62,7 +79,7 @@ class PhaseTimingReportTests(unittest.TestCase):
         })
         names = {phase["phase"] for phase in report["phases"]}
         self.assertTrue({
-            "雙邊自動進場", "確認 Demo 帳戶", "讀取交易前持倉",
+            "雙邊自動進場", "確認交易帳戶", "讀取交易前持倉",
             "送單表單預檢", "單側送單與成交確認", "成交持倉回讀",
         } <= names)
         self.assertTrue(all(
@@ -75,7 +92,7 @@ class PhaseTimingReportTests(unittest.TestCase):
         ):
             self.assertNotIn(private_value, raw)
 
-    def test_interrupted_preflight_is_saved_without_exception_text(self):
+    def test_interrupted_preflight_saves_safe_automation_error_summary(self):
         with tempfile.TemporaryDirectory() as folder:
             flow, port, path = self.make_flow(folder, bad_form=True)
             with self.assertRaises(Exception):
@@ -89,7 +106,7 @@ class PhaseTimingReportTests(unittest.TestCase):
         self.assertEqual(report["failed_phase"], "送單表單預檢")
         self.assertTrue(report["error_type"])
         self.assertFalse(any(event[0] == "submit" for event in port.events))
-        self.assertNotIn("bad form", raw)
+        self.assertEqual(report["error_summary"], "bad form")
         self.assertNotIn("secret-url", raw)
 
     def test_gui_fill_both_starts_the_report_before_broker_entry_phases(self):

@@ -49,7 +49,7 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
         text_node = MagicMock()
         text_node.window_text.return_value = "XAUUSD"
         ghost.descendants.return_value = [text_node]
-        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+        with self.assertRaisesRegex(AutomationError, "持倉狀態未知"):
             self.scan(make_grid([ghost]))
 
     def test_visible_row_not_confused_with_empty_placeholder(self):
@@ -68,7 +68,7 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
         self.assertEqual(self.scan(make_grid([])), ())
 
     def test_no_data_items_with_native_position_count_is_unknown(self):
-        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+        with self.assertRaisesRegex(AutomationError, "持倉狀態未知"):
             self.scan(make_grid([], count=1))
 
     def test_no_data_items_with_unreadable_count_is_unknown(self):
@@ -80,7 +80,7 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
     def test_no_data_items_with_changing_count_is_unknown(self):
         grid = make_grid([])
         grid.iface_grid.CurrentRowCount = MagicMock(side_effect=[0, 1])
-        with self.assertRaisesRegex(AutomationError, "cannot prove"):
+        with self.assertRaisesRegex(AutomationError, "持倉狀態未知"):
             self.scan(grid)
 
 

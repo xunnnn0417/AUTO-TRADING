@@ -8,6 +8,7 @@ from functools import wraps
 import inspect
 import json
 from pathlib import Path
+import re
 import threading
 import time
 import uuid
@@ -44,6 +45,7 @@ class PhaseTimingRun:
         self.outcome = "running"
         self.failed_phase: str | None = None
         self.error_type: str | None = None
+        self.error_summary: str | None = None
 
     @contextmanager
     def phase(
@@ -106,11 +108,13 @@ class PhaseTimingRun:
             row["count"] = count
         self.phases.append(row)
 
-    def finish(self, outcome: str, error_type: str | None = None) -> None:
+    def finish(
+        self, outcome: str, error: BaseException | None = None
+    ) -> None:
         self.outcome = "completed" if outcome == "completed" else "interrupted"
-        if error_type:
-            # Store a class name only; exception text can contain user data.
-            self.error_type = error_type[:80]
+        if error is not None:
+            self.error_type = type(error).__name__[:80]
+            self.error_summary = _safe_error_summary(error)
 
     def as_dict(self) -> dict:
         return {
@@ -127,6 +131,7 @@ class PhaseTimingRun:
             "outcome": self.outcome,
             "failed_phase": self.failed_phase,
             "error_type": self.error_type,
+            "error_summary": self.error_summary,
             "phases": sorted(self.phases, key=lambda item: item["start_offset_ms"]),
         }
 
@@ -177,6 +182,25 @@ def _safe_metadata(function, args, kwargs) -> dict:
     return metadata
 
 
+def _safe_error_summary(error: BaseException) -> str | None:
+    """Keep actionable app errors while removing account and local secrets."""
+    from .windows import AutomationError
+
+    if not isinstance(error, AutomationError):
+        return None
+    text = str(error).strip()
+    text = re.sub(r"https?://\S+", "[網址]", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?i)\b[A-Z]:\\[^\s,;，。]+", "[本機路徑]", text,
+    )
+    text = re.sub(
+        r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[電子郵件]", text,
+    )
+    text = re.sub(r"(?<!\w)\d{4,}(?!\w)", "[數字]", text)
+    text = " ".join(text.split())
+    return text[:240] or None
+
+
 def timed_operation(name: str):
     """Record a top-level flow and nested instrumented operations."""
     def decorate(function):
@@ -198,7 +222,7 @@ def timed_operation(name: str):
             else:
                 token = None
 
-            error = None
+            error: BaseException | None = None
             outcome = "completed"
             try:
                 with active.phase(
@@ -209,7 +233,7 @@ def timed_operation(name: str):
                     return function(self, *args, **kwargs)
             except BaseException as exc:
                 outcome = "interrupted"
-                error = type(exc).__name__
+                error = exc
                 raise
             finally:
                 if owns_report:

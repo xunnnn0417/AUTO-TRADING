@@ -1,11 +1,13 @@
-"""Read-only native MT5 position source for the running Demo terminal.
+"""Read-only native MT5 position source for one verified terminal.
 
 NEVER invokes order_send/order_check or any broker write operation.
 Unverified identity, pending orders or read failures are not empty positions.
 """
 from __future__ import annotations
+import ctypes
 from decimal import Decimal,InvalidOperation
 from pathlib import Path
+from ctypes import wintypes
 import importlib,sys
 from .auto_entry import DemoAccount,Position
 from .windows import AutomationError
@@ -63,6 +65,43 @@ def _active_order_type_name(mt, value):
             return label
     return f"未知類型（{_display_text(value)}）"
 
+
+def terminal_path_for_window(window) -> Path:
+    """Resolve the exact executable behind a bound MT5 HWND, read-only."""
+    from .ui_inspector import process_id_for_window
+
+    pid = process_id_for_window(int(getattr(window, "handle", 0) or 0))
+    if pid <= 0:
+        raise AutomationError("無法確認已綁定 MT5 視窗的程序。")
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    process = kernel32.OpenProcess(0x1000, False, pid)
+    if not process:
+        raise AutomationError("無法唯讀查詢已綁定 MT5 終端路徑。")
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(
+            process, 0, buffer, ctypes.byref(length)
+        ):
+            raise AutomationError("無法唯讀查詢已綁定 MT5 終端路徑。")
+        path = Path(buffer.value)
+    finally:
+        kernel32.CloseHandle(process)
+    if path.name.casefold() != "terminal64.exe":
+        raise AutomationError(
+            "已綁定視窗不是可確認的 MT5 terminal64.exe，未讀取其他終端。"
+        )
+    return path
+
 def _describe_active_order(order, mt):
     ticket=_display_text(getattr(order,"ticket",None))
     symbol=_display_text(getattr(order,"symbol",None))
@@ -89,6 +128,21 @@ def snapshot_mt5_demo(
     expected: DemoAccount, *, terminal_path: Path = _TERMINAL, sdk=None,
     allow_pending_orders: bool = False,
 ) -> tuple[Position, ...]:
+    """Backward-compatible Demo-only wrapper used by older callers/tests."""
+    if not expected.is_demo:
+        raise AutomationError("MT5 Demo 唯讀讀取拒絕連接 Live 帳戶。")
+    return snapshot_mt5_account(
+        expected,
+        terminal_path=terminal_path,
+        sdk=sdk,
+        allow_pending_orders=allow_pending_orders,
+    )
+
+
+def snapshot_mt5_account(
+    expected: DemoAccount, *, terminal_path: Path, sdk=None,
+    allow_pending_orders: bool = False,
+) -> tuple[Position, ...]:
     """Read native positions, keeping pending orders fail-closed by default.
 
     ``allow_pending_orders`` is only for post-submit fill confirmation: it lets
@@ -96,13 +150,23 @@ def snapshot_mt5_demo(
     A pending order is never treated as a fill or rejection, and normal
     preflight snapshots continue to reject it.
     """
-    if not(expected.verified and expected.is_demo and
-           expected.platform=="MT5" and expected.account_id.isdigit()
-           and expected.server):
-        raise AutomationError("MT5 唯讀前無法確認目標 Demo 帳戶。")
+    if not(
+        expected.verified
+        and expected.platform.upper().endswith("MT5")
+        and expected.account_id.isdigit()
+        and expected.server
+    ):
+        raise AutomationError("MT5 唯讀前無法確認目標帳戶。")
     mt=sdk if sdk is not None else _sdk()
     if not terminal_path.is_file():
         raise AutomationError("MT5 終端執行檔不存在，未讀取任何持倉。")
+    expected_trade_mode = (
+        getattr(mt, "ACCOUNT_TRADE_MODE_DEMO", None)
+        if expected.is_demo
+        else getattr(mt, "ACCOUNT_TRADE_MODE_REAL", None)
+    )
+    if expected_trade_mode is None:
+        raise AutomationError("MT5 唯讀 SDK 無法確認帳戶類型。")
     if not mt.initialize(path=str(terminal_path),timeout=5500):
         raise AutomationError("MT5 唯讀終端無法連線；不可判定空倉。")
     try:
@@ -111,10 +175,10 @@ def snapshot_mt5_demo(
             if (acc is None
                 or str(acc.login)!=expected.account_id
                 or str(acc.server).casefold()!=expected.server.casefold()
-                or int(acc.trade_mode)!=int(mt.ACCOUNT_TRADE_MODE_DEMO)
-                or "demo" not in str(acc.server).casefold()):
+                or int(acc.trade_mode)!=int(expected_trade_mode)
+                or str(acc.server).casefold()!=expected.server.casefold()):
                 raise AutomationError(
-                    "MT5 唯讀帳戶、伺服器或 Demo 身分與已綁定平台不符。"
+                    "MT5 唯讀帳戶、伺服器或 Demo/Live 類型與已綁定平台不符。"
                 )
         verify_account()
         positions=mt.positions_get()

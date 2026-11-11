@@ -55,7 +55,8 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.assertTrue(self.parent.auto_entry_on_fill_both.isChecked())
             self.assertEqual(self.parent.save_ui_state.call_count, 1)
             args = question.call_args.args
-            self.assertIn("兩個已確認的 Demo 帳戶", args[2])
+            self.assertIn("兩個已核對的帳戶", args[2])
+            self.assertIn("Live", args[2])
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.assertEqual(self.parent.save_ui_state.call_count, 2)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())

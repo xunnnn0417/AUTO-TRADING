@@ -172,18 +172,43 @@ class AutoEntryWorkflowTests(unittest.TestCase):
             self.flow.run(self.item,"MT5","MT5","A","url",
                           sync_sl_tp=False,draw_tv=False)
         self.assertNotIn(("submit","internal"),self.port.events)
-    def test_real_or_unverified_account_stops(self):
+    def test_verified_live_accounts_can_run_normal_paired_entry(self):
         self.port.accounts["internal"]=replace(
-            self.port.accounts["internal"],is_demo=False
+            self.port.accounts["internal"],server="broker-Live",is_demo=False
         )
-        with self.assertRaisesRegex(AutomationError,"Demo"):
-            self.run_case()
+        self.port.accounts["external"]=replace(
+            self.port.accounts["external"],server="other-Live",is_demo=False
+        )
+        self.run_case(sync=False,draw=False)
+        self.assertEqual(
+            [event[1] for event in self.port.events if event[0]=="submit"],
+            ["internal","external"],
+        )
+
+    def test_unverified_account_stops_before_any_submission(self):
+        self.port.accounts["internal"]=replace(
+            self.port.accounts["internal"],is_demo=False,verified=False,
+            server="broker-Live",
+        )
+        with self.assertRaisesRegex(AutomationError,"帳戶身分"):
+            self.run_case(sync=False,draw=False)
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
+
+    def test_complete_fault_injection_scenarios_remain_demo_only(self):
+        self.port.accounts["internal"]=replace(
+            self.port.accounts["internal"],server="broker-Live",is_demo=False
+        )
+        with self.assertRaisesRegex(RecoveryRequired,"只允許已核對的 Demo"):
+            self.flow.run_test_scenario(
+                self.item,"cTrader","MT5","A","url",
+                scenario="weekend:BTCUSD",test_run_id="live-not-allowed",
+            )
+        self.assertFalse(any(event[0]=="submit" for event in self.port.events))
     def test_existing_positions_stops(self):
         self.port.open_positions["external"]=(Position(
             "OLD","222222","MT5","XAUUSD","SELL",D("0.2"),D("4100")
         ),)
-        with self.assertRaisesRegex(AutomationError,"已存在持倉"):
+        with self.assertRaisesRegex(AutomationError,"帳戶存在持倉"):
             self.run_case()
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
     def test_direction_or_lot_mismatch_after_submit_is_uncertain(self):

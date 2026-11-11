@@ -249,11 +249,11 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertTrue(all(btn.isEnabled() for btn in self.window.parameter_locked_buttons))
         self.assertTrue(self.window.log_text.isReadOnly())
         self.assertEqual(self.window.auto_entry_on_fill_both.isChecked(),False)
-        # Demo-only broker execution must require native account identity
+        # Verified Demo and Live execution require native account identity
         # and a unique position readback before any GUI order submit.
         self.assertIn("unverified broker UI fails",
                       self.window._auto_entry_after_fill_both_pending.__doc__ or "")
-        self.assertIn("Demo 帳戶",
+        self.assertIn("Live",
                       self.window.auto_entry_on_fill_both.toolTip())
         self.assertIn("不會重複送單",
                       self.window.auto_entry_on_fill_both.toolTip())

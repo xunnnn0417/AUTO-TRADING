@@ -1352,35 +1352,16 @@ class WindowController:
     def read_number_candidates(
         self, window: WindowInfo, point: dict[str, float]
     ) -> list[Decimal]:
-        """Collect numeric OCR candidates across nearby crops and image variants."""
+        """Collect nearby numeric candidates from one wide crop and variants."""
         self.emergency.guard()
         focused = self.focus(window)
         self._validate_calibrated_window(focused, point)
         x, y = self.screen_point(focused, point)
-        attempts = [
-            (x, y, 150, 70),
-            (x, y + 22, 190, 100),
-            (x, y + 35, 230, 125),
-            (x + 35, y, 230, 95),
-        ]
-        found: list[Decimal] = []
-        last_error: AutomationError | None = None
-        for target_x, target_y, width, height in attempts:
-            try:
-                found.extend(self._read_number_candidates_ocr(
-                    target_x,
-                    target_y,
-                    width=width,
-                    height=height,
-                    all_variants=True,
-                ))
-            except AutomationError as exc:
-                last_error = exc
-        if found:
-            return found
-        if last_error is not None:
-            raise last_error
-        raise AutomationError("無法從校準區域取得價格候選數字。")
+        # This rectangle covers the union of the four old overlapping crops.
+        # One screenshot avoids repeating screen capture and OCR inference.
+        return self._read_number_candidates_ocr(
+            x + 18,y + 25,width=280,height=160,all_variants=True,
+        )
 
     def read_account_number(
         self,

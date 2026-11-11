@@ -1,9 +1,10 @@
 """Guarded post-fill trade automation, testable without a broker.
 
-Execution uses a strict BrokerExecutionPort. All transactions require verified
-DEMO accounts and uniquely identified positions. No click or retry on
-uncertain state. The default Windows UI adapter refuses submission until
-the real GUI readback contract has been proven for BOTH brokers.
+Execution uses a strict BrokerExecutionPort. Normal paired entry requires
+verified accounts and uniquely identified positions; explicitly selected
+recovery and fault-injection tests retain their Demo-only guards. No click or
+retry on uncertain state. The default Windows UI adapter refuses submission
+until the real GUI readback contract has been proven for BOTH brokers.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -490,7 +491,7 @@ class AutoEntryWorkflow:
             )
             phase_times["成交資料核對"]=(time.perf_counter()-validate_started)*1000
             self.journal.record(key,f"filled_{role}",f"ticket={pos.ticket}")
-            self.log(f"{role} {platform} Demo 成交已確認：{pos.ticket}")
+            self.log(f"{role} {platform} 成交已確認：{pos.ticket}")
             return pos
         finally:
             elapsed=(time.perf_counter()-started)*1000
@@ -926,30 +927,30 @@ class AutoEntryWorkflow:
             ("cTrader", "MT5"), ("MT5", "cTrader"),
         }:
             raise AutomationError(
-                "快速雙邊目前只支援 cTrader + MT5 的雙 Demo 配置"
+                "快速雙邊目前只支援 cTrader + MT5 的已核對帳戶"
                 "（兩者場內／場外可互換）；本次未送單。"
             )
         # The fill workflow leaves MT5/external on top. Verify its identity
         # first, then switch to internal; never guess stale HWND coordinates.
         accounts_started=time.perf_counter()
         account_e=timed_call(
-            "確認 Demo 帳戶",self.port.inspect_account,
+            "確認交易帳戶",self.port.inspect_account,
             external_platform,"external",
             platform=external_platform,role="external",
         )
         account_i=timed_call(
-            "確認 Demo 帳戶",self.port.inspect_account,
+            "確認交易帳戶",self.port.inspect_account,
             internal_platform,"internal",
             platform=internal_platform,role="internal",
         )
         account_read_ms=(time.perf_counter()-accounts_started)*1000
         for account,platform in ((account_i,internal_platform),
                                  (account_e,external_platform)):
-            if (not account.verified or not account.is_demo
+            if (not account.verified or not isinstance(account.is_demo,bool)
                 or not account.account_id or not account.server
                 or account.platform!=platform):
                 raise AutomationError(
-                    f"{platform} 未證實為已登入的 Demo 帳戶，拒絕自動送單。"
+                    f"{platform} 帳戶身分未完整核對，拒絕自動送單。"
                 )
         if (account_i.platform,account_i.account_id,account_i.server)==(
             account_e.platform,account_e.account_id,account_e.server):
@@ -1011,12 +1012,12 @@ class AutoEntryWorkflow:
             if (not existing or not manual_reconciliation_confirmed
                 or duplicate_confirmation is None):
                 raise AutomationError(
-                    "Demo 已存在持倉。請先核對兩個帳戶的交易歷史，"
+                    "已選帳戶存在持倉。請先核對兩個帳戶的交易歷史，"
                     "使用舊交易紀錄的明確確認流程；不會新增訂單。"
                 )
             if len(before_i)!=1 or len(before_e)!=1:
                 raise RecoveryRequired(
-                    "目前 Demo 已存在持倉，但雙邊未找到各一筆唯一對應持倉，"
+                    "目前已選帳戶存在持倉，但雙邊未找到各一筆唯一對應持倉，"
                     "不能將缺少的交易視為拒單，也不會自動補單。"
                 )
             first,second=before_i[0],before_e[0]
@@ -1072,7 +1073,7 @@ class AutoEntryWorkflow:
                     key,"complete",first.ticket+"/"+second.ticket
                 )
                 self.log(
-                    "原有兩筆 Demo 持倉已核對完成；未再送單，"
+                    "原有兩筆持倉已核對完成；未再送單，"
                     "僅執行明確勾選的後續工作。"
                 )
                 return first,second
@@ -1138,7 +1139,7 @@ class AutoEntryWorkflow:
         )
         try:
             if fast_pair:
-                # Explicitly opted-in Demo-only rapid hedge: BOTH dialogs
+                # Explicitly opted-in rapid hedge: BOTH dialogs
                 # are checked before the first click.  Submission itself
                 # is still reverified once by submit_once, exactly one click.
                 # We do NOT wait for first-side position polling to finish
@@ -1521,14 +1522,14 @@ class AutoEntryWorkflow:
                     f"{(time.perf_counter()-tv_started)*1000:.0f}ms。"
                 )
             self.journal.record(key,"complete",first.ticket+"/"+second.ticket)
-            self.log("雙 Demo 自動進場、成交核對及已啟用的後續步驟完成。")
+            self.log("雙邊自動進場、成交核對及已啟用的後續步驟完成。")
             return first,second
         except Exception as exc:
             # Persist uncertainty, do not auto-close, retry a submit, or
             # blindly hedge the other side. No hidden recovery actions.
             self.journal.record(key,"attention_required",str(exc))
             raise RecoveryRequired(
-                "自動進場中斷，可能有單邊 Demo 持倉。"
+                "自動進場中斷，可能有單邊持倉。"
                 "已停下且不會重複送單或自行平倉；"
                 f"請人工確認兩邊帳戶後再處理。原因：{exc}"
             ) from exc
@@ -1543,6 +1544,22 @@ class AutoEntryWorkflow:
         """Run one complete, explicitly selected Demo recovery test."""
         if not test_run_id.strip():
             raise RecoveryRequired("缺少本次測試識別碼；尚未送單。")
+        if scenario not in {
+            "weekend:BTCUSD", "weekend:ETHUSD",
+            "reentry:internal", "reentry:external",
+            "close:internal", "close:external",
+        }:
+            raise RecoveryRequired("完整測試情境無效；尚未操作交易平台。")
+        for platform,role in (
+            (internal_platform,"internal"),(external_platform,"external")
+        ):
+            account=self.port.inspect_account(platform,role)
+            if (not account.verified or account.is_demo is not True
+                    or not account.account_id or not account.server
+                    or account.platform!=platform):
+                raise RecoveryRequired(
+                    "完整測試情境只允許已核對的 Demo 帳戶；尚未操作交易平台。"
+                )
         if scenario in ("weekend:BTCUSD","weekend:ETHUSD"):
             positions=self.run(
                 instruction,internal_platform,external_platform,
@@ -1554,11 +1571,6 @@ class AutoEntryWorkflow:
                 "scenario":scenario,"outcome":"weekend_pair_confirmed",
                 "positions":positions,
             }
-        if scenario not in {
-            "reentry:internal", "reentry:external",
-            "close:internal", "close:external",
-        }:
-            raise RecoveryRequired("完整測試情境無效；尚未操作交易平台。")
         role=scenario.rsplit(":",1)[1]
         if scenario.startswith("reentry:"):
             positions=self.run(

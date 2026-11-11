@@ -171,7 +171,7 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
     def test_failed_preflight_does_not_claim_stale_existing_positions(self):
         from dataclasses import replace
         self.port.accounts["external"]=replace(
-            self.port.accounts["external"],is_demo=False
+            self.port.accounts["external"],is_demo=False,verified=False
         )
         with self.assertRaises(Exception):
             self.run_gui_entry(sync=True)

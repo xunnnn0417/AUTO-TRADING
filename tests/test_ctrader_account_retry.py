@@ -67,10 +67,12 @@ class CTraderAccountRetryTests(unittest.TestCase):
             "CTraderAccountNumberTextBlock_AId", "9999999"
         )]], verify)
 
-    def test_live_account_identity_fails_immediately(self):
+    def test_live_account_identity_is_verified_immediately(self):
         def verify(port, window, sleep):
-            with self.assertRaises(AutomationError):
-                port.inspect_account("cTrader", "external")
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertFalse(account.is_demo)
+            self.assertTrue(account.verified)
             self.assertEqual(window.descendants.call_count, 1)
             sleep.assert_not_called()
         self.run_with_snapshots([identity(kind="Live")], verify)

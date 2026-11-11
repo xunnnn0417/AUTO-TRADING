@@ -156,12 +156,12 @@ class FillVerificationTests(unittest.TestCase):
         self.fake.read_number=MagicMock(side_effect=[
             D("4100.25"),D("4100.00")]*3
         )
-        with self.assertRaisesRegex(AutomationError,"連續 3 次未能可靠核對"):
+        with self.assertRaisesRegex(AutomationError,"連續 2 次未能可靠核對"):
             self.automation._read_mt5_quote_pair(
                 self.window,{}, {},instruction,"BUY","場內"
             )
         self.fake.read_number=MagicMock(side_effect=[D("4100"),D("4160")]*3)
-        with self.assertRaisesRegex(AutomationError,"連續 3 次未能可靠核對"):
+        with self.assertRaisesRegex(AutomationError,"連續 2 次未能可靠核對"):
             self.automation._read_mt5_quote_pair(
                 self.window,{}, {},instruction,"BUY","場內"
             )
@@ -175,7 +175,7 @@ class FillVerificationTests(unittest.TestCase):
             self.fake.read_number=MagicMock(
                 side_effect=[D("428.52"),D("436.02")]*3
             )
-            with self.assertRaisesRegex(AutomationError,"連續 3 次未能可靠核對"):
+            with self.assertRaisesRegex(AutomationError,"連續 2 次未能可靠核對"):
                 self.automation._read_mt5_quote_pair(
                     self.window,{}, {},instruction,"BUY","場內"
                 )
@@ -243,21 +243,22 @@ class FillVerificationTests(unittest.TestCase):
         controller.focus=MagicMock(return_value=self.window)
         controller._validate_calibrated_window=MagicMock()
         controller.screen_point=MagicMock(return_value=(100,200))
-        controller._read_number_candidates_ocr=MagicMock(side_effect=[
-            [D("422.25"),D("2422.25")],
-            [D("2422.25")],
-            [D("2422.25")],
-            [D("422.25")],
-        ])
+        controller._read_number_candidates_ocr=MagicMock(
+            return_value=[D("422.25"),D("2422.25"),D("2422.25")]
+        )
         candidates=controller.read_number_candidates(self.window,{"x_px":1})
         self.assertEqual(candidates,[
-            D("422.25"),D("2422.25"),D("2422.25"),D("2422.25"),D("422.25")
+            D("422.25"),D("2422.25"),D("2422.25")
         ])
-        self.assertEqual(controller._read_number_candidates_ocr.call_count,4)
+        self.assertEqual(controller._read_number_candidates_ocr.call_count,1)
         self.assertTrue(all(
             call.kwargs["all_variants"]
             for call in controller._read_number_candidates_ocr.call_args_list
         ))
+        self.assertEqual(
+            controller._read_number_candidates_ocr.call_args.kwargs,
+            {"width":280,"height":160,"all_variants":True},
+        )
 
     def test_eth_price_range_guard_is_limited_to_explicit_test_mode(self):
         instruction=SimpleNamespace(symbol="ETHUSD")

@@ -307,11 +307,10 @@ class OneInventorySubmitTests(unittest.TestCase):
             timings["uia_inventory_returned"], timings["click_started"]
         )
 
-    def test_non_demo_cannot_click(self):
+    def test_verified_live_account_can_click(self):
         self.kind._text = "Live"
-        with self.assertRaises(AutomationError):
-            self.submit()
-        self.windows.click.assert_not_called()
+        self.submit()
+        self.windows.click.assert_called_once()
 
     def test_duplicate_account_control_cannot_click(self):
         self.nodes.append(Node(

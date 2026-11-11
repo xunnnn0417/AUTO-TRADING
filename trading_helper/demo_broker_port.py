@@ -1,10 +1,10 @@
-"""GUI-controlled DEMO execution port with strict readback guards.
+"""GUI-controlled execution port with strict readback guards.
 
 No orders are performed during imports, tests, construction or inspection.
-Only a user-initiated "fill both" may reach submit_once. Every broker account
-must be reverified as DEMO immediately before ONE click. The command is NEVER
-retried on timeout/uncertainty. Position reading is required both before
-and after the click; missing/multiple/unknown IDs fail closed.
+Only a user-initiated "fill both" may reach submit_once. Every account must
+be reverified immediately before ONE click. The command is NEVER retried on
+timeout/uncertainty. Position reading is required both before and after the
+click; missing/multiple/unknown IDs fail closed.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ class DemoUiBrokerPort:
             raise AutomationError("成交持倉與場別不一致，拒絕修改止盈止損。")
         expected=self._account_binding.get((platform,role))
         if expected is None or expected.account_id != position.account_id:
-            raise AutomationError("持倉帳戶與已核對 Demo 帳戶不一致。")
+            raise AutomationError("持倉帳戶與已核對帳戶不一致。")
         key=(platform,position.ticket)
         current=self._ticket_role.get(key)
         if current is not None and current!=role:
@@ -225,7 +225,7 @@ class DemoUiBrokerPort:
         text=str(raw or "").strip().replace("\u00a0","").replace(" ","")
         if text in ("","—","–","-","N/A"):
             if empty_ok:return None
-            raise AutomationError("Demo 持倉數值空白，不可推測。")
+            raise AutomationError("MT5 持倉數值空白，不可推測。")
         if text.count(",") and text.count("."):
             text=text.replace(",","")
         elif text.count(",")==1 and "." not in text:
@@ -234,9 +234,9 @@ class DemoUiBrokerPort:
         try:
             result=Decimal(text)
         except (ValueError,InvalidOperation) as exc:
-            raise AutomationError(f"Demo 持倉數值不可辨識：{raw!r}") from exc
+            raise AutomationError(f"MT5 持倉數值不可辨識：{raw!r}") from exc
         if not result.is_finite():
-            raise AutomationError("Demo 持倉數值不是有限數。")
+            raise AutomationError("MT5 持倉數值不是有限數。")
         return result
 
     @classmethod
@@ -294,21 +294,31 @@ class DemoUiBrokerPort:
             window=_window
         title=str(window.title or "")
         if "MT5" in platform.upper():
-            m=re.search(r"\b(\d{5,})\s*-\s*([^\s-]+(?:-[^\s-]+)*-Demo)\b",
+            m=re.search(r"\b(\d{5,})\s*-\s*([^\s:]+)(?::|\s|$)",
                         title,re.IGNORECASE)
             if not m:
                 raise AutomationError(
-                    f"{role} MT5 視窗未確認 Demo 帳號和伺服器，禁止送單。"
+                    f"{role} MT5 視窗未確認帳號和伺服器，禁止送單。"
+                )
+            server=m.group(2).strip()
+            server_fold=server.casefold()
+            if "demo" in server_fold:
+                is_demo=True
+            elif "live" in server_fold or "real" in server_fold:
+                is_demo=False
+            else:
+                raise AutomationError(
+                    f"{role} MT5 視窗未標明 Demo 或 Live 帳戶類型，禁止送單。"
                 )
             return self._bind_verified_account(
                 platform,role,
-                DemoAccount(platform,m.group(1),m.group(2),True,True)
+                DemoAccount(platform,m.group(1),server,is_demo,True)
             )
         from pywinauto import Desktop
         try:
             # A transient UIA tree may omit the cTrader account number
             # during a window transition. Retry ONLY when its count is zero.
-            # Duplicate IDs, changed identities and non-DEMO still fail closed.
+            # Duplicate IDs, changed identities and unknown account types still fail closed.
             for attempt in range(1 if _controls is not None else 3):
                 elements=(
                     _controls if _controls is not None
@@ -339,22 +349,29 @@ class DemoUiBrokerPort:
                 return str(found[0].window_text()).strip()
             number=unique("CTraderAccountNumberTextBlock_AId")
             kind=unique("CTraderAccountTypeTextBlock_AId")
+            account_kind=kind.casefold().strip()
+            if account_kind in {"demo","模擬","模擬帳戶"}:
+                is_demo=True
+            elif account_kind in {"live","real","實盤","真實"}:
+                is_demo=False
+            else:
+                is_demo=None
             broker=[e for e in elements if e.is_visible() and
                     "BrokerNameShort" in str(e.element_info.automation_id)]
             if (not number.isdigit() or len(number)<5 or
-                kind.casefold()!="demo" or len(broker)!=1 or
+                is_demo is None or len(broker)!=1 or
                 not broker[0].window_text().strip()):
-                raise AutomationError("cTrader 沒有可確認的 Demo 帳戶識別。")
+                raise AutomationError("cTrader 沒有可確認的 Demo/Live 帳戶識別。")
             return self._bind_verified_account(
                 platform,role,
                 DemoAccount(
-                    platform,number,broker[0].window_text().strip(),True,True
+                    platform,number,broker[0].window_text().strip(),is_demo,True
                 )
             )
         except AutomationError:
             raise
         except Exception as exc:
-            raise AutomationError(f"cTrader Demo 帳戶唯讀驗證失敗：{exc}") from exc
+            raise AutomationError(f"cTrader 帳戶唯讀驗證失敗：{exc}") from exc
 
     def _ctrader_grid(self, platform, role):
         from pywinauto import Desktop
@@ -473,9 +490,14 @@ class DemoUiBrokerPort:
             raise AutomationError("cTrader 唯一持倉識別碼重複，拒絕進場。")
         return tuple(found)
 
-    def _mt5_positions(self, platform, role, account):
+    def _mt5_position_rows(
+        self, platform, role, account, *, window=None, allow_blank_rows=False
+    ):
         from pywinauto import Desktop
-        _,win=self._bound(platform,role)
+        if window is None:
+            _,win=self._bound(platform,role)
+        else:
+            win=window
         window=Desktop(backend="win32").window(handle=win.handle)
         views=[w for w in window.descendants()
                if w.class_name()=="SysListView32" and w.control_id()==10328
@@ -487,7 +509,12 @@ class DemoUiBrokerPort:
             raise AutomationError("MT5 持倉表欄位不足，拒絕讀取。")
         positions=[]
         blank_rows=0
-        for i in range(view.item_count()):
+        row_count=view.item_count()
+        if row_count<=0:
+            raise AutomationError(
+                "MT5 Trade 清單沒有可定位的持倉列；未修改止盈止損。"
+            )
+        for i in range(row_count):
             cols=[str(view.get_item(i,j).text() or "").strip() for j in range(9)]
             if not any(cols):
                 blank_rows+=1
@@ -497,7 +524,7 @@ class DemoUiBrokerPort:
                 raise AutomationError(
                     "MT5 持倉表含非訂單列，無法確定是否切在 Trade 分頁。"
                 )
-            positions.append(Position(
+            positions.append((i,Position(
                 ticket,account.account_id,platform,cols[0],
                 # MT5 Win32 ListView has an undisplayed subitem #2:
                 # ticket=1, time=3, type=4, volume=5, entry=6,
@@ -507,32 +534,129 @@ class DemoUiBrokerPort:
                 self._decimal(cols[6]),
                 self._decimal(cols[7],empty_ok=True),
                 self._decimal(cols[8],empty_ok=True),
-            ))
+            )))
         # On some MT5 terminals, virtual/owner-drawn Win32 ListView
         # items report blank text even when the on-screen Trade tab has
         # a position. Multiple unreadable items are UNKNOWN, not 0 orders.
-        if blank_rows>1 and not positions:
+        if blank_rows>1 and not positions and not allow_blank_rows:
             raise AutomationError(
                 "MT5 Trade 清單回傳多筆空白虛擬列，無法證明空倉；"
                 "禁止將持倉數誤判為 0，請確認交易分頁與持倉。"
             )
-        if len(set(x.ticket for x in positions))!=len(positions):
+        tickets=[position.ticket for _,position in positions]
+        if len(set(tickets))!=len(positions):
             raise AutomationError("MT5 持倉表有重複訂單編號。")
         return tuple(positions)
 
-    def snapshot_positions(self, platform, role) -> tuple[Position,...]:
-        account=self.inspect_account(platform,role)
-        if platform=="MT5":
-            # MT5's owner-drawn Trade ListView often returns blank UIA rows
-            # although a real open trade is visible. Query ONLY the native
-            # terminal's read-only account/position API; it is independently
-            # Demo/account-verified and contains NO order_send operation.
-            from .mt5_native_readonly import snapshot_mt5_demo
-            return snapshot_mt5_demo(account)
+    def _mt5_positions(self, platform, role, account, *, window=None):
+        return tuple(
+            position
+            for _,position in self._mt5_position_rows(
+                platform,role,account,window=window
+            )
+        )
+
+    def find_mt5_position_row(
+        self, platform, role, *, expected_symbol, expected_direction,
+        expected_volume, window,
+    ):
+        """Match one verified native position to its exact visible MT5 row."""
+        account=self.inspect_account(platform,role,_window=window)
+        native_positions=self.snapshot_positions(
+            platform,role,_window=window,allow_pending_orders=False
+        )
+        expected_symbol=str(expected_symbol or "").strip().upper()
+        aliases={
+            "GOLD":{"GOLD","XAUUSD"},
+            "XAUUSD":{"GOLD","XAUUSD"},
+            "SILVER":{"SILVER","XAGUSD"},
+            "XAGUSD":{"SILVER","XAGUSD"},
+        }
+        accepted=aliases.get(expected_symbol,{expected_symbol})
+
+        def same_symbol(actual):
+            actual=str(actual or "").strip().upper()
+            return any(
+                actual==candidate or any(
+                    actual.startswith(candidate+suffix)
+                    for suffix in ("+", ".", "_", "-")
+                )
+                for candidate in accepted
+            )
+
+        matched=[
+            position for position in native_positions
+            if same_symbol(position.symbol)
+            and position.direction.upper()==str(expected_direction).upper()
+            and abs(position.volume-expected_volume)<=Decimal("0.001")
+        ]
+        if len(matched)!=1:
+            nearby=[
+                position for position in native_positions
+                if same_symbol(position.symbol)
+            ]
+            observed=(
+                "；同商品持倉：" + "、".join(
+                    f"{position.symbol} {position.direction} "
+                    f"{position.volume} 手（單號 {position.ticket}）"
+                    for position in nearby[:5]
+                )
+                if nearby else "；唯讀資料沒有同商品持倉"
+            )
+            raise AutomationError(
+                "MT5 唯讀持倉核對未找到唯一目標："
+                f"商品 {expected_symbol}、方向 {expected_direction}、"
+                f"手數 {expected_volume}；符合筆數 {len(matched)}"
+                f"{observed}。"
+                "未修改止盈止損。"
+            )
+        visible_rows=self._mt5_position_rows(
+            platform,role,account,window=window,allow_blank_rows=True
+        )
+        row_indices=[
+            index for index,position in visible_rows
+            if position.ticket==matched[0].ticket
+        ]
+        if not visible_rows and len(native_positions)==1:
+            # With no pending orders and exactly one native open position,
+            # the only Trade row is the calibrated first row. This fallback
+            # is deliberately unavailable when another position could be
+            # mistaken for the target.
+            self.log(
+                "MT5 清單列文字空白；唯讀資料只確認到一筆持倉，"
+                "改用已校準的第一列。"
+            )
+            return 0,matched[0]
+        if len(row_indices)!=1:
+            if not visible_rows:
+                raise AutomationError(
+                    "MT5 清單列文字空白，且有多筆持倉，"
+                    "無法安全對應目標列；未修改止盈止損。"
+                )
+            raise AutomationError(
+                "MT5 唯讀資料已找到目標持倉，但畫面沒有唯一相同單號；"
+                "未修改止盈止損。"
+            )
+        return row_indices[0],matched[0]
+
+    def snapshot_positions(
+        self, platform, role, *, _window=None, allow_pending_orders=False
+    ) -> tuple[Position,...]:
+        account=self.inspect_account(platform,role,_window=_window)
         if "MT5" in platform.upper():
-            # Other differently installed MT5 terminals are not silently
-            # connected to the main ICMarkets terminal by the native API.
-            return self._mt5_positions(platform,role,account)
+            if _window is None:
+                _,window=self._bound(platform,role)
+            else:
+                window=_window
+            from .mt5_native_readonly import (
+                snapshot_mt5_account,terminal_path_for_window,
+            )
+            terminal_path=terminal_path_for_window(window)
+            return snapshot_mt5_account(
+                account,
+                terminal_path=terminal_path,
+                allow_pending_orders=allow_pending_orders,
+            )
         return self._ctrader_positions(platform,role,account)
 
     @staticmethod
@@ -918,14 +1042,14 @@ class DemoUiBrokerPort:
         self.submit_phase_timings[role]=timestamps
 
     def _snapshot_positions_for_fill_confirmation(self, platform, role):
-        if platform == "MT5":
+        if "MT5" in platform.upper():
             # Preflight snapshots still reject every pending order. After our
             # single submit, however, a transient pending state must not abort
             # the 15-second read-only check before an open position appears.
             # Never infer a fill or rejection from the pending order itself.
-            account = self.inspect_account(platform, role)
-            from .mt5_native_readonly import snapshot_mt5_demo
-            return snapshot_mt5_demo(account, allow_pending_orders=True)
+            return self.snapshot_positions(
+                platform,role,allow_pending_orders=True
+            )
         return self.snapshot_positions(platform, role)
 
     def confirm_new_position(self,platform,role,baseline,direction,volume,account_id):

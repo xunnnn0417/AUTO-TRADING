@@ -79,7 +79,7 @@ class FramelessHeaderTests(unittest.TestCase):
             b for b in w.findChildren(QPushButton) if b.text()=="打開試算表"
         ]),1)
         self.assertNotIn("送單流程待設定",[x.text() for x in w.findChildren(gui.QLabel)])
-        self.assertIn("可能真的",w.auto_entry_on_fill_both.toolTip())
+        self.assertIn("Live",w.auto_entry_on_fill_both.toolTip())
         self.assertIn("不會重複送單",w.auto_entry_on_fill_both.toolTip())
         # Content follows the single titlebar row; there is no second full
         # height settings strip in the main scroll area.

@@ -211,7 +211,8 @@ class SettingsAndDialogTests(unittest.TestCase):
             TradingHelperApp._confirm_auto_entry_toggle(self.parent,True)
         text=q.call_args.args[2]
         self.assertNotIn("\\n",text)
-        self.assertIn("只限兩個已確認的 Demo 帳戶",text)
+        self.assertIn("只限兩個已核對的帳戶",text)
+        self.assertIn("Live",text)
         self.assertIn("不重送或平倉",text)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
         self.parent.auto_entry_on_fill_both.close()

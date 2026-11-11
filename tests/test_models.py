@@ -7,6 +7,7 @@ from trading_helper.sheets import SheetReader, _cell_position
 from trading_helper.windows import (
     KEYEVENTF_KEYUP,
     INPUT,
+    AutomationError,
     CalibrationMismatchError,
     VK_LMENU,
     VK_LSHIFT,
@@ -647,6 +648,7 @@ class TradeInstructionTests(unittest.TestCase):
         points = {
             "trade_tab": dict(stale_point, id="trade_tab"),
             "position_order_lot": dict(stale_point, id="lot"),
+            "position_order_lot_next": dict(stale_point, id="next_lot"),
             "position_order_row": dict(stale_point, id="row"),
             "position_sl_input": dict(stale_point, id="sl"),
             "position_tp_input": dict(stale_point, id="tp"),
@@ -687,8 +689,7 @@ class TradeInstructionTests(unittest.TestCase):
                 return None
 
             def read_number_near(self, window, point, expected):
-                self.read_from.append(window.title)
-                return Decimal("0.44")
+                raise AssertionError("MT5 hand size must use read-only position data")
 
             def double_click(self, window, point):
                 self.double_clicked.append((window.title, point["id"]))
@@ -704,22 +705,37 @@ class TradeInstructionTests(unittest.TestCase):
         fake = FakeWindows()
         automation.windows = fake
 
-        automation.sync_external_sl_tp(
-            item,
-            internal_platform="MT5",
-            external_platform="MT5",
-            entry_price_override=Decimal("100"),
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from trading_helper.demo_broker_port import DemoUiBrokerPort
+        matched_position = SimpleNamespace(
+            ticket="123456", symbol="EURUSD", direction="SELL",
+            volume=Decimal("0.8"),
+        )
+        with patch.object(
+            DemoUiBrokerPort,"find_mt5_position_row",
+            return_value=(0,matched_position),
+        ) as match:
+            automation.sync_external_sl_tp(
+                item,
+                internal_platform="MT5",
+                external_platform="MT5",
+                entry_price_override=Decimal("100"),
+            )
+        self.assertEqual(match.call_args.kwargs["expected_symbol"],"EURUSD")
+        self.assertEqual(
+            match.call_args.kwargs["expected_volume"],item.external.lot
         )
 
         self.assertEqual(fake.clicked, [("Right MT5", "trade_tab")])
-        self.assertEqual(fake.read_from, ["Right MT5"])
+        self.assertEqual(fake.read_from, [])
         self.assertEqual(fake.double_clicked, [("Right MT5", "row")])
         self.assertTrue(fake.typed)
         self.assertTrue(
             all(title == "Modify from Right MT5" for title, _, _ in fake.typed)
         )
 
-    def test_mt5_external_sync_does_not_hide_calibration_size_mismatch(self) -> None:
+    def test_mt5_external_sync_stops_when_readonly_lot_does_not_match(self) -> None:
         item = TradeInstruction.from_mapping(2, valid_values())
         point = {
             "x": 0.5,
@@ -734,6 +750,7 @@ class TradeInstructionTests(unittest.TestCase):
                         "window_title": {"internal": "Internal MT5", "external": "External MT5"},
                         "points": {
                             "position_order_lot": point,
+                            "position_order_lot_next": point,
                             "position_order_row": point,
                             "position_sl_input": point,
                             "position_tp_input": point,
@@ -753,25 +770,24 @@ class TradeInstructionTests(unittest.TestCase):
                 self.asserted_pattern = pattern
                 return WindowInfo(1, "External MT5", 0, 0, 200, 100)
 
-            def read_number_near(self, window, target, expected):
-                raise CalibrationMismatchError(
-                    "平台視窗尺寸和校準時不同。校準 100×100，目前 200×100。"
-                )
-
             def double_click(self, window, target):
                 self.double_clicked = True
 
         fake = FakeWindows()
         automation.windows = fake
-        with self.assertRaisesRegex(
-            CalibrationMismatchError, "場外 MT5 持倉手數位置校準尺寸不符"
+        from unittest.mock import patch
+        from trading_helper.demo_broker_port import DemoUiBrokerPort
+        with patch.object(
+            DemoUiBrokerPort,"find_mt5_position_row",
+            side_effect=AutomationError("MT5 唯讀持倉核對未找到唯一目標"),
         ):
-            automation.sync_external_sl_tp(
-                item,
-                internal_platform="MT5",
-                external_platform="MT5",
-                entry_price_override=Decimal("1.1"),
-            )
+            with self.assertRaisesRegex(AutomationError,"唯讀持倉核對"):
+                automation.sync_external_sl_tp(
+                    item,
+                    internal_platform="MT5",
+                    external_platform="MT5",
+                    entry_price_override=Decimal("1.1"),
+                )
         self.assertFalse(fake.double_clicked)
 
     def test_internal_entry_price_explains_which_calibration_is_stale(self) -> None:
