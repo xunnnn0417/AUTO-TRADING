@@ -1268,8 +1268,46 @@ class PlatformAutomation:
             )
             operation_points = points
 
-        for point_name, label, value in values:
-            if modify_window is not None:
+        if use_position_modify_flow:
+            current_values: dict[str, Decimal] = {}
+            for point_name, label, value in values:
+                raw = self.windows.read_edit_value(
+                    modify_window, operation_points[point_name]
+                )
+                current_values[point_name] = self._normalize_numeric_input(
+                    raw, Decimal(value)
+                )
+
+            if all(
+                current_values[point_name] == Decimal(value)
+                for point_name, _, value in values
+            ):
+                self.emergency.guard()
+                self.windows.press(modify_window, "esc")
+                self.windows.wait_for_active_window_change(
+                    modify_window, timeout=2.0
+                )
+                self.log(
+                    f"場外 {external_platform} 的止盈止損已與目標相同；"
+                    "不需送出，已關閉修改視窗。"
+                )
+                return None
+
+            confirm_point = points.get("position_modify_confirm")
+            if not confirm_point:
+                self.emergency.guard()
+                self.windows.press(modify_window, "esc")
+                self.windows.wait_for_active_window_change(
+                    modify_window, timeout=2.0
+                )
+                raise AutomationError(
+                    f"場外 {external_platform} 缺少「套用持倉 SL／TP」校準；"
+                    "未送出修改。"
+                )
+
+            for point_name, label, value in values:
+                if current_values[point_name] == Decimal(value):
+                    continue
                 self.emergency.guard()
                 self.log(f"正在填入場外 {external_platform} 的{label}：{value}")
                 self.windows.click_and_type(
@@ -1277,7 +1315,40 @@ class PlatformAutomation:
                     operation_points[point_name],
                     value,
                 )
-            else:
+                raw = self.windows.read_edit_value(
+                    modify_window, operation_points[point_name]
+                )
+                actual = self._normalize_numeric_input(raw, Decimal(value))
+                if actual != Decimal(value):
+                    self.emergency.guard()
+                    self.windows.press(modify_window, "esc")
+                    self.windows.wait_for_active_window_change(
+                        modify_window, timeout=2.0
+                    )
+                    raise AutomationError(
+                        f"場外 {external_platform} 的{label}欄位讀回 {raw}，"
+                        f"與目標 {value} 不符；未送出。"
+                    )
+
+            self.emergency.guard()
+            self.windows.click(modify_window, confirm_point)
+            try:
+                self.windows.wait_for_active_window_change(
+                    modify_window, timeout=2.0
+                )
+            except AutomationError as exc:
+                raise AutomationError(
+                    f"已按場外 {external_platform} 修改送出，但修改視窗仍未關閉；"
+                    "結果不明，請先核對持倉列，不要重複送出。"
+                ) from exc
+            self.log(
+                f"場外 {external_platform} 持倉止盈止損已送出；"
+                "修改視窗已關閉，請核對持倉列。"
+            )
+            return None
+
+        for point_name, label, value in values:
+            if modify_window is None:
                 self._fill_field(
                     profile,
                     "external",
@@ -1288,18 +1359,11 @@ class PlatformAutomation:
                     label,
                     value,
                 )
-        if use_position_modify_flow:
-            self.log(
-                f"場外 {external_platform} 持倉止盈止損價格已填入："
-                f"止損 {instruction.format_price(sl_price)}，"
-                f"止盈 {instruction.format_price(tp_price)}。"
-            )
-        else:
-            self.log(
-                f"場外 {external_platform} 止盈止損已填入："
-                f"止損 {_plain(instruction.external.sl_points)} 點，"
-                f"止盈 {_plain(instruction.external.tp_points)} 點。"
-            )
+        self.log(
+            f"場外 {external_platform} 止盈止損已填入："
+            f"止損 {_plain(instruction.external.sl_points)} 點，"
+            f"止盈 {_plain(instruction.external.tp_points)} 點。"
+        )
         return None
 
     def _activate_mt5_trade_tab(

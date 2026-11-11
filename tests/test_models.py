@@ -652,6 +652,7 @@ class TradeInstructionTests(unittest.TestCase):
             "position_order_row": dict(stale_point, id="row"),
             "position_sl_input": dict(stale_point, id="sl"),
             "position_tp_input": dict(stale_point, id="tp"),
+            "position_modify_confirm": dict(stale_point, id="confirm"),
         }
         automation = PlatformAutomation(
             {
@@ -676,6 +677,9 @@ class TradeInstructionTests(unittest.TestCase):
                 self.double_clicked = []
                 self.typed = []
                 self.read_from = []
+                self.initial_values = {"sl": "1", "tp": "2"}
+                self.pressed = []
+                self.window_changes = 0
 
             def find(self, pattern):
                 if pattern != "Right MT5":
@@ -695,12 +699,25 @@ class TradeInstructionTests(unittest.TestCase):
                 self.double_clicked.append((window.title, point["id"]))
 
             def wait_for_active_window_change(self, window, timeout):
-                if window.title != "Right MT5":
-                    raise AssertionError(window.title)
-                return WindowInfo(2, "Modify from Right MT5", 0, 0, 100, 100)
+                self.window_changes += 1
+                if window.title == "Right MT5":
+                    return WindowInfo(2, "Modify from Right MT5", 0, 0, 100, 100)
+                if window.title == "Modify from Right MT5":
+                    return WindowInfo(1, "Right MT5", 0, 0, 100, 100)
+                raise AssertionError(window.title)
 
             def click_and_type(self, window, point, value):
                 self.typed.append((window.title, point["id"], value))
+
+            def read_edit_value(self, window, point):
+                matches = [
+                    value for title, key, value in self.typed
+                    if title == window.title and key == point["id"]
+                ]
+                return matches[-1] if matches else self.initial_values[point["id"]]
+
+            def press(self, window, key):
+                self.pressed.append((window.title, key))
 
         fake = FakeWindows()
         automation.windows = fake
@@ -727,7 +744,10 @@ class TradeInstructionTests(unittest.TestCase):
             match.call_args.kwargs["expected_volume"],item.external.lot
         )
 
-        self.assertEqual(fake.clicked, [("Right MT5", "trade_tab")])
+        self.assertEqual(
+            fake.clicked,
+            [("Right MT5", "trade_tab"), ("Modify from Right MT5", "confirm")],
+        )
         self.assertEqual(fake.read_from, [])
         self.assertEqual(fake.double_clicked, [("Right MT5", "row")])
         self.assertTrue(fake.typed)
@@ -754,6 +774,7 @@ class TradeInstructionTests(unittest.TestCase):
                             "position_order_row": point,
                             "position_sl_input": point,
                             "position_tp_input": point,
+                            "position_modify_confirm": point,
                         },
                     }
                 }
@@ -1009,6 +1030,9 @@ class TradeInstructionTests(unittest.TestCase):
             "position_tp_input": {
                 "id": "tp", "window_width": 100, "window_height": 100,
             },
+            "position_modify_confirm": {
+                "id": "confirm", "window_width": 100, "window_height": 100,
+            },
         }
         automation = PlatformAutomation(
             {
@@ -1032,6 +1056,9 @@ class TradeInstructionTests(unittest.TestCase):
                 self.typed = []
                 self.clicked = []
                 self.double_clicked = False
+                self.pressed = []
+                self.initial_values = {"sl": "90", "tp": "120"}
+                self.readback_override = {}
 
             def find(self, pattern):
                 return WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
@@ -1055,10 +1082,26 @@ class TradeInstructionTests(unittest.TestCase):
                 self.double_clicked = True
 
             def wait_for_active_window_change(self, window, timeout):
-                return WindowInfo(2, "Modify Position", 0, 0, 100, 100)
+                if window.title == "cTrader 5.7.14":
+                    return WindowInfo(2, "Modify Position", 0, 0, 100, 100)
+                if window.title == "Modify Position":
+                    return WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
+                raise AssertionError(window.title)
 
             def click_and_type(self, window, point, value):
                 self.typed.append((window.title, point["id"], value))
+
+            def read_edit_value(self, window, point):
+                matches = [
+                    value for title, key, value in self.typed
+                    if title == window.title and key == point["id"]
+                ]
+                if matches:
+                    return self.readback_override.get(point["id"], matches[-1])
+                return self.initial_values[point["id"]]
+
+            def press(self, window, key):
+                self.pressed.append((window.title, key))
 
         fake = FakeWindows()
         automation.windows = fake
@@ -1079,6 +1122,37 @@ class TradeInstructionTests(unittest.TestCase):
                 ("Modify Position", "tp", "995.00"),
             ],
         )
+        self.assertIn(("Modify Position", "confirm"), fake.clicked)
+
+        # When both values already match, do not leave the disabled submit
+        # button open or submit an unchanged modification.
+        fake.typed.clear()
+        fake.clicked.clear()
+        fake.initial_values = {"sl": "1006.00", "tp": "995.00"}
+        fake.pressed.clear()
+        automation.sync_external_sl_tp(
+            item,
+            internal_platform="cTrader",
+            external_platform="cTrader",
+        )
+        self.assertNotIn(("Modify Position", "confirm"), fake.clicked)
+        self.assertEqual(fake.typed, [])
+        self.assertIn(("Modify Position", "esc"), fake.pressed)
+
+        # A value that cannot be read back exactly must never be submitted.
+        fake.typed.clear()
+        fake.clicked.clear()
+        fake.pressed.clear()
+        fake.initial_values = {"sl": "90", "tp": "120"}
+        fake.readback_override = {"sl": "999"}
+        with self.assertRaises(AutomationError):
+            automation.sync_external_sl_tp(
+                item,
+                internal_platform="cTrader",
+                external_platform="cTrader",
+            )
+        self.assertNotIn(("Modify Position", "confirm"), fake.clicked)
+        self.assertIn(("Modify Position", "esc"), fake.pressed)
 
     def test_tradingview_draw_internal_uses_internal_direction(self) -> None:
         values = valid_values()
