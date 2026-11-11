@@ -55,8 +55,7 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.assertTrue(self.parent.auto_entry_on_fill_both.isChecked())
             self.assertEqual(self.parent.save_ui_state.call_count, 1)
             args = question.call_args.args
-            self.assertIn("核對通過會送出兩筆訂單", args[2])
-            self.assertIn("自動同步場外 SL/TP", args[2])
+            self.assertIn("自動進場並同步場外 SL／TP", args[2])
             self.assertIn("Live", args[2])
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.assertEqual(self.parent.save_ui_state.call_count, 2)
@@ -211,8 +210,8 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.parent.auto_fast_pair.setChecked(True)
             self.assertTrue(self.parent.auto_fast_pair.isChecked())
             message=question.call_args.args[2]
-            self.assertIn("若只有一邊成交",message)
-            self.assertIn("不自動補單或平倉",message)
+            self.assertIn("單邊結果不明就停止",message)
+            self.assertIn("不補單或平倉",message)
             self.assertNotIn(chr(92)+"n",message)
             self.assertEqual(question.call_args.kwargs["yes_text"],"啟用")
             self.assertEqual(question.call_args.kwargs["no_text"],"取消")

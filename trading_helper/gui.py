@@ -74,7 +74,9 @@ from .auto_entry import (
 )
 from .phase_timing_report import LocalPhaseTimingStore, timed_call, timed_operation
 from .demo_broker_port import DemoUiBrokerPort
-from .entry_status_report import build_entry_status_report
+from .entry_status_report import (
+    build_entry_status_report, summarize_interruption_reason,
+)
 from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adjustment_range
 from .config import APP_DIR
 from .field_detection import inspect_uia_window
@@ -2040,44 +2042,35 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if not request:
             QMessageBox.warning(
                 self,"請人工確認持倉",
-                "缺少上次交易資料，無法安全繼續。本次未送單。"
+                "缺少上次進場資料，無法繼續；本次未送單。"
             )
             return
         manual_needed=not bool(data.get("retryable"))
         if manual_needed and not data.get("manual_review_possible"):
             QMessageBox.warning(
                 self, "上次結果不明",
-                "無法確認上次是否成交。請先查看兩個平台的持倉與進出場紀錄；"
-                "本次未送單。"
+                "上次進場結果不明。請先核對兩邊持倉與交易紀錄；本次未送單。"
             )
             return
         dialog=QMessageBox(self)
         dialog.setWindowTitle("發現相同方案的進場紀錄")
         dialog.setIcon(QMessageBox.Question)
         dialog.setText(
-            "這個方案有上次進場紀錄。請先確認兩邊目前的持倉，再選擇是否繼續。"
+            "偵測到上次進場紀錄。請先核對兩邊目前持倉，再選擇是否繼續。"
         )
         entry = data.get("entry") or {}
-        record_summary = "之前紀錄："
-        if entry.get("time"):
-            record_summary += str(entry["time"])
-        else:
-            record_summary += "時間不明"
-        if entry.get("status"):
-            record_summary += f"；狀態：{entry['status']}"
-        if entry.get("details"):
-            record_summary += f"；內容：{entry['details']}"
+        record_time = str(entry.get("time") or "").strip()
+        record_prefix = f"上次紀錄：{record_time}。\n" if record_time else ""
         if manual_needed:
             dialog.setInformativeText(
-                record_summary + "\n"
-                "程式無法確認上次成交結果。若兩邊都有本方案持倉，只接續核對／同步，"
-                "不新增訂單；兩邊都空才會重新核對後進場。"
-                "只有一邊有單或結果不明時，請取消並人工確認。"
+                record_prefix
+                + "結果不明：兩邊都有單時只核對／同步；兩邊都空才可重新進場。"
+                "只有一邊有單時，請取消並人工處理。"
             )
         else:
             dialog.setInformativeText(
-                record_summary + "\n"
-                "繼續後會重新核對兩個帳戶、持倉、校準及表單；通過才送單。"
+                record_prefix
+                + "繼續後重查兩個帳戶、持倉、校準及表單；全部通過才進場。"
             )
         adjust=dialog.addButton("返回",QMessageBox.RejectRole)
         proceed=dialog.addButton(
@@ -2099,7 +2092,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if manual_needed and not acknowledgement.isChecked():
             QMessageBox.warning(
                 self, "還沒核對",
-                "請先核對兩邊目前持倉與進出場紀錄。"
+                "請先核對兩邊持倉與交易紀錄。"
             )
             return
         current_url=str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
@@ -2111,7 +2104,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ):
             QMessageBox.warning(
                 self, "交易參數已改變",
-                "方案、平台或數值已改變，請重新填入並核對後再進場。"
+                "方案、平台或數值已改變。請重新填入並核對。"
             )
             return
         approved=(
@@ -2158,8 +2151,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         answer = QMessageBox.question(
             self,
             "cTrader 點數輸入不一致",
-            f"輸入 {data['expected']}，讀回 {data['actual']}。\n"
-            "要改用點數換算並重試嗎？只改目前方案；本次已停止，不會下單。",
+            f"輸入 {data['expected']}，讀回 {data['actual']}。"
+            "改用點數換算並重試？只改目前方案；本次不會下單。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="改用點數換算",
@@ -2304,9 +2297,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         answer = QMessageBox.question(
             self,
             "止損點數和上次相同",
-            f"這次仍是 {previous} 點。要改成 {proposed} 點並繼續嗎？\n"
-            f"可選範圍：{bounds[0]} 至 {bounds[1]} 點。"
-            "新數值會寫回試算表，並可能改變手數與保證金。",
+            f"這次仍是 {previous} 點。改成 {proposed} 點並繼續？\n"
+            f"範圍 {bounds[0]} 至 {bounds[1]} 點；會寫回試算表，並可能改變手數／保證金。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="調整並繼續",
@@ -2350,12 +2342,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.setObjectName("autoEntryResultDialog")
         dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
         dialog.setWindowTitle(str(report.get("title") or "開倉結果待確認"))
-        dialog.resize(520, 345)
+        dialog.resize(520, 285)
         layout = QVBoxLayout(dialog)
-        heading = QLabel(str(report.get("title") or "開倉結果待確認"), dialog)
-        heading.setObjectName("autoEntryResultHeading")
-        heading.setWordWrap(True)
-        layout.addWidget(heading)
         details = QTextBrowser(dialog)
         details.setObjectName("autoEntryResultBody")
         details.setReadOnly(True)
@@ -2588,8 +2576,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         layout = QGridLayout(dialog)
         lot_text = result.get("detected_lot") or "無法辨識"
         message = (
-            f"第一筆場外訂單手數不符合。預期 {result.get('expected_lot', '')}，"
-            f"讀到 {lot_text}。\n未開啟訂單，請手動確認後複製下列價格。"
+            f"場外手數不符：預期 {result.get('expected_lot', '')}，讀到 {lot_text}。\n"
+            "未開單。請核對下方價格後手動輸入。"
         )
         layout.addWidget(QLabel(message), 0, 0, 1, 3)
         rows = [
@@ -3180,7 +3168,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             symbol = test_symbol or action.split(":", 1)[1]
             return QMessageBox.question(
                 self,"開始假日 Demo 測試？",
-                f"兩個 Demo 帳戶會用 {symbol} 各開一單，並同步 SL/TP。要開始嗎？",
+                f"兩個 Demo 帳戶會以 {symbol} 各進場一單並同步 SL／TP。開始測試？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3190,16 +3178,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if action.startswith("reentry:"):
             return QMessageBox.question(
                 self,"開始 Demo 重進測試？",
-                f"兩個 Demo 帳戶會用 {instrument} 測試{side}漏單後補進一次。"
-                "結果不明就停止，不會重複送單。要開始嗎？",
+                f"將用 {instrument} 測試{side}漏單後補進一次。會實際開倉；結果不明就停止。開始？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
         if action.startswith("close:"):
             return QMessageBox.question(
                 self,"開始 Demo 關單測試？",
-                f"兩個 Demo 帳戶會用 {instrument} 測試{side}快速平倉及後續處理。"
-                "會實際開倉和平倉。要開始嗎？",
+                f"將用 {instrument} 測試{side}快平與後續處理，會實際開倉和平倉。開始？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3624,20 +3610,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     title="假日雙邊 Demo 測試完成"
                     symbol=scenario.split(":",1)[1]
                     message=(
-                        f"本次暫時以 {symbol} 完成場內、場外進場。\n"
-                        f"成交核對：{final_text}\n"
-                        "場內保護及場外 SL／TP 同步已完成；"
-                        "本次商品覆蓋已隨流程結束。"
+                        f"{symbol} 兩邊進場已核對：{final_text}\n"
+                        "場內保護與場外 SL／TP 已完成；測試商品設定已還原。"
                     )
                     followup=False
                 elif result["outcome"]=="reentry_confirmed":
                     title="單邊漏送測試完成"
                     message=(
-                        f"兩邊訂單表單已填妥。測試情境：明確略過"
-                        f"{'場內' if scenario.endswith(':internal') else '場外'}首筆送單；"
-                        "確認該邊未送出後，程式自動補進一次。\n"
-                        f"最終持倉：{final_text}\n"
-                        "兩邊成交已讀回核對；場內保護及場外 SL／TP 同步已完成。"
+                        f"已測試{'場內' if scenario.endswith(':internal') else '場外'}漏送並補進一次。\n"
+                        f"兩邊進場已核對：{final_text}\n"
+                        "場內保護與場外 SL／TP 已完成。"
                     )
                     if draw_tv:
                         message+="\nTradingView 後續步驟已依設定執行。"
@@ -3645,20 +3627,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 elif result["outcome"]=="both_closed_waiting_user":
                     title="場內快平測試已處理，等你確認下一步"
                     message=(
-                        f"初始雙邊進場與成交核對：{initial_text}\n"
-                        "測試觸發場內平倉後，程式已確認場內持倉消失，"
-                        "並已按既定流程關閉仍開著的場外。\n"
-                        "目前兩邊都已確認關閉。請先確認考試商規則，"
-                        "再選擇是否重新進場。"
+                        f"兩邊進場已核對：{initial_text}；之後兩邊皆已確認平倉。\n"
+                        "可選擇重新進場；請先確認考試商規則。"
                     )
                     followup=True
                 else:
                     title="場外快平並補進測試完成"
                     message=(
-                        f"初始雙邊進場與成交核對：{initial_text}\n"
-                        "測試觸發場外平倉後，程式確認原場外持倉消失，"
-                        "並在 15 秒處理時限內補進一次及重新同步 SL／TP。\n"
-                        f"最終持倉：{final_text}"
+                        "場外快平後已於 15 秒內補進並重新同步 SL／TP。\n"
+                        f"兩邊進場已核對：{final_text}"
                     )
                     followup=False
                 signal=getattr(
@@ -3719,18 +3696,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 closed=getattr(exc,"test_closed_roles",())
                 closed_text=(
                     "、".join("場內" if r=="internal" else "場外"
-                             for r in closed) or "尚無可確認的平倉完成"
+                             for r in closed) or "無"
                 )
                 report={
-                    "title":"完整測試中斷，請核對兩邊持倉",
+                    "title":"測試中斷，請核對持倉",
                     "message":(
-                        "初始雙邊成交確認編號（只代表當時確認）：\n"
-                        f"場內：{initial['internal'].ticket}\n"
-                        f"場外：{initial['external'].ticket}\n"
-                        f"已確認完成的平倉：{closed_text}\n"
-                        "後續操作已停止。請人工核對兩個平台目前持倉及掛單；"
-                        "不會重送或自行再平倉。\n\n"
-                        f"中斷原因：{exc}"
+                        "自動操作已停止，不會重送或自行平倉。\n"
+                        f"測試單號：場內 {initial['internal'].ticket}；"
+                        f"場外 {initial['external'].ticket}\n"
+                        f"已確認平倉：{closed_text}\n"
+                        "請核對兩邊目前持倉。\n"
+                        + "原因：" + summarize_interruption_reason(str(exc))
                     ),
                     "success":False,"single_confirmed_role":None,
                     "internal_platform":internal_platform,
@@ -4761,8 +4737,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         else:
             accepted=QMessageBox.question(
                 self,"啟用快速雙邊？",
-                "核對後會連續送出兩筆訂單；Live 會建立真實倉位。"
-                "若只有一邊成交，程式會停下，不自動補單或平倉。",
+                "核對通過後會連續送出兩筆訂單。Live 會建立真實倉位；"
+                "單邊結果不明就停止，不補單或平倉。啟用？",
                 QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
                 yes_text="啟用", no_text="取消",
             )
@@ -4785,8 +4761,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         accepted = QMessageBox.question(
             self,
             "啟用自動進場？",
-            "按「填入兩邊」後，核對通過會送出兩筆訂單，並自動同步場外 SL/TP。"
-            "Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
+            "按下「填入兩邊」後自動進場並同步場外 SL／TP。Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",
@@ -4827,8 +4802,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         accepted = QMessageBox.question(
             self,
             f"啟用「{label}」？",
-            "雙邊進場與 SL/TP 同步完成後，會在 TradingView 繪圖。"
-            "自動進場已啟用時，Live 帳戶會送出真實訂單。要啟用嗎？",
+            "雙邊進場與 SL／TP 完成後會在 TradingView 繪圖。Live 自動進場會建立真實倉位。啟用？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",

@@ -73,7 +73,7 @@ class RescueP0Test(unittest.TestCase):
         report=build_entry_status_report(
             record,success=True,sync_requested=True,tv_requested=False
         )
-        self.assertIn("已確認補開場外一次",report["message"])
+        self.assertIn("自動補進：場外已確認",report["message"])
     def test_fast_pair_internal_rejected_external_successful_rescues_internal(self):
         port,journal,flow=self.make(role="internal")
         self.run_entry(flow)
@@ -147,7 +147,7 @@ class RescueP0Test(unittest.TestCase):
             tv_requested=False,internal_platform="cTrader",external_platform="MT5"
         )
         self.assertEqual(report["single_confirmed_role"],"internal")
-        self.assertIn("自動補開：未執行",report["message"])
+        self.assertIn("未補進：還不能確認另一邊沒進場",report["message"])
 
 class IncidentDialogTest(unittest.TestCase):
     @classmethod

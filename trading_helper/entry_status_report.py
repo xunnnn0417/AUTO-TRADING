@@ -6,6 +6,52 @@ ongoing guarantee that the position remains open.
 """
 from __future__ import annotations
 
+import re
+
+
+def summarize_interruption_reason(reason: str) -> str:
+    """Keep action receipts short while retaining the useful order reference."""
+    raw = str(reason or "").strip()
+    if not raw:
+        return ""
+
+    pending_match = re.search(
+        r"MT5 唯讀 API 回報 (\d+) 筆仍有效委託[^\n]*", raw
+    )
+    if pending_match:
+        order = re.search(r"(?:^|\n)\s*-\s*(.+)", raw)
+        count = pending_match.group(1)
+        message = [f"MT5 讀到 {count} 筆未完成訂單（不是持倉）。"]
+        if order:
+            detail = order.group(1).strip()
+            simple_order = re.search(
+                r"([^|]+)\|[^|]*(買入|賣出)[^|]*\|\s*單號\s*([^|]+)"
+                r"\|\s*([\d.,]+)\s*手",
+                detail,
+            )
+            if simple_order:
+                symbol, side, ticket, volume = (
+                    part.strip() for part in simple_order.groups()
+                )
+                message.append(
+                    f"{symbol} {side} {volume} 手，單號 {ticket}。"
+                )
+            else:
+                message.append(detail)
+        message.append("請到 MT5「交易」核對單號；完整原因見操作記錄。")
+        return "\n".join(message)
+
+    reason_marker = "原因："
+    if reason_marker in raw:
+        raw = raw.split(reason_marker, 1)[1].strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    first = lines[0] if lines else raw
+    if len(first) > 180:
+        first = first[:177].rstrip() + "…"
+    if len(lines) > 1 or len(raw) > len(first):
+        return f"{first}\n詳細原因見操作記錄。"
+    return first
+
 
 def build_entry_status_report(
     entry: dict | None, *, success: bool, sync_requested: bool,
@@ -47,45 +93,21 @@ def build_entry_status_report(
     elif internal or external:
         title = "開倉後續結果需要核對"
     else:
-        title = "開倉未完成／結果待確認"
+        title = "進場結果待確認"
 
     def side(label: str, platform: str, verified: bool) -> str:
-        return f"{label}（{platform}）：{'已有成交確認紀錄' if verified else '尚未證實成交'}"
+        return f"{label}（{platform}）：{'已確認進場' if verified else '尚未確認進場'}"
 
     parts = [
         side("場內", internal_platform, internal),
         side("場外", external_platform, external),
     ]
-    if both:
-        parts.append("進度判定：兩邊都有獨立成交確認紀錄。")
-    elif internal or external:
-        confirmed_side = "場內" if internal else "場外"
-        unknown_side = "場外" if internal else "場內"
-        parts.append(
-            f"進度判定：{confirmed_side}已確認成交；{unknown_side}尚未確認，"
-            "不能據此判定已成交或已拒單。"
-        )
-    else:
-        parts.append("進度判定：目前沒有可用的成交確認紀錄。")
     if sync_requested:
-        parts.append(
-            "場內止盈止損：" +
-            ("已核對" if protected else "尚未證實已核對")
-        )
-        parts.append(
-            "場外止盈止損同步：" +
-            ("修改並讀回核對成功" if sync_verified else "未證實完成")
-        )
-    else:
-        parts.append("場外 SL／TP 同步：本次沒有啟用")
+        parts.append(f"場內止盈止損：{'已核對' if protected else '未核對'}")
+        parts.append(f"場外 SL／TP：{'已同步' if sync_verified else '未完成'}")
 
     if tv_requested:
-        parts.append(
-            "TradingView 繪圖：" +
-            ("流程已完成" if success else "尚未證實完成")
-        )
-    else:
-        parts.append("TradingView 繪圖：本次沒有啟用")
+        parts.append(f"TradingView：{'已完成' if success else '未完成'}")
 
     incident_role = (
         "internal" if internal and not external and not success
@@ -94,21 +116,16 @@ def build_entry_status_report(
     )
     # Only an actual rescue confirmation may be described as successful.
     rescued = str(entry.get("rescued_role", ""))
-    if rescued in ("internal","external"):
-        parts.append(
-            f"自動補開：已確認補開{'場內' if rescued=='internal' else '場外'}一次"
-        )
+    if rescued in ("internal", "external"):
+        parts.append(f"自動補進：{'場內' if rescued == 'internal' else '場外'}已確認")
     elif entry.get("rescue_attempted"):
-        parts.append("自動補開：曾嘗試一次，成交仍須核對；不會再次補送")
-    else:
-        parts.append("自動補開：未執行（缺少可靠拒單證明時禁止）")
-    parts.append("後續異常操作：等你選擇平倉或補進；操作前會重查狀態")
+        parts.append("自動補進：已嘗試，結果待核對；不會重試")
+    elif incident_role:
+        parts.append("未補進：還不能確認另一邊沒進場")
     if not success:
-        parts.append("後續：已停止自動送單，請核對兩邊目前持倉與交易紀錄。")
+        parts.append("已停止，不會重送或自行平倉；請核對兩邊目前持倉。")
         if reason:
-            parts.append("原因：" + str(reason)[:600])
-    else:
-        parts.append("提醒：此為開倉當下驗證，不代表兩側日後一定同步平倉。")
+            parts.append("原因：" + summarize_interruption_reason(reason))
     return {
         "title": title, "message": "\n".join(parts), "success": success,
         "single_confirmed_role": incident_role,

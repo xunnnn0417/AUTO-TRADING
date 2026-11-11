@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QDialog, QTextBrowser, QLabel
-from trading_helper.entry_status_report import build_entry_status_report
+from trading_helper.entry_status_report import (
+    build_entry_status_report, summarize_interruption_reason,
+)
 from trading_helper.auto_entry import AutoEntryWorkflow, AutoEntryJournal, RecoveryRequired
 from trading_helper.gui import TradingHelperApp
 from test_auto_entry_state_machine import FakeBrokerPort, instruction
@@ -46,20 +48,19 @@ class ReceiptDataTests(unittest.TestCase):
         self.assertTrue(entry["internal_protected"])
         report = self.receipt(True)
         self.assertIn("雙邊開倉及 SL／TP 同步完成", report["title"])
-        self.assertIn("修改並讀回核對成功", report["message"])
-        self.assertIn("自動補開：未執行", report["message"])
+        self.assertIn("場外 SL／TP：已同步", report["message"])
 
     def test_both_filled_but_sync_failed_is_not_marked_complete(self):
         self.port.fail_amend = True
         with self.assertRaises(RecoveryRequired):
             self.execute(sync=True)
         report = self.receipt(False)
-        self.assertIn("已有成交確認紀錄", report["message"])
-        self.assertIn("進度判定：兩邊都有獨立成交確認紀錄。", report["message"])
+        self.assertIn("場內（cTrader）：已確認進場", report["message"])
+        self.assertIn("場外（MT5）：已確認進場", report["message"])
         self.assertEqual(
             report["title"], "雙邊開倉已確認，場外 SL／TP 同步未完成"
         )
-        self.assertIn("場外止盈止損同步：未證實完成", report["message"])
+        self.assertIn("場外 SL／TP：未完成", report["message"])
         self.assertNotIn("雙邊開倉及 SL／TP 同步完成", report["title"])
         self.assertEqual(
             len([x for x in self.port.events if x[0] == "submit"]), 2
@@ -79,18 +80,17 @@ class ReceiptDataTests(unittest.TestCase):
         self.assertEqual(
             report["title"], "雙邊開倉已確認，場外 SL／TP 同步未完成"
         )
-        self.assertIn("場內（cTrader）：已有成交確認紀錄", report["message"])
-        self.assertIn("場外（MT5）：已有成交確認紀錄", report["message"])
-        self.assertIn("兩邊都有獨立成交確認紀錄", report["message"])
+        self.assertIn("場內（cTrader）：已確認進場", report["message"])
+        self.assertIn("場外（MT5）：已確認進場", report["message"])
 
     def test_one_unverified_leg_never_implies_rejection_or_rescue(self):
         self.port.fail_confirm = "external"
         with self.assertRaises(RecoveryRequired):
             self.execute(sync=True)
         report = self.receipt(False, reason="券商回覆不明")
-        self.assertIn("場內（cTrader）：已有成交確認紀錄", report["message"])
-        self.assertIn("場外（MT5）：尚未證實成交", report["message"])
-        self.assertIn("自動補開：未執行", report["message"])
+        self.assertIn("場內（cTrader）：已確認進場", report["message"])
+        self.assertIn("場外（MT5）：尚未確認進場", report["message"])
+        self.assertIn("未補進：還不能確認另一邊沒進場", report["message"])
         self.assertIn("券商回覆不明", report["message"])
         self.assertEqual(len([x for x in self.port.events if x[0]=="submit"]),2)
         self.assertFalse(any(x[0] in {"close", "flatten"} for x in self.port.events))
@@ -100,9 +100,9 @@ class ReceiptDataTests(unittest.TestCase):
         with self.assertRaises(RecoveryRequired):
             self.execute(sync=True, fast=False)
         report=self.receipt(False)
-        self.assertIn("場內（cTrader）：已有成交確認紀錄",report["message"])
-        self.assertIn("場外（MT5）：尚未證實成交",report["message"])
-        self.assertIn("自動補開：未執行",report["message"])
+        self.assertIn("場內（cTrader）：已確認進場",report["message"])
+        self.assertIn("場外（MT5）：尚未確認進場",report["message"])
+        self.assertIn("未補進：還不能確認另一邊沒進場",report["message"])
         entry=self.journal.entry(self.flow.last_key)
         self.assertIn("internal",entry["confirmed_legs"])
         self.assertNotIn("external",entry["confirmed_legs"])
@@ -111,7 +111,7 @@ class ReceiptDataTests(unittest.TestCase):
         self.execute(sync=False)
         report = self.receipt(True,sync=False)
         self.assertEqual(report["title"],"雙邊開倉已確認")
-        self.assertIn("沒有啟用",report["message"])
+        self.assertNotIn("場外 SL／TP",report["message"])
         self.assertNotIn("同步完成",report["title"])
 
     def test_old_journal_fields_cannot_falsely_complete_sync(self):
@@ -119,7 +119,7 @@ class ReceiptDataTests(unittest.TestCase):
             {"confirmed_both":"X/Y", "confirmed_legs":{"internal":"X","external":"Y"}},
             success=True,sync_requested=True,tv_requested=False
         )
-        self.assertIn("未證實完成",report["message"])
+        self.assertIn("場外 SL／TP：未完成",report["message"])
         self.assertNotIn("同步完成",report["title"])
 
 
@@ -180,6 +180,49 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
             report["_repeat_expected_sl"]["points"],"-8.59"
         )
 
+    def test_interrupted_test_receipt_keeps_order_id_but_summarizes_details(self):
+        initial={
+            "internal":SimpleNamespace(ticket="I-01"),
+            "external":SimpleNamespace(ticket="E-02"),
+        }
+        error=RecoveryRequired(
+            "單邊平倉測試尚未確認完成；不會再次點擊。原因："
+            "MT5 唯讀 API 回報 1 筆仍有效委託（查詢全部商品，這不是已成交持倉）；"
+            "為避免重複送單，已停止：\n"
+            "- XAUUSD | 市價買入委託 | 單號 2081233647 | 0.1 手 | 價格 0\n"
+            "請在 MT5「交易」分頁用單號核對。若畫面找不到相同單號，"
+            "請回傳這段明細；代表程式讀值與畫面不一致。"
+        )
+        error.test_initial_positions=initial
+        error.test_closed_roles=("internal",)
+        with patch.object(AutoEntryWorkflow,"run_test_scenario",side_effect=error):
+            with self.assertRaises(RecoveryRequired):
+                TradingHelperApp._auto_entry_after_fill_both_pending(
+                    self.fake,"cTrader","MT5",instruction(),
+                    sync_sl_tp=True,test_scenario="close:internal",
+                )
+        self.signal.emit.assert_called_once()
+        report=self.signal.emit.call_args.args[0]
+        self.assertEqual(report["title"],"測試中斷，請核對持倉")
+        self.assertIn("單號 2081233647",report["message"])
+        self.assertIn("不是持倉",report["message"])
+        self.assertIn("不會重送或自行平倉",report["message"])
+        self.assertNotIn("單邊平倉測試尚未確認完成",report["message"])
+
+
+    def test_pending_mt5_order_summary_keeps_ticket_and_next_step(self):
+        summary=summarize_interruption_reason(
+            "原因：MT5 唯讀 API 回報 1 筆仍有效委託；已停止：\n"
+            "- XAUUSD | 市價買入委託 | 單號 2081233647 | 0.1 手 | 價格 0\n"
+            "請在 MT5「交易」分頁用單號核對。完整技術細節。"
+        )
+        self.assertIn("不是持倉",summary)
+        self.assertIn("2081233647",summary)
+        self.assertIn("MT5「交易」核對單號",summary)
+        self.assertIn("XAUUSD 買入 0.1 手",summary)
+        self.assertNotIn("價格 0",summary)
+        self.assertNotIn("完整技術細節",summary)
+
     def test_uncertain_external_emits_one_partial_receipt_and_keeps_error(self):
         self.port.fail_confirm="external"
         with self.assertRaises(RecoveryRequired) as err:
@@ -188,8 +231,8 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
         self.signal.emit.assert_called_once()
         result=self.signal.emit.call_args.args[0]
         self.assertFalse(result["success"])
-        self.assertIn("場內（cTrader）：已有成交確認紀錄",result["message"])
-        self.assertIn("場外（MT5）：尚未證實成交",result["message"])
+        self.assertIn("場內（cTrader）：已確認進場",result["message"])
+        self.assertIn("場外（MT5）：尚未確認進場",result["message"])
         request=result["incident_action_request"]
         self.assertEqual(request["confirmed_role"],"internal")
         self.assertEqual(request["confirmed_ticket"],"T-internal")
@@ -206,7 +249,7 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
             self.run_gui_entry(sync=True)
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
         result=self.signal.emit.call_args.args[0]
-        self.assertIn("尚未證實成交",result["message"])
+        self.assertIn("尚未確認進場",result["message"])
         self.assertFalse(result["success"])
         self.assertNotIn("incident_action_request",result)
 
