@@ -222,10 +222,11 @@ class AutoEntryOptionTests(unittest.TestCase):
     def test_records_log_room_and_no_per_fill_confirmation(self):
         source=inspect.getsource(TradingHelperApp._build)
         self.assertIn("self.log_text.setMinimumHeight(150)",source)
+        self.assertIn("record_layout.setContentsMargins(16, 0, 16, 12)",source)
         self.assertIn("record_layout.addWidget(log_box, 0, Qt.AlignTop)",source)
         resize_source=inspect.getsource(TradingHelperApp._update_activity_log_height)
-        self.assertIn("available / 2",resize_source)
-        self.assertIn("box.setMaximumHeight(maximum)",resize_source)
+        self.assertIn("contentsRect().height() * 2 / 3",resize_source)
+        self.assertIn("box.setFixedHeight(height)",resize_source)
         fill_source=inspect.getsource(TradingHelperApp._start_fill_worker)
         self.assertNotIn("QMessageBox.question",fill_source)
 

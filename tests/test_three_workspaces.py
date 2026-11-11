@@ -151,20 +151,18 @@ class ThreeWorkspaceTests(unittest.TestCase):
     def test_record_history_is_an_inline_action_not_a_full_width_bar(self):
         w=self.win
         self.page("紀錄")
+        self.qtapp.processEvents()
         self.assertLessEqual(w.daily_pnl_history_button.width(),145)
         self.assertGreaterEqual(w.log_text.minimumHeight(),150)
-        self.assertLessEqual(
-            w.activity_log_box.maximumHeight(),
-            round(w.records_page.height() / 2) + 4,
-        )
+        expected_height=round(w.records_page.contentsRect().height()*2/3)
+        self.assertLessEqual(abs(w.activity_log_box.height()-expected_height),1)
+        self.assertLessEqual(w.activity_log_box.y(),1)
         # History is preserved as a callable feature but hidden until redesign.
         self.assertFalse(w.daily_pnl_history_button.isVisible())
         self.assertTrue(callable(w.show_daily_pnl_history))
         log_box=w.records_page.findChild(QGroupBox,"activityCard")
-        self.assertLessEqual(
-            log_box.maximumHeight(),
-            round(w.records_page.height() / 2) + 4,
-        )
+        self.assertEqual(log_box, w.activity_log_box)
+        self.assertLessEqual(abs(log_box.height()-expected_height),1)
 
     def test_trade_two_column_geometry_preserves_all_existing_values(self):
         from PySide6.QtCore import QPoint

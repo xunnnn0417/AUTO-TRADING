@@ -42,7 +42,7 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
 
     def test_same_unmodified_value_asks_and_returns_approved_adjustment(self):
         with patch("trading_helper.gui.choose_repeat_adjustment",
-                   return_value=Decimal("-7.91")), \
+                   return_value=Decimal("-9.12")), \
              patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes) as prompt:
             adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
@@ -50,9 +50,9 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
                 dirty=(), test_action="",
             )
         self.assertTrue(did_adjust)
-        self.assertEqual(adjusted.expected_sl_points, Decimal("-7.91"))
+        self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
+        self.assertIn("-9.59", prompt.call_args.args[2])
         self.assertIn("-8.35", prompt.call_args.args[2])
-        self.assertIn("-7.59", prompt.call_args.args[2])
         self.assertIn("手數", prompt.call_args.args[2])
 
     def test_does_not_prompt_if_input_changed_or_test_scenario_selected(self):

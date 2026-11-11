@@ -15,9 +15,9 @@ def random_repeat_adjustment_range(
 ) -> tuple[Decimal, Decimal] | None:
     """Return the cent-aligned bounds requested for a repeated stop value.
 
-    The previous stop is moved one point toward zero. Mixed signs, zero,
-    crossing zero, invalid/non-finite values, or a range without a new
-    two-decimal choice are declined instead of inventing a risky value.
+    The previous expected stop value is reduced by one full point. Mixed
+    signs, zero, crossing zero, invalid/non-finite values, or a range without
+    a new two-decimal choice are declined instead of inventing a risky value.
     """
     if original is None or previous is None:
         return None
@@ -28,11 +28,11 @@ def random_repeat_adjustment_range(
     if (original < 0) != (previous < 0):
         return None
 
-    toward_zero = previous + ONE if previous < 0 else previous - ONE
-    if toward_zero == 0 or (toward_zero < 0) != (previous < 0):
+    adjusted_previous = previous - ONE
+    if adjusted_previous == 0 or (adjusted_previous < 0) != (previous < 0):
         return None
 
-    low, high = sorted((original, toward_zero))
+    low, high = sorted((original, adjusted_previous))
     low_cent = int((low / CENT).to_integral_value(rounding=ROUND_CEILING))
     high_cent = int((high / CENT).to_integral_value(rounding=ROUND_FLOOR))
     if high_cent - low_cent < 1:

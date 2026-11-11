@@ -1694,24 +1694,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.records_page = QWidget()
         self.records_page.setObjectName("recordsWorkspace")
         record_layout = QVBoxLayout(self.records_page)
-        record_layout.setContentsMargins(16, 12, 16, 12)
-        record_layout.setSpacing(9)
-        record_caption = QLabel("紀錄")
-        record_caption.setObjectName("workspaceCaption")
-        # Keep the history action next to the Records heading, not stretched
-        # into a full-width primary-looking operation button.
-        record_heading = QHBoxLayout()
-        record_heading.setSpacing(14)
-        record_heading.addWidget(record_caption, 0, Qt.AlignVCenter)
+        record_layout.setContentsMargins(16, 0, 16, 12)
+        record_layout.setSpacing(0)
         self.daily_pnl_history_button.setFixedWidth(138)
         self.daily_pnl_history_button.setFixedHeight(31)
-        record_heading.addWidget(self.daily_pnl_history_button, 0, Qt.AlignVCenter)
         # Deferred redesign: keep data/handler, hide obsolete entry point.
+        record_layout.addWidget(self.daily_pnl_history_button)
         self.daily_pnl_history_button.hide()
-        record_heading.addStretch(1)
-        record_layout.addLayout(record_heading)
-        log_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        log_box.setMinimumHeight(180)
+        log_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         record_layout.addWidget(log_box, 0, Qt.AlignTop)
         self.activity_log_box = log_box
         self.main_pages.addWidget(self.records_page)
@@ -2212,10 +2202,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         box = getattr(self, "activity_log_box", None)
         if page is None or box is None:
             return
-        available = max(220, page.contentsRect().height() - 74)
-        maximum = max(180, round(available / 2))
-        box.setMaximumHeight(maximum)
-        box.setMinimumHeight(min(150, maximum))
+        height = max(180, round(page.contentsRect().height() * 2 / 3))
+        box.setFixedHeight(height)
 
     def eventFilter(self, watched, event) -> bool:
         badges = getattr(self, "_calibration_badge_labels", {})
