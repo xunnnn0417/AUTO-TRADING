@@ -194,6 +194,79 @@ class DemoPortTests(unittest.TestCase):
                 expected_direction="SELL",expected_volume=Decimal("0.1"),
                 window=FakeWindow("11111111 - Example-Demo"),
             )
+
+    def test_mt5_partial_memory_read_uses_native_fallback_for_one_position(self):
+        class PartialMemoryReadError(OSError):
+            winerror=299
+
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(expected,))
+        self.port._mt5_position_rows=MagicMock(
+            side_effect=PartialMemoryReadError("partial process-memory read")
+        )
+
+        row,matched=self.port.find_mt5_position_row(
+            "MT5","external",expected_symbol="ETHUSD",
+            expected_direction="SELL",expected_volume=Decimal("0.1"),
+            window=FakeWindow("11111111 - Example-Demo"),
+        )
+
+        self.assertEqual(row,0)
+        self.assertEqual(matched.ticket,"123456")
+
+    def test_mt5_partial_memory_read_with_multiple_positions_stops_safely(self):
+        class PartialMemoryReadError(OSError):
+            winerror=299
+
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        other=Position(
+            "234567","11111111","MT5","GOLD","BUY",
+            Decimal("0.2"),Decimal("2000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(expected,other))
+        self.port._mt5_position_rows=MagicMock(
+            side_effect=PartialMemoryReadError("partial process-memory read")
+        )
+
+        with self.assertRaisesRegex(AutomationError,"讀取不完整.*多筆持倉"):
+            self.port.find_mt5_position_row(
+                "MT5","external",expected_symbol="ETHUSD",
+                expected_direction="SELL",expected_volume=Decimal("0.1"),
+                window=FakeWindow("11111111 - Example-Demo"),
+            )
+
+    def test_mt5_position_row_read_does_not_swallow_other_os_errors(self):
+        class OtherWinError(OSError):
+            winerror=5
+
+        account=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        expected=Position(
+            "123456","11111111","MT5","ETHUSD.x","SELL",
+            Decimal("0.1"),Decimal("3000"),
+        )
+        self.port.inspect_account=MagicMock(return_value=account)
+        self.port.snapshot_positions=MagicMock(return_value=(expected,))
+        self.port._mt5_position_rows=MagicMock(
+            side_effect=OtherWinError("access denied")
+        )
+
+        with self.assertRaisesRegex(OtherWinError,"access denied"):
+            self.port.find_mt5_position_row(
+                "MT5","external",expected_symbol="ETHUSD",
+                expected_direction="SELL",expected_volume=Decimal("0.1"),
+                window=FakeWindow("11111111 - Example-Demo"),
+            )
+
     def test_duplicate_account_label_rejected(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         with self.with_uia(self.ui_text+[self.ui_text[1]]):

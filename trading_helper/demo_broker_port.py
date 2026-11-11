@@ -610,9 +610,25 @@ class DemoUiBrokerPort:
                 f"{observed}。"
                 "未修改止盈止損。"
             )
-        visible_rows=self._mt5_position_rows(
-            platform,role,account,window=window,allow_blank_rows=True
-        )
+        partial_memory_read=False
+        try:
+            visible_rows=self._mt5_position_rows(
+                platform,role,account,window=window,allow_blank_rows=True
+            )
+        except OSError as exc:
+            if getattr(exc,"winerror",None)!=299:
+                raise
+            # Win32 ListView text is read from another process. Windows can
+            # return ERROR_PARTIAL_COPY (299) intermittently even when the
+            # native MT5 read-only snapshot above has already verified the
+            # target position. Keep the calibrated first-row fallback below,
+            # but only when that snapshot proves there is exactly one
+            # position and no pending orders.
+            partial_memory_read=True
+            visible_rows=()
+            self.log(
+                "MT5 清單讀取遇到 WinError 299；改用唯讀持倉資料判斷是否可安全定位。"
+            )
         row_indices=[
             index for index,position in visible_rows
             if position.ticket==matched[0].ticket
@@ -622,13 +638,19 @@ class DemoUiBrokerPort:
             # the only Trade row is the calibrated first row. This fallback
             # is deliberately unavailable when another position could be
             # mistaken for the target.
-            self.log(
-                "MT5 清單列文字空白；唯讀資料只確認到一筆持倉，"
-                "改用已校準的第一列。"
-            )
+            if not partial_memory_read:
+                self.log(
+                    "MT5 清單列文字空白；唯讀資料只確認到一筆持倉，"
+                    "改用已校準的第一列。"
+                )
             return 0,matched[0]
         if len(row_indices)!=1:
             if not visible_rows:
+                if partial_memory_read:
+                    raise AutomationError(
+                        "MT5 清單讀取不完整，唯讀資料有多筆持倉，"
+                        "無法安全定位目標列；未修改止盈止損。"
+                    )
                 raise AutomationError(
                     "MT5 清單列文字空白，且有多筆持倉，"
                     "無法安全對應目標列；未修改止盈止損。"
