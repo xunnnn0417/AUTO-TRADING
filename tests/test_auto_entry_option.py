@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from trading_helper.gui import TradingHelperApp
 from trading_helper.config import DEFAULT_CONFIG
 from trading_helper.windows import AutomationError
+from trading_helper.auto_entry import DuplicateEntryDecisionRequired
 
 
 def combo(text):
@@ -105,6 +106,30 @@ class AutoEntryOptionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"second-side"):
             TradingHelperApp._fill_both_task(fake,"cTrader","MT5",True)
         hook.assert_not_called()
+
+    def test_duplicate_preflight_stops_before_any_platform_fill(self):
+        preflight=MagicMock(
+            side_effect=DuplicateEntryDecisionRequired("k",{"status":"complete"},True)
+        )
+        fill=MagicMock()
+        fake=SimpleNamespace(
+            _require_instruction=lambda:"instruction",
+            _preflight_duplicate_entry=preflight,
+            automation=SimpleNamespace(fill=fill),
+            log=MagicMock(),
+        )
+        with self.assertRaises(DuplicateEntryDecisionRequired):
+            TradingHelperApp._fill_both_task(
+                fake,"cTrader","MT5",True,sync_sl_tp=True
+            )
+        preflight.assert_called_once()
+        fill.assert_not_called()
+
+    def test_operation_completion_restores_window_instead_of_minimizing(self):
+        restore=MagicMock()
+        self.parent._restore_after_operation=restore
+        TradingHelperApp._minimize_after_operation(self.parent)
+        restore.assert_called_once_with()
 
     def test_fill_both_dispatches_to_preflight_before_start(self):
         verify=MagicMock()

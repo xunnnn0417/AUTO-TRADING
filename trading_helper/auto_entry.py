@@ -235,6 +235,84 @@ class AutoEntryWorkflow:
     def _effective_test_symbol(symbol: str) -> str:
         return effective_test_symbol(symbol)
 
+    def _inspect_entry_accounts(
+        self, instruction, internal_platform: str, external_platform: str,
+        profile: str, sheet_url: str, *, authorized_reentry_id: str = "",
+        prechecked_accounts: tuple[DemoAccount,DemoAccount] | None = None,
+    ) -> tuple[DemoAccount, DemoAccount, str, float]:
+        """Read and validate account identities, without reading positions."""
+        if prechecked_accounts is None:
+            accounts_started=time.perf_counter()
+            account_e=timed_call(
+                "確認交易帳戶",self.port.inspect_account,
+                external_platform,"external",
+                platform=external_platform,role="external",
+            )
+            account_i=timed_call(
+                "確認交易帳戶",self.port.inspect_account,
+                internal_platform,"internal",
+                platform=internal_platform,role="internal",
+            )
+            account_read_ms=(time.perf_counter()-accounts_started)*1000
+            set_expected=getattr(self.port,"set_expected_accounts",None)
+            if callable(set_expected):
+                set_expected({})
+        else:
+            if (not isinstance(prechecked_accounts,(tuple,list))
+                or len(prechecked_accounts)!=2):
+                raise AutomationError("進場前帳戶核對資料格式錯誤；未送單。")
+            account_i,account_e=prechecked_accounts
+            if not all(isinstance(a,DemoAccount) for a in (account_i,account_e)):
+                raise AutomationError("進場前帳戶核對資料不完整；未送單。")
+            account_read_ms=0.0
+            set_expected=getattr(self.port,"set_expected_accounts",None)
+            if callable(set_expected):
+                set_expected({
+                    (internal_platform,"internal"):account_i,
+                    (external_platform,"external"):account_e,
+                })
+        for account,platform in ((account_i,internal_platform),
+                                 (account_e,external_platform)):
+            if (not account.verified or not isinstance(account.is_demo,bool)
+                or not account.account_id or not account.server
+                or account.platform!=platform):
+                raise AutomationError(
+                    f"{platform} 帳戶身分未完整核對，拒絕自動送單。"
+                )
+        if (account_i.platform,account_i.account_id,account_i.server)==(
+            account_e.platform,account_e.account_id,account_e.server):
+            raise AutomationError("場內與場外不可使用同一交易帳戶。")
+        self.last_account_ids={
+            "internal":account_i.account_id,
+            "external":account_e.account_id,
+        }
+        key=self.fingerprint(profile,sheet_url,(account_i,account_e),instruction)
+        if authorized_reentry_id:
+            key=hashlib.sha256(
+                f"{key}|user-approved-reentry|{authorized_reentry_id}".encode("utf-8")
+            ).hexdigest()
+        return account_i,account_e,key,account_read_ms
+
+    def preflight_duplicate_entry(
+        self, instruction, internal_platform: str, external_platform: str,
+        profile: str, sheet_url: str,
+    ) -> tuple[DemoAccount,DemoAccount]:
+        """Stop on an exact previous attempt before either form is filled."""
+        self.guard()
+        execution_symbol=self._effective_test_symbol(instruction.symbol)
+        if hasattr(self.port,"set_expected_symbol"):
+            self.port.set_expected_symbol(execution_symbol)
+        account_i,account_e,key,_elapsed=self._inspect_entry_accounts(
+            instruction,internal_platform,external_platform,profile,sheet_url
+        )
+        self.last_key=key
+        existing=self.journal.entry(key)
+        if existing:
+            raise DuplicateEntryDecisionRequired(
+                key,existing,self.retryable_duplicate(existing)
+            )
+        return account_i,account_e
+
     @timed_operation("拒單證實後補進")
     def _rescue_only_proven_rejection(
         self, *, key: str, platform: str, role: str, direction: str,
@@ -905,6 +983,7 @@ class AutoEntryWorkflow:
             test_skip_role: str | None = None,
             test_run_id: str = "",
             authorized_reentry_id: str = "",
+            prechecked_accounts: tuple[DemoAccount,DemoAccount] | None = None,
             ) -> tuple[Position,Position]:
         self.last_key = None
         self.journal_current_attempt = False
@@ -932,41 +1011,14 @@ class AutoEntryWorkflow:
             )
         # The fill workflow leaves MT5/external on top. Verify its identity
         # first, then switch to internal; never guess stale HWND coordinates.
-        accounts_started=time.perf_counter()
-        account_e=timed_call(
-            "確認交易帳戶",self.port.inspect_account,
-            external_platform,"external",
-            platform=external_platform,role="external",
+        account_i,account_e,key,account_read_ms=self._inspect_entry_accounts(
+            instruction,internal_platform,external_platform,profile,sheet_url,
+            authorized_reentry_id=authorized_reentry_id,
+            prechecked_accounts=prechecked_accounts,
         )
-        account_i=timed_call(
-            "確認交易帳戶",self.port.inspect_account,
-            internal_platform,"internal",
-            platform=internal_platform,role="internal",
-        )
-        account_read_ms=(time.perf_counter()-accounts_started)*1000
-        for account,platform in ((account_i,internal_platform),
-                                 (account_e,external_platform)):
-            if (not account.verified or not isinstance(account.is_demo,bool)
-                or not account.account_id or not account.server
-                or account.platform!=platform):
-                raise AutomationError(
-                    f"{platform} 帳戶身分未完整核對，拒絕自動送單。"
-                )
-        if (account_i.platform,account_i.account_id,account_i.server)==(
-            account_e.platform,account_e.account_id,account_e.server):
-            raise AutomationError("場內與場外不可使用同一交易帳戶。")
-        self.last_account_ids={
-            "internal":account_i.account_id,
-            "external":account_e.account_id,
-        }
-        key=self.fingerprint(profile,sheet_url,(account_i,account_e),instruction)
         if test_run_id:
             key=hashlib.sha256(
                 f"{key}|test|{test_run_id}".encode("utf-8")
-            ).hexdigest()
-        if authorized_reentry_id:
-            key=hashlib.sha256(
-                f"{key}|user-approved-reentry|{authorized_reentry_id}".encode("utf-8")
             ).hexdigest()
         # Diagnostic only: the receipt can report the associated journal
         # without any broker access or change to order execution.

@@ -592,27 +592,53 @@ class WindowController:
                 f"無法一次讀取交易視窗欄位清單：{exc}"
             ) from exc
         self.emergency.guard()
-        types={"Edit":[],"Spinner":[],"RadioButton":[],"CheckBox":[]}
-        for ctrl in controls:
-            try:
-                kind=str(ctrl.element_info.control_type)
-                if kind not in types:
+        def index_controls(control_list):
+            indexed={"Edit":[],"Spinner":[],"RadioButton":[],"CheckBox":[]}
+            for ctrl in control_list:
+                try:
+                    kind=str(ctrl.element_info.control_type)
+                    if kind not in indexed:
+                        continue
+                    if not ctrl.is_visible() or not ctrl.is_enabled():
+                        continue
+                    box=ctrl.rectangle()
+                    rect=(box.left,box.top,box.right,box.bottom)
+                    indexed[kind].append((ctrl,rect))
+                except Exception:
                     continue
-                if not ctrl.is_visible() or not ctrl.is_enabled():
-                    continue
-                box=ctrl.rectangle()
-                rect=(box.left,box.top,box.right,box.bottom)
-                types[kind].append((ctrl,rect))
-            except Exception:
-                continue
+            return indexed
+
+        types=index_controls(controls)
+        refreshed=False
 
         def matching_edit(key: str):
+            nonlocal types,refreshed
             x,y=coords[key]
             unique={}
             for ctrl,rect in types["Edit"]+types["Spinner"]:
                 a,b,c,d=rect
                 if a-4<=x<=c+4 and b-4<=y<=d+4:
                     unique.setdefault(rect,ctrl)
+            if len(unique)==0 and _controls is None and not refreshed:
+                # A platform can briefly expose an incomplete UIA tree while
+                # its order panel is updating. Retry once, read-only; a
+                # genuinely missing or ambiguous target still fails closed.
+                refreshed=True
+                time.sleep(0.12)
+                try:
+                    fresh_controls=Desktop(backend="uia").window(
+                        handle=focused.handle
+                    ).descendants()
+                except Exception as exc:
+                    raise AutomationError(
+                        f"{key} UIA 重讀失敗，已停止：{exc}"
+                    ) from exc
+                types=index_controls(fresh_controls)
+                unique={}
+                for ctrl,rect in types["Edit"]+types["Spinner"]:
+                    a,b,c,d=rect
+                    if a-4<=x<=c+4 and b-4<=y<=d+4:
+                        unique.setdefault(rect,ctrl)
             if len(unique)!=1:
                 raise AutomationError(
                     f"{key} 沒有唯一可讀欄位（找到 {len(unique)} 個），"

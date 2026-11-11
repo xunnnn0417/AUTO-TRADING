@@ -7,6 +7,7 @@ from dataclasses import replace
 from unittest.mock import MagicMock, patch
 from trading_helper.auto_entry import (
     AutoEntryWorkflow, AutoEntryJournal, DemoAccount,
+    DuplicateEntryDecisionRequired,
     Position, RecoveryRequired,
 )
 from trading_helper.demo_broker_port import DemoUiBrokerPort
@@ -108,6 +109,34 @@ class AutoEntryWorkflowTests(unittest.TestCase):
         self.assertLess(ev.index("verify_sl_tp"),ev.index("tv"))
         self.assertEqual(self.port.events[-1],("tv",))
         self.assertEqual(len([x for x in ev if x=="submit"]),2)
+
+    def test_duplicate_journal_is_detected_by_read_only_prefill_check(self):
+        accounts=(self.port.accounts["internal"],self.port.accounts["external"])
+        key=self.flow.fingerprint(
+            "A","https://docs.google.com/a",accounts,self.item
+        )
+        self.journal.record(key,"both_confirmed","T-internal/T-external")
+        with self.assertRaises(DuplicateEntryDecisionRequired) as caught:
+            self.flow.preflight_duplicate_entry(
+                self.item,"cTrader","MT5","A","https://docs.google.com/a"
+            )
+        self.assertEqual(caught.exception.key,key)
+        self.assertEqual(
+            [event for event in self.port.events if event[0]=="account"],
+            [("account","external"),("account","internal")],
+        )
+        self.assertFalse(any(event[0] in ("baseline","submit")
+                             for event in self.port.events))
+
+    def test_prechecked_accounts_are_reused_for_key_without_second_scan(self):
+        accounts=(self.port.accounts["internal"],self.port.accounts["external"])
+        result=self.flow.run(
+            self.item,"cTrader","MT5","A","https://docs.google.com/a",
+            sync_sl_tp=False,draw_tv=False,prechecked_accounts=accounts,
+        )
+        self.assertEqual(len(result),2)
+        self.assertFalse(any(event[0]=="account" for event in self.port.events))
+        self.assertTrue(any("帳戶確認 0ms" in line for line in self.logs))
     def test_pre_submit_check_favors_external_form_before_internal(self):
         self.run_case(sync=False,draw=False)
         preflight=[ev[1] for ev in self.port.events

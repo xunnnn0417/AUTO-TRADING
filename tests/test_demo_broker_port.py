@@ -72,6 +72,13 @@ class DemoPortTests(unittest.TestCase):
             self.port.inspect_account("MT5","external")
         self.automation.windows.click.assert_not_called()
 
+    def test_prefill_account_is_rechecked_before_form_verification(self):
+        expected=DemoAccount("MT5","11111111","Example-Demo",True,True)
+        changed=DemoAccount("MT5","53999999","Example-Demo",True,True)
+        self.port.set_expected_accounts({("MT5","external"):expected})
+        with self.assertRaises(AutomationError):
+            self.port._bind_verified_account("MT5","external",changed)
+
     def test_mt5_live_identity_is_verified(self):
         self.automation.windows.find.return_value=FakeWindow(
             "11111111 - Example-Live: Test Account - Hedge"

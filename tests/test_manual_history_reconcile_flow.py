@@ -125,6 +125,7 @@ class ManualHistoryDialogTests(unittest.TestCase):
                 "internal_platform":"cTrader","external_platform":"MT5",
                 "item":self.item,"sync_sl_tp":False,
                 "draw_tv":False,"draw_internal":False,
+                "fields_filled":True,
             },
         }
 

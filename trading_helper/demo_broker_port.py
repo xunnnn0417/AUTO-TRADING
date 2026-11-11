@@ -30,6 +30,7 @@ class DemoUiBrokerPort:
         # Ticket values can overlap across two separate brokers.
         self._ticket_role: dict[tuple[str, str], str] = {}
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
+        self._expected_accounts: dict[tuple[str,str],DemoAccount] = {}
         self._expected_symbol: str | None = None
         # Explicit, process-scoped LAB test override. It changes only which
         # instrument the order window is checked against; all account,
@@ -80,6 +81,12 @@ class DemoUiBrokerPort:
 
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
+
+    def set_expected_accounts(
+        self, accounts: dict[tuple[str,str],DemoAccount]
+    ) -> None:
+        """Require every fresh account read to match an earlier preflight."""
+        self._expected_accounts=dict(accounts)
 
     def _verify_instrument(
         self, platform: str, role: str, win, *, _controls=None
@@ -167,6 +174,12 @@ class DemoUiBrokerPort:
         self, platform: str, role: str, account: DemoAccount
     ) -> DemoAccount:
         key=(platform,role)
+        expected=self._expected_accounts.get(key)
+        if expected is not None and expected!=account:
+            raise AutomationError(
+                f"{role} {platform} 交易帳戶在填表前後不同，"
+                "已停止送單；請重新核對帳號和持倉。"
+            )
         previous=self._account_binding.get(key)
         if previous is not None and previous!=account:
             raise AutomationError(
