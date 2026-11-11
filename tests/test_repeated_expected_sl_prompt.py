@@ -55,21 +55,35 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
         self.assertIn("-8.35", prompt.call_args.args[2])
         self.assertIn("手數", prompt.call_args.args[2])
 
-    def test_does_not_prompt_if_input_changed_or_test_scenario_selected(self):
+    def test_does_not_prompt_if_input_changed_or_single_side_fill(self):
         with patch("trading_helper.gui.QMessageBox.question") as prompt:
             same, changed = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal", "external"),
                 dirty=("expected_sl_combined",), test_action="",
             )
-            test_item, test_changed = TradingHelperApp._maybe_adjust_repeated_expected_sl(
-                self.ui, self.item, roles=("internal", "external"),
-                dirty=(), test_action="close:internal",
+            single_item, single_changed = TradingHelperApp._maybe_adjust_repeated_expected_sl(
+                self.ui, self.item, roles=("internal",),
+                dirty=(), test_action="",
             )
         self.assertIs(same, self.item)
-        self.assertIs(test_item, self.item)
+        self.assertIs(single_item, self.item)
         self.assertFalse(changed)
-        self.assertFalse(test_changed)
+        self.assertFalse(single_changed)
         prompt.assert_not_called()
+
+    def test_test_scenario_prompts_before_fill_even_when_auto_entry_toggle_is_off(self):
+        self.ui.auto_entry_on_fill_both.setChecked(False)
+        with patch("trading_helper.gui.choose_repeat_adjustment",
+                   return_value=Decimal("-9.12")), \
+             patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes) as prompt:
+            adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
+                self.ui, self.item, roles=("internal", "external"),
+                dirty=(), test_action="reentry:internal",
+            )
+        self.assertTrue(did_adjust)
+        self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
+        prompt.assert_called_once()
 
     def test_only_successful_result_remembers_the_last_points(self):
         self.ui.instruction = self.item

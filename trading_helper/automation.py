@@ -40,6 +40,8 @@ REQUIRED_POINTS = {
     "原版MT5": ["lot_input", "sl_input", "tp_input"],
 }
 
+MAX_MT5_QUOTE_SPREAD_RATIO = Decimal("0.01")
+
 TRADINGVIEW_REQUIRED_POINTS = [
     "auto_scale_button",
     "long_tool",
@@ -606,13 +608,25 @@ class PlatformAutomation:
                         bid = self.windows.read_number(window, bid_point)
                     with timed_phase("MT5 Ask OCR",platform="MT5",role=role):
                         ask = self.windows.read_number(window, ask_point)
-                if bid <= 0 or ask <= 0 or ask <= bid:
+                if bid <= 0 or ask <= 0:
                     raise AutomationError(
-                        f"左右報價不合理（Bid {bid}、Ask {ask}）"
+                        f"左右報價無效（Bid {bid}、Ask {ask}）"
+                    )
+                if bid > ask:
+                    inverted_mid = (bid + ask) / Decimal("2")
+                    inverted_spread_ratio = (bid - ask) / inverted_mid
+                    if inverted_spread_ratio > MAX_MT5_QUOTE_SPREAD_RATIO:
+                        raise AutomationError(
+                            f"Bid／Ask 順序顛倒且價差超過 1%（{bid}／{ask}）"
+                        )
+                    bid, ask = ask, bid
+                    self.log(
+                        f"{role_text} MT5 報價讀值順序顛倒，差距未超過 1%；"
+                        f"已按低價 Bid {bid}／高價 Ask {ask} 使用。"
                     )
                 spread = ask - bid
                 mid = (ask + bid) / Decimal("2")
-                if spread / mid > Decimal("0.01"):
+                if spread / mid > MAX_MT5_QUOTE_SPREAD_RATIO:
                     raise AutomationError(
                         f"Bid／Ask 價差超過 1%（{bid}／{ask}），"
                         "可能讀到截斷數字或校準位置不正確"
@@ -655,7 +669,7 @@ class PlatformAutomation:
                                 candidate_mid = (
                                     candidate_ask+candidate_bid
                                 )/Decimal("2")
-                                if candidate_spread/candidate_mid > Decimal("0.01"):
+                                if candidate_spread/candidate_mid > MAX_MT5_QUOTE_SPREAD_RATIO:
                                     continue
                                 # A candidate must be seen in multiple OCR crops
                                 # or preprocessing variants before it can repair

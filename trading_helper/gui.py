@@ -2262,11 +2262,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self, instruction: TradeInstruction, *, roles: tuple[str, ...],
         dirty: tuple[str, ...] | list[str], test_action: str,
     ) -> tuple[TradeInstruction, bool]:
-        """Ask before changing an unchanged expected stop after a success."""
+        """Ask before repeating an unchanged expected stop before filling."""
         auto_entry = getattr(self, "auto_entry_on_fill_both", None)
         if (
-            roles != ("internal", "external") or dirty or test_action
-            or auto_entry is None or not auto_entry.isChecked()
+            roles != ("internal", "external") or dirty
+            or (
+                not test_action
+                and (auto_entry is None or not auto_entry.isChecked())
+            )
             or instruction.expected_sl_points is None
             or instruction.expected_sl_percent is not None
             or instruction.original_sl_points is None
@@ -3662,7 +3665,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     getattr(self,"signals",None),"auto_entry_result",None
                 )
                 if signal is not None:
-                    signal.emit({
+                    report={
                         "title":title,"message":message,"success":True,
                         "single_confirmed_role":None,
                         "internal_platform":internal_platform,
@@ -3677,7 +3680,18 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                             "draw_tv":draw_tv,
                             "draw_internal":draw_internal,
                         } if result["outcome"]=="both_closed_waiting_user" else None),
-                    })
+                    }
+                    if (
+                        item.expected_sl_points is not None
+                        and item.expected_sl_percent is None
+                    ):
+                        report["_repeat_expected_sl"]={
+                            "context":self._expected_sl_repeat_signature(
+                                profile_name,sheet_url,item
+                            ),
+                            "points":str(item.expected_sl_points),
+                        }
+                    signal.emit(report)
                 self.log(f"完整測試完成：{title}。")
                 return
             result=flow.run(

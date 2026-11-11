@@ -150,11 +150,28 @@ class FillVerificationTests(unittest.TestCase):
         )
         self.assertEqual(sell,D("4100.00"))
 
+    def test_mt5_quote_pair_normalizes_small_bid_ask_inversion(self):
+        instruction=SimpleNamespace(symbol="GOLD")
+        self.fake.read_number=MagicMock(
+            side_effect=[D("4018.36"),D("4018.31")]*2
+        )
+        buy=self.automation._read_mt5_quote_pair(
+            self.window,{}, {},instruction,"BUY","場外"
+        )
+        self.assertEqual(buy,D("4018.36"))
+        self.assertTrue(any("順序顛倒" in line for line in self.log))
+        self.fake.read_number=MagicMock(
+            side_effect=[D("4018.36"),D("4018.31")]
+        )
+        sell=self.automation._read_mt5_quote_pair(
+            self.window,{}, {},instruction,"SELL","場內"
+        )
+        self.assertEqual(sell,D("4018.31"))
+
     def test_mt5_quote_pair_rejects_bad_order_or_excessive_spread(self):
         instruction=SimpleNamespace(symbol="GOLD")
-        self.fake.read_number=MagicMock(side_effect=[D("4100.25"),D("4100.00")])
         self.fake.read_number=MagicMock(side_effect=[
-            D("4100.25"),D("4100.00")]*3
+            D("4160"),D("4100")]*3
         )
         with self.assertRaisesRegex(AutomationError,"連續 2 次未能可靠核對"):
             self.automation._read_mt5_quote_pair(

@@ -2,6 +2,8 @@
 import os
 import tempfile
 import unittest
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -150,6 +152,33 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
         message=self.signal.emit.call_args.args[0]
         self.assertTrue(message["success"])
         self.assertIn("SL／TP 同步完成",message["title"])
+
+    def test_successful_test_scenario_remembers_expected_sl_for_next_fill(self):
+        self.fake._expected_sl_repeat_signature=(
+            TradingHelperApp._expected_sl_repeat_signature
+        )
+        item=replace(
+            instruction(),original_sl_points=Decimal("-8.35"),
+            expected_sl_points=Decimal("-8.59"),
+        )
+        positions=(SimpleNamespace(ticket="I-1"),SimpleNamespace(ticket="E-1"))
+        with patch("trading_helper.gui.DemoUiBrokerPort",return_value=self.port), \
+             patch("trading_helper.gui.APP_DIR",Path(self.tmp.name)), \
+             patch.object(AutoEntryWorkflow,"run_test_scenario",return_value={
+                 "scenario":"weekend:BTCUSD",
+                 "outcome":"weekend_pair_confirmed",
+                 "positions":positions,
+             }):
+            TradingHelperApp._auto_entry_after_fill_both_pending(
+                self.fake,"cTrader","MT5",item,sync_sl_tp=True,
+                draw_tv=False,fast_pair=False,test_scenario="weekend:BTCUSD",
+            )
+        self.signal.emit.assert_called_once()
+        report=self.signal.emit.call_args.args[0]
+        self.assertTrue(report["success"])
+        self.assertEqual(
+            report["_repeat_expected_sl"]["points"],"-8.59"
+        )
 
     def test_uncertain_external_emits_one_partial_receipt_and_keeps_error(self):
         self.port.fail_confirm="external"
