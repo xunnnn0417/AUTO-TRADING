@@ -76,7 +76,7 @@ class ProfileStoreTests(unittest.TestCase):
     def test_new_scheme_disarms_all_automation_only_for_new_scheme(self):
         all_auto=(
             "auto_entry_on_fill_both", "auto_fast_pair",
-            "auto_sync_sl_tp_after_entry", "auto_draw_tv_after_entry",
+            "auto_draw_tv_after_entry",
         )
         existing=deepcopy(self.config)
         for key in all_auto:
@@ -89,11 +89,15 @@ class ProfileStoreTests(unittest.TestCase):
         for key in all_auto:
             self.assertFalse(new_scheme["ui"][key],key)
             self.assertTrue(old_scheme["ui"][key],key)
+        self.assertTrue(new_scheme["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertTrue(old_scheme["ui"]["auto_sync_sl_tp_after_entry"])
         store_again=ProfileStore(existing,self.path)
         self.assertEqual(store_again.active_name,"新方案")
         for key in all_auto:
             self.assertFalse(store_again.load_profile("新方案")["ui"][key])
             self.assertTrue(store_again.load_profile(old_name)["ui"][key])
+        self.assertTrue(store_again.load_profile("新方案")["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertTrue(store_again.load_profile(old_name)["ui"]["auto_sync_sl_tp_after_entry"])
         # The sheet columns and credentials carry across, but the URL/GID do not.
         self.assertEqual(new_scheme["sheet"]["spreadsheet_url"], "")
         self.assertEqual(new_scheme["sheet"]["gid"], "")

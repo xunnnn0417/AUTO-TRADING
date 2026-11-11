@@ -182,7 +182,7 @@ class SettingsAndDialogTests(unittest.TestCase):
         self.assertIn("要改用點數換算",q.call_args.args[2])
         self.assertIn("本次已停止，不會下單",q.call_args.args[2])
         self.assertEqual(q.call_args.kwargs["yes_text"],"改用點數換算")
-        self.assertEqual(q.call_args.kwargs["no_text"],"保留原設定")
+        self.assertEqual(q.call_args.kwargs["no_text"],"維持原設定")
         self.assertEqual(ctrader_mode_for_profile(self.parent.store.data,"Alpha"),"gooey")
         self.parent.save_config.assert_called_once()
     def test_prompt_refusal_does_not_change_preference(self):
@@ -211,9 +211,10 @@ class SettingsAndDialogTests(unittest.TestCase):
             TradingHelperApp._confirm_auto_entry_toggle(self.parent,True)
         text=q.call_args.args[2]
         self.assertNotIn("\\n",text)
-        self.assertIn("只限兩個已核對的帳戶",text)
+        self.assertIn("核對通過會送出兩筆訂單",text)
+        self.assertIn("自動同步場外 SL/TP",text)
         self.assertIn("Live",text)
-        self.assertIn("不重送或平倉",text)
+        self.assertIn("不補單或平倉",text)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
         self.parent.auto_entry_on_fill_both.close()
         self.parent.auto_sync_sl_tp_after_entry.close()

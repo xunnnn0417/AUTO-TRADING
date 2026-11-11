@@ -156,6 +156,7 @@ class IncidentDialogTest(unittest.TestCase):
     def test_incident_buttons_dispatch_the_user_selected_action(self):
         fake=SimpleNamespace(
             _auto_entry_receipt=None,
+            _remember_successful_expected_sl=MagicMock(),
             _start_user_approved_incident_action=MagicMock(),
         )
         report={"title":"結果不明","message":"只確認到場內持倉",
@@ -183,7 +184,10 @@ class IncidentDialogTest(unittest.TestCase):
         finally: box.close()
 
     def test_incident_without_verified_action_data_shows_no_active_buttons(self):
-        fake=SimpleNamespace(_auto_entry_receipt=None)
+        fake=SimpleNamespace(
+            _auto_entry_receipt=None,
+            _remember_successful_expected_sl=MagicMock(),
+        )
         report={"title":"結果不明","message":"只確認到場內持倉",
                 "single_confirmed_role":"internal"}
         TradingHelperApp._show_auto_entry_result(fake,report)
@@ -246,7 +250,10 @@ class IncidentDialogTest(unittest.TestCase):
             )
         warning.assert_called_once()
     def test_completed_dual_trade_offers_no_unneeded_manual_actions(self):
-        fake=SimpleNamespace(_auto_entry_receipt=None)
+        fake=SimpleNamespace(
+            _auto_entry_receipt=None,
+            _remember_successful_expected_sl=MagicMock(),
+        )
         TradingHelperApp._show_auto_entry_result(fake,{"title":"完成","message":"OK"})
         try:
             box=fake._auto_entry_receipt

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -74,6 +75,7 @@ from .auto_entry import (
 from .phase_timing_report import LocalPhaseTimingStore, timed_call, timed_operation
 from .demo_broker_port import DemoUiBrokerPort
 from .entry_status_report import build_entry_status_report
+from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adjustment_range
 from .config import APP_DIR
 from .field_detection import inspect_uia_window
 from .calibration_scan import ScanReport, inspect_all_targets
@@ -1478,16 +1480,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.addWidget(self.auto_fast_pair)
         self.auto_sync_sl_tp_after_entry = QCheckBox("同步 SL/TP")
         self.auto_sync_sl_tp_after_entry.setObjectName("auto_sync_sl_tp_after_entry")
-        self.auto_sync_sl_tp_after_entry.setText("同步")
-        self.auto_sync_sl_tp_after_entry.setChecked(
-            bool(self.store.data["ui"].get("auto_sync_sl_tp_after_entry",False))
-        )
-        self.auto_sync_sl_tp_after_entry.toggled.connect(
-            lambda enabled: self._confirm_future_auto_option(
-                self.auto_sync_sl_tp_after_entry, enabled, "同步 SL/TP"
-            )
-        )
-        automation_layout.addWidget(self.auto_sync_sl_tp_after_entry)
+        self.auto_sync_sl_tp_after_entry.setParent(self)
+        self.auto_sync_sl_tp_after_entry.setChecked(True)
+        self.auto_sync_sl_tp_after_entry.hide()
         self.auto_draw_tv_after_entry = QCheckBox("繪製 TV")
         self.auto_draw_tv_after_entry.setObjectName("auto_draw_tv_after_entry")
         self.auto_draw_tv_after_entry.setText("TV")
@@ -1545,7 +1540,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.test_scenario_checkboxes[action] = choice
         for option in (
             self.auto_entry_on_fill_both, self.auto_fast_pair,
-            self.auto_sync_sl_tp_after_entry, self.auto_draw_tv_after_entry,
+            self.auto_draw_tv_after_entry,
             self.test_mode_checkbox, *self.test_asset_checkboxes.values(),
             *self.test_scenario_checkboxes.values(),
         ):
@@ -2055,24 +2050,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if not request:
             QMessageBox.warning(
                 self,"請人工確認持倉",
-                "交易紀錄缺少重試資訊，不能安全自動繼續。"
+                "缺少上次交易資料，無法安全繼續。本次未送單。"
             )
             return
         manual_needed=not bool(data.get("retryable"))
         if manual_needed and not data.get("manual_review_possible"):
             QMessageBox.warning(
-                self, "紀錄狀態不明，禁止重送",
-                "無法判定前次執行紀錄的類型。請人工核對後再處理，"
-                "本次不會送單。"
+                self, "上次結果不明",
+                "無法確認上次是否成交。請先查看兩個平台的持倉與進出場紀錄；"
+                "本次未送單。"
             )
             return
         dialog=QMessageBox(self)
         dialog.setWindowTitle("發現相同方案的進場紀錄")
         dialog.setIcon(QMessageBox.Question)
         dialog.setText(
-            "這是同一組方案之前留下的紀錄，不代表目前一定有持倉。"
-            "為避免重複進場，每次重試前都會再請你確認。\n"
-            "請選擇返回調整，或核對後繼續。"
+            "這個方案有上次進場紀錄。請先確認兩邊目前的持倉，再選擇是否繼續。"
         )
         entry = data.get("entry") or {}
         record_summary = "之前紀錄："
@@ -2087,29 +2080,23 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if manual_needed:
             dialog.setInformativeText(
                 record_summary + "\n"
-                "上一次可能已在 cTrader 或 MT5 成交，但程式讀取失敗。"
-                    "請先在已選的兩個平台自行核對「目前持倉、掛單與成交歷史」。"
-                "若兩邊都有與本方案完全對應的既有持倉，"
-                "只接續成交後的檢查／已勾選的同步，不會送新訂單。"
-                "若兩邊確認空倉，才可按既有安全流程重新進場；"
-                "只有一邊或讀值不明時會停止，不盲目補單。"
+                "程式無法確認上次成交結果。若兩邊都有本方案持倉，只接續核對／同步，"
+                "不新增訂單；兩邊都空才會重新核對後進場。"
+                "只有一邊有單或結果不明時，請取消並人工確認。"
             )
         else:
             dialog.setInformativeText(
                 record_summary + "\n"
-                "選擇「仍要繼續進場」後，程式會再次確認兩個帳戶 "
-                "身分、空倉、校準及兩邊表單，通過才會下單。"
+                "繼續後會重新核對兩個帳戶、持倉、校準及表單；通過才送單。"
             )
-        adjust=dialog.addButton("調整數值，返回主畫面",QMessageBox.RejectRole)
+        adjust=dialog.addButton("返回",QMessageBox.RejectRole)
         proceed=dialog.addButton(
-            "核對現有持倉／繼續" if manual_needed else "仍要繼續進場",
+            "已核對，繼續" if manual_needed else "重新核對並進場",
             QMessageBox.AcceptRole
         )
         if manual_needed:
             acknowledgement=QCheckBox(
-                "我已核對 cTrader、MT5 的持倉、掛單及成交歷史。"
-                "若現有雙邊持倉符合方案，就接續而不新增交易；"
-                "若兩邊空倉，才同意再試進場。"
+                "我已核對兩邊目前持倉與進出場紀錄，確認可以繼續。"
             )
             dialog.setCheckBox(acknowledgement)
             proceed.setEnabled(False)
@@ -2121,8 +2108,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if manual_needed and not acknowledgement.isChecked():
             QMessageBox.warning(
-                self, "尚未核對先前交易",
-                "必須先核對兩邊的持倉、掛單與成交歷史，才能重新進場。"
+                self, "還沒核對",
+                "請先核對兩邊目前持倉與進出場紀錄。"
             )
             return
         current_url=str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
@@ -2134,7 +2121,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ):
             QMessageBox.warning(
                 self, "交易參數已改變",
-                "方案、平台或交易參數已改變，請重新填入核對後再進場。"
+                "方案、平台或數值已改變，請重新填入並核對後再進場。"
             )
             return
         approved=(
@@ -2180,14 +2167,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            "止盈止損讀回不符",
-            f"方案「{name}」｜{data['role_text']} cTrader {data['label']}\n"
-            f"輸入 {data['expected']}，讀回 {data['actual']}（已重試 2 次）。\n"
-            "要改用點數換算？只改目前方案和試算表；本次已停止，不會下單。",
+            "cTrader 點數輸入不一致",
+            f"輸入 {data['expected']}，讀回 {data['actual']}。\n"
+            "要改用點數換算並重試嗎？只改目前方案；本次已停止，不會下單。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="改用點數換算",
-            no_text="保留原設定",
+            no_text="維持原設定",
         )
         if answer == QMessageBox.Yes:
             set_ctrader_mode_for_profile(
@@ -2273,8 +2259,97 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             450, lambda payload=dict(report): self._show_auto_entry_result(payload)
         )
 
+    @staticmethod
+    def _expected_sl_repeat_signature(
+        profile_name: str, sheet_url: str, instruction: TradeInstruction,
+    ) -> str:
+        identity = json.dumps(
+            [str(profile_name), str(sheet_url).strip(),
+             int(instruction.source_row), str(instruction.symbol).upper()],
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    def _maybe_adjust_repeated_expected_sl(
+        self, instruction: TradeInstruction, *, roles: tuple[str, ...],
+        dirty: tuple[str, ...] | list[str], test_action: str,
+    ) -> tuple[TradeInstruction, bool]:
+        """Ask before changing an unchanged expected stop after a success."""
+        auto_entry = getattr(self, "auto_entry_on_fill_both", None)
+        if (
+            roles != ("internal", "external") or dirty or test_action
+            or auto_entry is None or not auto_entry.isChecked()
+            or instruction.expected_sl_points is None
+            or instruction.expected_sl_percent is not None
+            or instruction.original_sl_points is None
+        ):
+            return instruction, False
+
+        ui = self.store.data.setdefault("ui", {})
+        sheet_url = str(self.store.data["sheet"].get("spreadsheet_url", ""))
+        context = self._expected_sl_repeat_signature(
+            self.profiles.active_name, sheet_url, instruction
+        )
+        if ui.get("last_auto_entry_sl_context") != context:
+            return instruction, False
+        try:
+            previous = Decimal(str(ui.get("last_auto_entry_sl_points", "")))
+        except InvalidOperation:
+            return instruction, False
+        if previous != instruction.expected_sl_points:
+            return instruction, False
+
+        bounds = random_repeat_adjustment_range(
+            instruction.original_sl_points, previous
+        )
+        if bounds is None:
+            return instruction, False
+        proposed = choose_repeat_adjustment(
+            instruction.original_sl_points, previous
+        )
+        if proposed is None:
+            return instruction, False
+
+        answer = QMessageBox.question(
+            self,
+            "止損點數和上次相同",
+            f"這次仍是 {previous} 點。要改成 {proposed} 點並繼續嗎？\n"
+            f"可選範圍：{bounds[0]} 至 {bounds[1]} 點。"
+            "新數值會寫回試算表，並可能改變手數與保證金。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+            yes_text="調整並繼續",
+            no_text="維持原值",
+        )
+        if answer != QMessageBox.Yes:
+            return instruction, False
+        return replace(instruction, expected_sl_points=proposed), True
+
+    def _remember_successful_expected_sl(self, report: dict) -> None:
+        saved = report.get("_repeat_expected_sl")
+        if not report.get("success") or not isinstance(saved, dict):
+            return
+        item = getattr(self, "instruction", None)
+        if item is None:
+            return
+        current_context = self._expected_sl_repeat_signature(
+            self.profiles.active_name,
+            str(self.store.data["sheet"].get("spreadsheet_url", "")),
+            item,
+        )
+        if saved.get("context") != current_context:
+            return
+        ui = self.store.data.setdefault("ui", {})
+        ui["last_auto_entry_sl_context"] = current_context
+        ui["last_auto_entry_sl_points"] = str(saved.get("points", ""))
+        try:
+            self.save_config()
+        except Exception as exc:
+            self.log(f"未能記錄上次止損點數：{exc}")
+
     def _show_auto_entry_result(self, report: dict) -> None:
         """Show a topmost entry result and any explicitly approved next action."""
+        self._remember_successful_expected_sl(report)
         earlier = getattr(self, "_auto_entry_receipt", None)
         if earlier is not None:
             earlier.close()
@@ -3113,9 +3188,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if action.startswith("weekend:"):
             symbol = test_symbol or action.split(":", 1)[1]
             return QMessageBox.question(
-                self,"確認完整假日 Demo 測試",
-                f"使用 {symbol} 取代表格商品，在場內、場外兩個 Demo 實際開倉，"
-                "核對成交並同步 SL／TP。只限本次測試。要開始嗎？",
+                self,"開始假日 Demo 測試？",
+                f"兩個 Demo 帳戶會用 {symbol} 各開一單，並同步 SL/TP。要開始嗎？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3124,19 +3198,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         instrument = test_symbol or item.symbol
         if action.startswith("reentry:"):
             return QMessageBox.question(
-                self,"確認完整 Demo 重進測試",
-                f"使用 {instrument} 跑完整重進測試：略過{side}首單，另一邊進場後，"
-                "確認未送出才補進一次並同步 SL／TP。會在兩個 Demo 實際開倉；"
-                "結果不明時停止、不重送。要開始嗎？",
+                self,"開始 Demo 重進測試？",
+                f"兩個 Demo 帳戶會用 {instrument} 測試{side}漏單後補進一次。"
+                "結果不明就停止，不會重複送單。要開始嗎？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
         if action.startswith("close:"):
             return QMessageBox.question(
-                self,"確認完整 Demo 關單測試",
-                f"使用 {instrument} 測試{side}快速平倉；會在兩個 Demo 實際開倉及平倉。\n"
-                "場內情境：再關閉仍開著的場外；場外情境：確認平倉後補開一次並同步 SL／TP。\n"
-                "要開始嗎？",
+                self,"開始 Demo 關單測試？",
+                f"兩個 Demo 帳戶會用 {instrument} 測試{side}快速平倉及後續處理。"
+                "會實際開倉和平倉。要開始嗎？",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3149,8 +3221,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if self._parameter_write_active or self._fill_waiting_for_sheet:
             QMessageBox.information(
-                self, "等待數值確認",
-                "交易參數正在寫回／核對試算表，完成後才可以填入。"
+                self, "正在更新數值",
+                "試算表更新完成後，再按一次「填入」。"
             )
             return
         if self.instruction is None:
@@ -3171,22 +3243,43 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             }
             names = "、".join(labels.get(key, key) for key in dirty)
             answer = QMessageBox.question(
-                self, "有尚未確認的數值",
-                f"尚未確認：{names}。\n先寫回試算表並核對，再填入？",
+                self, "數值尚未寫回",
+                f"要先把「{names}」寫回試算表並核對，再繼續嗎？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-                yes_text="先核對", no_text="取消",
+                yes_text="寫回並繼續", no_text="取消",
             )
             if answer != QMessageBox.Yes:
                 return
-            try:
-                candidate = self._instruction_with_parameter_overrides(
-                    self.instruction
-                )
-            except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
-                QMessageBox.warning(self, "數值格式錯誤", str(exc))
-                return
-            # Always check targets BEFORE triggering a sheet update, so the
-            # user knows which button is missing without partial effects.
+
+        try:
+            candidate = (
+                self._instruction_with_parameter_overrides(self.instruction)
+                if dirty else self._require_instruction()
+            )
+        except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
+            QMessageBox.warning(self, "填入前檢查", str(exc))
+            return
+
+        random_adjustment = False
+        if not dirty:
+            candidate, random_adjustment = self._maybe_adjust_repeated_expected_sl(
+                candidate, roles=roles, dirty=dirty, test_action=test_action,
+            )
+            if random_adjustment:
+                entry = self.parameter_inputs["expected_sl_combined"]
+                self._fill_confirmed_text.pop("expected_sl_combined", None)
+                entry.setText(format(candidate.expected_sl_points, "f"))
+                dirty = ["expected_sl_combined"]
+                try:
+                    candidate = self._instruction_with_parameter_overrides(
+                        self.instruction
+                    )
+                except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
+                    QMessageBox.warning(self, "止損點數錯誤", str(exc))
+                    return
+
+        if dirty:
+            # Check calibration before writing the approved value to Sheets.
             if test_action:
                 missing=self._test_action_missing(
                     test_action, platforms, candidate, test_symbol
@@ -3196,8 +3289,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if missing:
                 QMessageBox.warning(
                     self, "請先校準必要按鈕",
-                    "本次填寫缺少下列校準位置：\n" + "\n".join(missing)
-                    + "\n\n請到「編輯 → 欄位校準」完成後再試。"
+                    "還沒校準：\n" + "\n".join(missing)
+                    + "\n請到「編輯 → 欄位校準」完成後再試。"
                 )
                 return
             self._fill_waiting_for_sheet = {
@@ -3216,11 +3309,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self._fill_waiting_for_sheet["sheet_ready"] = True
                 QTimer.singleShot(0, self._resume_fill_after_sheet_update)
             return
-        try:
-            candidate = self._require_instruction()
-        except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
-            QMessageBox.warning(self, "填入前檢查", str(exc))
-            return
         if test_action:
             missing=self._test_action_missing(
                 test_action, platforms, candidate, test_symbol
@@ -3230,8 +3318,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if missing:
             QMessageBox.warning(
                 self, "請先校準必要按鈕",
-                "本次填寫缺少下列校準位置：\n" + "\n".join(missing)
-                + "\n\n請到「編輯 → 欄位校準」完成後再試。"
+                "還沒校準：\n" + "\n".join(missing)
+                + "\n請到「編輯 → 欄位校準」完成後再試。"
             )
             return
         if test_action and not self._confirm_test_action(
@@ -3287,8 +3375,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         fast_control = getattr(self,"auto_fast_pair",None)
         fast_pair = bool(fast_control is not None and fast_control.isChecked() and auto_entry)
         auto_sync = bool(
-            getattr(self, "auto_sync_sl_tp_after_entry", None)
-            and self.auto_sync_sl_tp_after_entry.isChecked()
+            auto_entry
         )
         auto_draw = bool(
             getattr(self, "auto_draw_tv_after_entry", None)
@@ -3474,6 +3561,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 internal_platform=internal_platform,
                 external_platform=external_platform,
             )
+            if (
+                success and not test_scenario
+                and item.expected_sl_points is not None
+                and item.expected_sl_percent is None
+            ):
+                report["_repeat_expected_sl"] = {
+                    "context": self._expected_sl_repeat_signature(
+                        profile_name, sheet_url, item
+                    ),
+                    "points": str(item.expected_sl_points),
+                }
             role=report.get("single_confirmed_role")
             confirmed=(
                 entry.get("confirmed_legs",{})
@@ -3681,20 +3779,33 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         self._start("繪製 TradingView", task, restore_after=False)
 
+    @timed_operation("手動同步場外 SL/TP")
+    def _execute_manual_external_sl_tp(
+        self, item: TradeInstruction, internal_platform: str,
+        external_platform: str,
+        entry_price_override: Decimal | None,
+        *, sync_sl_tp: bool = True,
+    ) -> None:
+        """Run the complete manual sync in the worker's timing report."""
+        result = self.automation.sync_external_sl_tp(
+            item,
+            internal_platform=internal_platform,
+            external_platform=external_platform,
+            entry_price_override=entry_price_override,
+        )
+        if result:
+            self.signals.external_price_result.emit(result)
+
     def sync_external_sl_tp(self) -> None:
         internal_platform = self.internal_platform.currentText()
         external_platform = self.external_platform.currentText()
 
         def task() -> None:
             item = self._require_instruction()
-            result = self.automation.sync_external_sl_tp(
-                item,
-                internal_platform=internal_platform,
-                external_platform=external_platform,
-                entry_price_override=self.manual_entry_price,
+            self._execute_manual_external_sl_tp(
+                item, internal_platform, external_platform,
+                self.manual_entry_price,
             )
-            if result:
-                self.signals.external_price_result.emit(result)
 
         self._start("同步場外止盈止損", task, restore_after=False)
 
@@ -3704,14 +3815,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         def task() -> None:
             item = self._require_instruction()
-            result = self.automation.sync_external_sl_tp(
-                item,
-                internal_platform=internal_platform,
-                external_platform=external_platform,
-                entry_price_override=entry_price,
+            self._execute_manual_external_sl_tp(
+                item, internal_platform, external_platform, entry_price,
             )
-            if result:
-                self.signals.external_price_result.emit(result)
 
         self._start("同步到場外", task, restore_after=False)
 
@@ -4607,7 +4713,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self.auto_fast_pair.isChecked()
                     if hasattr(self,"auto_fast_pair") else False
                 ),
-                "auto_sync_sl_tp_after_entry": self.auto_sync_sl_tp_after_entry.isChecked(),
+                "auto_sync_sl_tp_after_entry": True,
                 "auto_draw_tv_after_entry": self.auto_draw_tv_after_entry.isChecked(),
             }
         )
@@ -4620,10 +4726,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         the confirmation handlers recursively.
         """
         first = getattr(self, "auto_entry_on_fill_both", None)
-        second = getattr(self, "auto_sync_sl_tp_after_entry", None)
         third = getattr(self, "auto_draw_tv_after_entry", None)
         fast = getattr(self, "auto_fast_pair", None)
-        if first is None or second is None or third is None:
+        if first is None or third is None:
             return
         first_checked = first.isChecked()
         if fast is not None:
@@ -4632,28 +4737,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 fast.setChecked(False)
                 fast.blockSignals(prev)
             fast.setEnabled(first_checked)
-        if not first_checked and second.isChecked():
-            was_blocked = second.blockSignals(True)
-            second.setChecked(False)
-            second.blockSignals(was_blocked)
-        second.setEnabled(first_checked)
-        second.setToolTip(
-            "必須先勾選「自動進場」。目前此功能只儲存偏好，尚不自動同步。"
-            if not first_checked else
-            "雙邊進場核對成功後，會依場內實際成交價修改場外 SL/TP，"
-            "並讀回確認；使用 Live 時會修改真實持倉。"
+        third.setToolTip(
+            "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
+            if first_checked else
+            "請先勾選「自動進場」。"
         )
-        second_checked = first_checked and second.isChecked()
-        if not second_checked and third.isChecked():
+        if not first_checked and third.isChecked():
             was_blocked = third.blockSignals(True)
             third.setChecked(False)
             third.blockSignals(was_blocked)
-        third.setEnabled(second_checked)
-        third.setToolTip(
-            "必須先勾選「同步 SL/TP」。目前此功能只儲存偏好，尚不自動繪製。"
-            if not second_checked else
-            "進場及 SL/TP 同步完成後，會接續執行 TradingView 繪圖。"
-        )
+        third.setEnabled(first_checked)
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
         if not enabled:
@@ -4665,10 +4758,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             accepted=QMessageBox.No
         else:
             accepted=QMessageBox.question(
-                self,"確認快速雙邊進場",
-                "啟用快速雙邊進場？核對後會連續送出；Live 帳戶會建立真實倉位，"
-                "可能單邊成交，"
-                "也可能暫時未確認 SL／TP。程式不會自動重試、補單或平倉。",
+                self,"啟用快速雙邊？",
+                "核對後會連續送出兩筆訂單；Live 會建立真實倉位。"
+                "若只有一邊成交，程式會停下，不自動補單或平倉。",
                 QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
                 yes_text="啟用", no_text="取消",
             )
@@ -4690,10 +4782,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         accepted = QMessageBox.question(
             self,
-            "確認啟用自動進場選項",
-            "啟用「填入兩邊時自動進場」？只限兩個已核對的帳戶；"
-            "若是 Live，會建立真實倉位。"
-            "雙邊表單與 SL／TP 核對成功才送出。結果不明時停止，不重送或平倉。",
+            "啟用自動進場？",
+            "按「填入兩邊」後，核對通過會送出兩筆訂單，並自動同步場外 SL/TP。"
+            "Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",
@@ -4713,7 +4804,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     ) -> None:
         """Store future opt-in only; never run broker/TV workflows."""
         if enabled:
-            if (checkbox is self.auto_sync_sl_tp_after_entry
+            if (checkbox is self.auto_draw_tv_after_entry
                     and not self.auto_entry_on_fill_both.isChecked()):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(False)
@@ -4733,10 +4824,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         accepted = QMessageBox.question(
             self,
-            "確認預留自動化選項",
-            f"啟用「{label}」？只在雙邊進場並確認持倉後執行；"
-            "若是 Live，自動同步可能修改真實持倉的 SL/TP。"
-            "辨識或核對失敗會停止，不補單。",
+            f"啟用「{label}」？",
+            "雙邊進場與 SL/TP 同步完成後，會在 TradingView 繪圖。"
+            "自動進場已啟用時，Live 帳戶會送出真實訂單。要啟用嗎？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",
@@ -4873,9 +4963,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.auto_entry_on_fill_both.setChecked(
             bool(ui.get("auto_entry_on_fill_both",False))
         )
-        self.auto_sync_sl_tp_after_entry.setChecked(
-            bool(ui.get("auto_sync_sl_tp_after_entry",False))
-        )
+        self.auto_sync_sl_tp_after_entry.setChecked(True)
         self.auto_draw_tv_after_entry.setChecked(
             bool(ui.get("auto_draw_tv_after_entry",False))
         )
@@ -4898,9 +4986,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ui["auto_fast_pair"] = (
             fast_control.isChecked() if fast_control is not None else False
         )
-        ui["auto_sync_sl_tp_after_entry"] = (
-            self.auto_sync_sl_tp_after_entry.isChecked()
-        )
+        ui["auto_sync_sl_tp_after_entry"] = True
         ui["auto_draw_tv_after_entry"] = (
             self.auto_draw_tv_after_entry.isChecked()
         )

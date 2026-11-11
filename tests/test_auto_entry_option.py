@@ -55,7 +55,8 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.assertTrue(self.parent.auto_entry_on_fill_both.isChecked())
             self.assertEqual(self.parent.save_ui_state.call_count, 1)
             args = question.call_args.args
-            self.assertIn("兩個已核對的帳戶", args[2])
+            self.assertIn("核對通過會送出兩筆訂單", args[2])
+            self.assertIn("自動同步場外 SL/TP", args[2])
             self.assertIn("Live", args[2])
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.assertEqual(self.parent.save_ui_state.call_count, 2)
@@ -132,7 +133,10 @@ class AutoEntryOptionTests(unittest.TestCase):
         TradingHelperApp._start_fill_worker(fake,("internal","external"),platforms)
         button.setChecked(False)
         run.call_args.args[1]()
-        fill.assert_called_once_with("cTrader","MT5",True)
+        fill.assert_called_once_with(
+            "cTrader", "MT5", True, sync_sl_tp=True, draw_tv=False,
+            draw_internal=False, fast_pair=False,
+        )
         button.close();inside.close();outside.close()
 
     def test_save_ui_state_includes_per_profile_toggle(self):
@@ -148,6 +152,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         )
         TradingHelperApp.save_ui_state(source)
         self.assertTrue(source.store.data["ui"]["auto_entry_on_fill_both"])
+        self.assertTrue(source.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         source.save_config.assert_called_once()
         source.internal_platform.close();source.external_platform.close()
         source.tv_draw_internal.close();checkbox.close()
@@ -177,7 +182,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         fake.auto_entry_on_fill_both.toggled.connect(dialog)
         TradingHelperApp._apply_profile_ui(fake)
         self.assertTrue(fake.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(fake.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(fake.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(fake.auto_draw_tv_after_entry.isChecked())
         dialog.assert_not_called()
         self.assertIsNone(fake.instruction)
@@ -206,8 +211,8 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.parent.auto_fast_pair.setChecked(True)
             self.assertTrue(self.parent.auto_fast_pair.isChecked())
             message=question.call_args.args[2]
-            self.assertIn("可能單邊成交",message)
-            self.assertIn("不會自動重試、補單或平倉",message)
+            self.assertIn("若只有一邊成交",message)
+            self.assertIn("不自動補單或平倉",message)
             self.assertNotIn(chr(92)+"n",message)
             self.assertEqual(question.call_args.kwargs["yes_text"],"啟用")
             self.assertEqual(question.call_args.kwargs["no_text"],"取消")

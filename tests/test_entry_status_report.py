@@ -188,7 +188,10 @@ class ReceiptWindowTests(unittest.TestCase):
         cls.qt = QApplication.instance() or QApplication([])
 
     def test_result_stays_visible_after_parent_main_window_is_minimized(self):
-        fake=SimpleNamespace(_auto_entry_receipt=None)
+        fake=SimpleNamespace(
+            _auto_entry_receipt=None,
+            _remember_successful_expected_sl=MagicMock(),
+        )
         receipt={"title":"開倉後續結果需要核對",
                  "message":"場內已確認\n場外尚未確認\n補單未執行"}
         TradingHelperApp._show_auto_entry_result(fake,receipt)
@@ -216,6 +219,7 @@ class ReceiptWindowTests(unittest.TestCase):
     def test_internal_close_receipt_offers_reentry_with_exam_rule_reminder(self):
         fake=SimpleNamespace(
             _auto_entry_receipt=None,
+            _remember_successful_expected_sl=MagicMock(),
             _start_user_approved_reentry=MagicMock(),
         )
         request={"internal_platform":"cTrader","external_platform":"MT5"}

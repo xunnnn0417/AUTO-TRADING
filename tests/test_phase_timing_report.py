@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from trading_helper.auto_entry import AutoEntryJournal, AutoEntryWorkflow
 from trading_helper.phase_timing_report import (
@@ -14,6 +16,28 @@ from trading_helper.windows import AutomationError
 
 
 class PhaseTimingReportTests(unittest.TestCase):
+    def test_manual_sync_records_full_background_workflow(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "reports" / "timings.jsonl"
+            fake = SimpleNamespace(
+                phase_timing_store=LocalPhaseTimingStore(path),
+                automation=SimpleNamespace(
+                    sync_external_sl_tp=MagicMock(return_value={"sl": "1.0"})
+                ),
+                signals=SimpleNamespace(external_price_result=MagicMock()),
+            )
+            TradingHelperApp._execute_manual_external_sl_tp(
+                fake, instruction(), "cTrader", "MT5", None
+            )
+            report = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+
+        self.assertEqual(report["workflow"], "手動同步場外 SL/TP")
+        self.assertEqual(report["outcome"], "completed")
+        self.assertEqual(report["platforms"], {
+            "internal": "cTrader", "external": "MT5",
+        })
+        fake.signals.external_price_result.emit.assert_called_once_with({"sl": "1.0"})
+
     def test_automation_failure_summary_is_saved_without_private_values(self):
         report = PhaseTimingRun("fill", {})
         error = AutomationError(

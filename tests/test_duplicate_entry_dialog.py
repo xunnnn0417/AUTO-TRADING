@@ -60,9 +60,9 @@ class DuplicateDialogTests(unittest.TestCase):
             dialog.setWindowTitle.call_args.args[0],
             "發現相同方案的進場紀錄",
         )
-        self.assertIn("每次重試前", dialog.setText.call_args.args[0])
+        self.assertIn("上次進場紀錄", dialog.setText.call_args.args[0])
         self.assertIn("2025-01-01 05:25:00", dialog.setInformativeText.call_args.args[0])
-        self.assertIn("再次確認兩個帳戶", dialog.setInformativeText.call_args.args[0])
+        self.assertIn("重新核對兩個帳戶", dialog.setInformativeText.call_args.args[0])
         self.ui._start.assert_called_once()
         name,task=self.ui._start.call_args.args
         self.assertEqual(name,"重新確認進場")

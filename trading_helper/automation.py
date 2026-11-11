@@ -9,7 +9,7 @@ from typing import Any, Callable
 from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
 from .test_mode import active_test_symbol_override, effective_test_symbol
-from .phase_timing_report import timed_phase
+from .phase_timing_report import timed_call, timed_phase
 from .windows import (
     AutomationError,
     CalibrationMismatchError,
@@ -1080,7 +1080,11 @@ class PlatformAutomation:
         entry_price = (
             entry_price_override
             if entry_price_override is not None
-            else self._read_internal_entry_price(instruction, internal_platform)
+            else timed_call(
+                "讀取場內成交價", self._read_internal_entry_price,
+                instruction, internal_platform,
+                platform=internal_platform, role="internal",
+            )
         )
         sl_price, tp_price = instruction.estimated_prices(
             instruction.external_direction,
@@ -1113,24 +1117,34 @@ class PlatformAutomation:
         if use_position_modify_flow:
             if (_is_ctrader(external_platform)
                     and isinstance(self.windows, WindowController)):
-                bound_window = self.windows.find_calibrated_main(
+                bound_window = timed_call(
+                    "定位場外主視窗", self.windows.find_calibrated_main,
                     profile["window_title"]["external"],
-                    points["position_order_row"], platform=external_platform
+                    points["position_order_row"], platform=external_platform,
+                    role="external",
                 )
             else:
-                bound_window = self.windows.find(
-                    profile["window_title"]["external"]
+                bound_window = timed_call(
+                    "定位場外主視窗", self.windows.find,
+                    profile["window_title"]["external"],
+                    platform=external_platform, role="external",
                 )
             self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")
             if _is_ctrader(external_platform):
-                self._verify_ctrader_account(
-                    external_platform, profile, "external", bound_window
+                timed_call(
+                    "核對 cTrader 帳戶", self._verify_ctrader_account,
+                    external_platform, profile, "external", bound_window,
+                    platform=external_platform, role="external",
                 )
             if _is_mt5(external_platform):
                 trade_tab = points.get("trade_tab")
                 if trade_tab is not None:
                     self.log("正在切到 MT5 交易欄位。")
-                    self.windows.click(bound_window, trade_tab)
+                    timed_call(
+                        "切換 MT5 交易頁", self.windows.click,
+                        bound_window, trade_tab,
+                        platform=external_platform, role="external",
+                    )
                     self.windows.wait(0.2)
                 # MT5's calibrated lot coordinate can land on nearby table
                 # values (e.g. profit) and OCR can return a plausible but
@@ -1138,15 +1152,15 @@ class PlatformAutomation:
                 # to match symbol, direction and volume, then correlate the
                 # unique ticket to the visible Trade row before opening it.
                 from .demo_broker_port import DemoUiBrokerPort
-                matched_row, matched_position = DemoUiBrokerPort(
-                    self, self.log
-                ).find_mt5_position_row(
-                    external_platform,
-                    "external",
+                matched_row, matched_position = timed_call(
+                    "唯一辨識 MT5 場外持倉",
+                    DemoUiBrokerPort(self, self.log).find_mt5_position_row,
+                    external_platform, "external",
                     expected_symbol=effective_test_symbol(instruction.symbol),
                     expected_direction=instruction.external_direction,
                     expected_volume=instruction.external.lot,
                     window=bound_window,
+                    platform=external_platform, role="external",
                 )
                 operation_points = points
                 position_point = self._offset_position_point(
@@ -1167,10 +1181,11 @@ class PlatformAutomation:
                 lot_window = bound_window
                 operation_points = points
                 try:
-                    detected_lot = self.windows.read_number_near(
-                        lot_window,
-                        points["position_order_lot"],
+                    detected_lot = timed_call(
+                        "讀取 cTrader 場外手數", self.windows.read_number_near,
+                        lot_window, points["position_order_lot"],
                         instruction.external.lot,
+                        platform=external_platform, role="external",
                     )
                 except CalibrationMismatchError as exc:
                     raise CalibrationMismatchError(
@@ -1206,26 +1221,33 @@ class PlatformAutomation:
                     "正在開啟持倉修改視窗。"
                 )
             row_window = bound_window
-            self.windows.double_click(
-                row_window,
-                position_point,
+            timed_call(
+                "開啟場外持倉修改視窗", self.windows.double_click,
+                row_window, position_point,
+                platform=external_platform, role="external",
             )
             try:
-                modify_window = self.windows.wait_for_active_window_change(
-                    row_window,
-                    timeout=3.0,
+                modify_window = timed_call(
+                    "等待場外修改視窗", self.windows.wait_for_active_window_change,
+                    row_window, timeout=3.0,
+                    platform=external_platform, role="external",
                 )
             except AutomationError:
                 self.log(
                     f"{external_platform} 修改視窗沒有自動切到最上層，"
                     "改用校準尺寸尋找並點擊輸入欄。"
                 )
-                modify_window = self.windows.wait_for_window_matching_point_size(
-                    points["position_sl_input"],
-                    timeout=3.0,
+                modify_window = timed_call(
+                    "尋找場外修改視窗", self.windows.wait_for_window_matching_point_size,
+                    points["position_sl_input"], timeout=3.0,
                     exclude_handles={row_window.handle},
+                    platform=external_platform, role="external",
                 )
-                self.windows.click(modify_window, points["position_sl_input"])
+                timed_call(
+                    "定位場外 SL 輸入欄", self.windows.click,
+                    modify_window, points["position_sl_input"],
+                    platform=external_platform, role="external",
+                )
                 modify_window = self.windows.active_window()
             self.log(
                 f"已偵測到 {external_platform} 持倉修改視窗："
@@ -1271,8 +1293,10 @@ class PlatformAutomation:
         if use_position_modify_flow:
             current_values: dict[str, Decimal] = {}
             for point_name, label, value in values:
-                raw = self.windows.read_edit_value(
-                    modify_window, operation_points[point_name]
+                raw = timed_call(
+                    f"讀取場外{label}", self.windows.read_edit_value,
+                    modify_window, operation_points[point_name],
+                    platform=external_platform, role="external",
                 )
                 current_values[point_name] = self._normalize_numeric_input(
                     raw, Decimal(value)
@@ -1310,13 +1334,15 @@ class PlatformAutomation:
                     continue
                 self.emergency.guard()
                 self.log(f"正在填入場外 {external_platform} 的{label}：{value}")
-                self.windows.click_and_type(
-                    modify_window,
-                    operation_points[point_name],
-                    value,
+                timed_call(
+                    f"輸入場外{label}", self.windows.click_and_type,
+                    modify_window, operation_points[point_name], value,
+                    platform=external_platform, role="external",
                 )
-                raw = self.windows.read_edit_value(
-                    modify_window, operation_points[point_name]
+                raw = timed_call(
+                    f"讀回場外{label}", self.windows.read_edit_value,
+                    modify_window, operation_points[point_name],
+                    platform=external_platform, role="external",
                 )
                 actual = self._normalize_numeric_input(raw, Decimal(value))
                 if actual != Decimal(value):
@@ -1331,10 +1357,16 @@ class PlatformAutomation:
                     )
 
             self.emergency.guard()
-            self.windows.click(modify_window, confirm_point)
+            timed_call(
+                "送出場外 SL/TP", self.windows.click,
+                modify_window, confirm_point,
+                platform=external_platform, role="external",
+            )
             try:
-                self.windows.wait_for_active_window_change(
-                    modify_window, timeout=2.0
+                timed_call(
+                    "等待場外修改完成", self.windows.wait_for_active_window_change,
+                    modify_window, timeout=2.0,
+                    platform=external_platform, role="external",
                 )
             except AutomationError as exc:
                 raise AutomationError(
@@ -1349,15 +1381,11 @@ class PlatformAutomation:
 
         for point_name, label, value in values:
             if modify_window is None:
-                self._fill_field(
-                    profile,
-                    "external",
-                    operation_points,
-                    "場外",
-                    external_platform,
-                    point_name,
-                    label,
-                    value,
+                timed_call(
+                    f"填入場外{label}", self._fill_field,
+                    profile, "external", operation_points, "場外",
+                    external_platform, point_name, label, value,
+                    platform=external_platform, role="external",
                 )
         self.log(
             f"場外 {external_platform} 止盈止損已填入："
