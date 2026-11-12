@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QFrame, QMainWindow, QMessageBox
 
 from trading_helper.config import (
     DEFAULT_CONFIG, ProfileStore, ctrader_mode_for_profile,
@@ -18,6 +18,7 @@ from trading_helper.automation import (
     CTraderDecimalInputSuggestion, PlatformAutomation,
 )
 from trading_helper.gui import TradingHelperApp, SettingsDialog
+import trading_helper.gui as gui
 
 class PerSchemeModeTests(unittest.TestCase):
     def setUp(self):
@@ -140,6 +141,10 @@ class SettingsAndDialogTests(unittest.TestCase):
         self.parent.close()
     def test_settings_has_mode_and_saves_only_current_scheme(self):
         dialog=SettingsDialog(self.parent)
+        self.assertTrue(dialog.windowFlags() & gui.Qt.FramelessWindowHint)
+        self.assertIsNotNone(dialog.findChild(gui.QFrame,"compactTitleBar"))
+        self.assertIn("#101014",dialog.styleSheet())
+        self.assertNotIn("#08080b",dialog.styleSheet())
         combo=dialog.ctrader_mode_combo
         self.assertEqual(combo.count(),2)
         combo.setCurrentIndex(combo.findData("gooey"))
@@ -155,13 +160,29 @@ class SettingsAndDialogTests(unittest.TestCase):
         dialog.save()
         self.assertEqual(ctrader_mode_for_profile(self.parent.store.data,"Alpha"),"native")
         dialog.close()
+    def test_settings_saves_gid_from_url_and_forces_writable_sheet_access(self):
+        self.parent.store.data["sheet"]["data_layout"]="row"
+        dialog=SettingsDialog(self.parent)
+        dialog.sheet_fields["spreadsheet_url"].setText(
+            "https://docs.google.com/spreadsheets/d/book/edit?gid=4567"
+        )
+        dialog.save()
+        sheet=self.parent.store.data["sheet"]
+        self.assertEqual(sheet["gid"],"4567")
+        self.assertEqual(sheet["mode"],"service_account")
+        # Hidden legacy layout remains intact for profiles that still need it.
+        self.assertEqual(sheet["data_layout"],"row")
+        dialog.close()
     def test_prompt_accepts_and_stores_on_exact_scheme_only(self):
         data=dict(profile_name="Alpha",sheet_url="https://docs.google.com/a",
                   role_text="場內",label="止損點數",expected="0.45",actual="0")
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes) as q:
             TradingHelperApp._show_ctrader_decimal_suggestion(self.parent,data)
-        self.assertIn("Gooey",q.call_args.args[2])
+        self.assertIn("改用點數換算並重試",q.call_args.args[2])
+        self.assertIn("本次不會下單",q.call_args.args[2])
+        self.assertEqual(q.call_args.kwargs["yes_text"],"改用點數換算")
+        self.assertEqual(q.call_args.kwargs["no_text"],"維持原設定")
         self.assertEqual(ctrader_mode_for_profile(self.parent.store.data,"Alpha"),"gooey")
         self.parent.save_config.assert_called_once()
     def test_prompt_refusal_does_not_change_preference(self):
@@ -179,9 +200,10 @@ class SettingsAndDialogTests(unittest.TestCase):
             TradingHelperApp._show_ctrader_decimal_suggestion(self.parent,data)
             q.assert_not_called()
         self.parent.save_config.assert_not_called()
-    def test_auto_entry_confirmation_uses_real_newlines(self):
+    def test_auto_entry_confirmation_is_concise(self):
         self.parent.auto_entry_on_fill_both=QCheckBox()
         self.parent.auto_sync_sl_tp_after_entry=QCheckBox()
+        self.parent.auto_sync_sl_tp_after_entry.setChecked(True)
         self.parent.auto_draw_tv_after_entry=QCheckBox()
         self.parent.save_ui_state=MagicMock()
         self.parent.auto_entry_on_fill_both.setChecked(True)
@@ -189,8 +211,10 @@ class SettingsAndDialogTests(unittest.TestCase):
                    return_value=QMessageBox.No) as q:
             TradingHelperApp._confirm_auto_entry_toggle(self.parent,True)
         text=q.call_args.args[2]
-        self.assertIn("\n",text)
         self.assertNotIn("\\n",text)
+        self.assertIn("自動進場並同步場外 SL／TP",text)
+        self.assertIn("Live",text)
+        self.assertIn("不補單或平倉",text)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
         self.parent.auto_entry_on_fill_both.close()
         self.parent.auto_sync_sl_tp_after_entry.close()
@@ -198,3 +222,4 @@ class SettingsAndDialogTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+

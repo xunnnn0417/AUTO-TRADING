@@ -10,7 +10,7 @@ def c(kind, name, automation_id, rect, ancestors=()):
 
 class CalibrationScanTests(unittest.TestCase):
     def test_all_original_targets_present(self):
-        for platform, count in [("cTrader", 15), ("MT5", 14)]:
+        for platform, count in [("cTrader", 16), ("MT5", 16)]:
             report = match_all(platform, CALIBRATION_TARGETS[platform], [], WINDOW)
             self.assertEqual(len(report.targets), count)
             self.assertEqual(len(report.reasons), count)
@@ -57,6 +57,20 @@ class CalibrationScanTests(unittest.TestCase):
             c("Text","Price:","",(100,190,180,215)),
         ],(0,0,700,500))
         self.assertFalse(result.candidates)
+
+    def test_mt5_bid_and_ask_are_distinct_numeric_candidates(self):
+        keys=(
+            ("bid_price_left","左側 Bid"),
+            ("ask_price_right","右側 Ask"),
+        )
+        controls=[
+            c("Text","Bid 81428.52","bidPriceText",(120,200,230,230)),
+            c("Text","Ask 81436.02","askPriceText",(250,200,360,230)),
+        ]
+        report=match_all("MT5",keys,controls,WINDOW)
+        self.assertEqual(set(report.candidates),{key for key,_ in keys})
+        self.assertEqual(report.candidates["bid_price_left"].rect,controls[0].rect)
+        self.assertEqual(report.candidates["ask_price_right"].rect,controls[1].rect)
 
     def test_mt5_main_toolbar_new_order_is_menu_item_in_actual_uia(self):
         controls = [

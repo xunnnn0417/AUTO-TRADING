@@ -63,62 +63,66 @@ class ConfirmSaveQtTests(unittest.TestCase):
         callbacks=[]
         with patch.object(gui.QTimer,"singleShot",side_effect=lambda ms,cb:callbacks.append(cb)), \
              patch.object(gui,"CandidateOutline") as overlays, \
-             patch.object(instance,"showMinimized"), \
-             patch.object(self.dialog,"showMinimized"), \
-             patch.object(self.parent,"showMinimized"), \
+             patch.object(instance,"setWindowOpacity") as opacity_details, \
+             patch.object(self.dialog,"setWindowOpacity") as opacity_dialog, \
+             patch.object(self.dialog,"_start_preview_countdown") as countdown, \
+             patch.object(self.parent,"hide") as hide_parent, \
+             patch.object(self.dialog,"showMinimized") as minimize_dialog, \
+             patch.object(self.parent,"showMinimized") as minimize_parent, \
              patch.object(instance,"showNormal"), \
              patch.object(self.dialog,"showNormal"), \
              patch.object(self.parent,"showNormal"), \
              patch.object(instance,"raise_"), \
              patch.object(instance,"activateWindow"):
             self.dialog.preview_all_inventory_candidates(instance,report)
-            self.assertEqual(len(callbacks),2)
-            callbacks[0]()
+            opacity_dialog.assert_any_call(0.0)
+            hide_parent.assert_called_once()
+            minimize_dialog.assert_not_called()
+            minimize_parent.assert_not_called()
+            self.assertEqual(callbacks,[])
+            rectangles=tuple(candidate.rect for candidate in report.candidates.values())
+            countdown.assert_called_once_with(
+                2,inventory_details=instance,inventory_rectangles=rectangles,
+            )
+            self.dialog._show_inventory_preview_outlines({
+                "rectangles":rectangles,
+            })
             self.assertEqual(overlays.call_count,2)
-            callbacks[1]()
+            self.dialog._finish_saved_preview({
+                "inventory_details":instance,"cancelled":False,
+            })
+            self.assertIn(((1.0,), {}), opacity_dialog.call_args_list)
+            self.assertIn(((1.0,), {}), opacity_details.call_args_list)
 
-    def test_unchecked_after_preview_select_all_clear_and_cancel(self):
+    def test_save_requires_preview_and_dialog_has_only_save_or_discard(self):
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             self.assertFalse(state["save_button"].isEnabled())
-            self.assertTrue(all(not cb.isChecked() for cb in state["checkboxes"].values()))
-            self.assertTrue(all(not cb.isEnabled() for cb in state["checkboxes"].values()))
-            self.assertFalse(state["select_all_button"].isEnabled())
+            buttons={b.text() for b in instance.findChildren(gui.QPushButton)}
+            self.assertIn("② 全選並儲存",buttons)
+            self.assertIn("關閉結果（不儲存）",buttons)
+            self.assertNotIn("全選",buttons)
+            self.assertNotIn("清除勾選",buttons)
             self._preview(instance,self.report)
             self.assertTrue(state["previewed"])
-            self.assertTrue(all(cb.isEnabled() for cb in state["checkboxes"].values()))
-            self.assertFalse(state["save_button"].isEnabled())
-            state["select_all_button"].click()
-            self.assertTrue(all(cb.isChecked() for cb in state["checkboxes"].values()))
             self.assertTrue(state["save_button"].isEnabled())
-            state["clear_button"].click()
-            self.assertFalse(state["save_button"].isEnabled())
-            state["checkboxes"]["lot_input"].setChecked(True)
-            self.assertTrue(state["save_button"].isEnabled())
-            # User chooses No: not a single file update is requested.
-            with patch.object(gui.QMessageBox,"question",return_value=QMessageBox.No), \
-                 patch.object(gui,"save_confirmed_points") as persist:
-                state["save_button"].click()
-                persist.assert_not_called()
+            self.assertEqual(state["selected_keys"],("lot_input","sl_input"))
             return 0
         with patch.object(gui.QDialog,"exec",inspect):
             self.dialog._finish_inventory(self.report)
         self.assertIsNone(self.dialog._inventory_save_preview)
         self.assertIsNone(self.dialog._inventory_scan_context)
 
-    def test_explicit_yes_saves_only_checked_not_low_confidence(self):
+    def test_full_save_saves_all_previewed_candidates_and_preserves_others(self):
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             self._preview(instance,self.report)
-            state["checkboxes"]["lot_input"].setChecked(True)
-            self.assertFalse(state["checkboxes"]["sl_input"].isChecked())
-            with patch.object(gui.QMessageBox,"question",return_value=QMessageBox.Yes), \
-                 patch.object(gui,"inspect_all_targets",return_value=self.report), \
+            with patch.object(gui,"inspect_all_targets",return_value=self.report), \
                  patch.object(gui,"process_id_for_window",return_value=7788):
                 state["save_button"].click()
             self.assertTrue(state["saved"])
             self.assertFalse(state["save_button"].isEnabled())
-            self.assertIn("已儲存 1 個",state["status"].text())
+            self.assertIn("已儲存本次掃描的 2 個",state["status"].text())
             self.assertEqual(instance.result(), QDialog.Accepted)
             return 0
         with patch.object(gui.QDialog,"exec",inspect):
@@ -127,13 +131,11 @@ class ConfirmSaveQtTests(unittest.TestCase):
         updated=json.loads(self.parent.store.path.read_text(encoding="utf-8"))
         self.assertEqual(updated["platforms"]["cTrader"]["points"]["lot_input"]["x_px"],450)
         self.assertEqual(updated["platforms"]["cTrader"]["points"]["tp_input"]["x_px"],999)
-        self.assertNotIn("sl_input",updated["platforms"]["cTrader"]["points"])
+        self.assertIn("sl_input",updated["platforms"]["cTrader"]["points"])
         self.assertEqual(updated["platforms"]["MT5"]["points"]["lot_input"]["x_px"],333)
 
-    def test_visual_low_confidence_is_selectable_after_preview(self):
-        # "Low confidence" is an acknowledgement requirement, not an error.
-        # Previously the visual fallback added an informational warning,
-        # which unintentionally kept these checkboxes disabled forever.
+    def test_visual_low_confidence_candidate_saves_after_successful_preview(self):
+        # The complete candidate set can be saved only after yellow preview.
         self.report.candidates["sl_input"]=Candidate(
             "sl_input",(610,350,730,370),
             "低信度：MT5 畫面色塊候選；請人工核對黃色框",
@@ -141,13 +143,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         self.assertFalse(self.report.warnings)
         def inspect(instance):
             state=self.dialog._inventory_save_preview
-            self.assertFalse(state["checkboxes"]["sl_input"].isEnabled())
             self._preview(instance,self.report)
-            low=state["checkboxes"]["sl_input"]
-            self.assertTrue(low.isEnabled())
-            self.assertFalse(low.isChecked())
-            low.click()
-            self.assertTrue(low.isChecked())
             self.assertTrue(state["save_button"].isEnabled())
             with patch.object(gui.QMessageBox,"question",
                               return_value=QMessageBox.Yes), \
@@ -166,7 +162,6 @@ class ConfirmSaveQtTests(unittest.TestCase):
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             self._preview(instance,self.report)
-            state["checkboxes"]["lot_input"].setChecked(True)
             moved=ScanReport("cTrader",self.report.targets)
             moved.candidates=dict(self.report.candidates)
             moved.candidates["lot_input"]=Candidate(
@@ -199,9 +194,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             state["previewed"]=True
-            for cb in state["checkboxes"].values():
-                cb.setEnabled(True)
-            state["checkboxes"]["positions_entry_price"].setChecked(True)
+            self.dialog._update_inventory_save_button(state)
             with patch.object(gui.QMessageBox,"question",
                               return_value=QMessageBox.Yes), \
                  patch.object(gui,"scan_position_grid",return_value=report) as grid, \
@@ -222,7 +215,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         parent=QMainWindow()
         parent.log=lambda _message:None
         dialog=CalibrationDialog(parent,"MT5")
-        win=WindowInfo(700,"持倉: #8765432101 buy 0.16 XAUUSD",200,200,1400,850)
+        win=WindowInfo(700,"Positions: #1111111111 buy 0.01 SAMPLE",200,200,1400,850)
         report=ScanReport("MT5",tuple((k,k) for k in gui.POSITION_EDIT_KEYS))
         report.candidates={
             "position_sl_input":Candidate(
@@ -242,10 +235,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         def inspect(instance):
             state=dialog._inventory_save_preview
             state["previewed"]=True
-            for cb in state["checkboxes"].values():
-                cb.setEnabled(True)
-            state["checkboxes"]["position_sl_input"].setChecked(True)
-            state["checkboxes"]["position_modify_confirm"].setChecked(True)
+            dialog._update_inventory_save_button(state)
             with patch.object(gui.QMessageBox,"question",
                               return_value=QMessageBox.Yes), \
                  patch.object(gui,"scan_open_modify_dialog",return_value=report) as modify, \
@@ -283,9 +273,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             state["previewed"]=True
-            for cb in state["checkboxes"].values():
-                cb.setEnabled(True)
-            state["checkboxes"]["positions_entry_price"].setChecked(True)
+            self.dialog._update_inventory_save_button(state)
             with patch.object(gui.QMessageBox,"question",
                               return_value=QMessageBox.Yes), \
                  patch.object(gui,"scan_position_grid",return_value=changed), \

@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import re
 import time
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
-from .windows import AutomationError, EmergencyController, WindowController
+from .test_mode import active_test_symbol_override, effective_test_symbol
+from .phase_timing_report import timed_call, timed_phase
+from .windows import (
+    AutomationError,
+    CalibrationMismatchError,
+    EmergencyController,
+    WindowController,
+)
 
 
 Log = Callable[[str], None]
@@ -31,6 +39,8 @@ REQUIRED_POINTS = {
     "BYBIT MT5": ["lot_input", "sl_input", "tp_input"],
     "原版MT5": ["lot_input", "sl_input", "tp_input"],
 }
+
+MAX_MT5_QUOTE_SPREAD_RATIO = Decimal("0.01")
 
 TRADINGVIEW_REQUIRED_POINTS = [
     "auto_scale_button",
@@ -75,10 +85,9 @@ class PlatformAutomation:
         self.windows = windows
         self.emergency = emergency
         self.log = log
-        # Only values read back after the CURRENT fill operation qualify
-        # as expected SL/TP for its later final pre-submit check. Never
-        # rely solely on non-zero SL/TP or on a previous order's settings.
-        self._last_verified_fills: dict[tuple[str, str], dict] = {}
+        # Only a successful full-side UI readback can authorize a matching
+        # final pre-click SL/TP comparison. A new fill attempt invalidates it.
+        self._last_verified_fills: dict[tuple[str, str], dict[str, Any]] = {}
 
     def fill(
         self,
@@ -86,8 +95,8 @@ class PlatformAutomation:
         role: str,
         instruction: TradeInstruction,
     ) -> None:
-        self._last_verified_fills.pop((platform, role), None)
         self.emergency.guard()
+        self._last_verified_fills.pop((platform, role), None)
         profile = self.config["platforms"][platform]
         points = profile.get("points", {})
         required=list(REQUIRED_POINTS[platform])
@@ -98,22 +107,56 @@ class PlatformAutomation:
             raise AutomationError(
                 f"{platform} 尚未完成以下校準：{', '.join(missing)}"
             )
+        if _is_mt5(platform):
+            quote_keys = ("bid_price_left", "ask_price_right")
+            present = [
+                isinstance(points.get(key), dict) and bool(points[key])
+                for key in quote_keys
+            ]
+            test_symbol = effective_test_symbol(instruction.symbol).strip().upper()
+            if test_symbol in {"BTCUSD", "ETHUSD"} and not all(present):
+                raise AutomationError(
+                    f"LAB {test_symbol} 測試需要左右兩側報價校準；"
+                    "不會使用單一舊校準點或表格估算價格代替。"
+                )
+            if any(present) and not all(present):
+                missing_quotes = [
+                    key for key, exists in zip(quote_keys, present) if not exists
+                ]
+                raise AutomationError(
+                    "MT5 必須同時校準左側 Bid 與右側 Ask 報價；"
+                    "目前缺少：" + "、".join(missing_quotes)
+                )
         pattern = profile["window_title"][role]
-        if _is_ctrader(platform) and isinstance(self.windows, WindowController):
-            window = self.windows.find_calibrated_main(
-                pattern, points["lot_input"], platform=platform
-            )
-            # Identifying the terminal is not permission to click it.
-            # Detect stale geometry BEFORE any UIA traversal or mutation.
-            # This is read-only and reports both real/calibrated dimensions.
-            self.windows.screen_point(window, points["lot_input"])
-        else:
-            window = self.windows.find(pattern)
+        with timed_phase("定位平台主視窗", platform=platform, role=role):
+            if _is_ctrader(platform) and isinstance(self.windows, WindowController):
+                window = self.windows.find_calibrated_main(
+                    pattern, points["lot_input"], platform=platform
+                )
+            elif _is_mt5(platform) and isinstance(self.windows, WindowController):
+                # A main-window calibration point lets the shared resolver
+                # maximize/recheck the MT5 terminal before any modal is reused.
+                main_point = next((
+                    points[key]
+                    for key in (
+                        "new_order_button", "trade_tab", "positions_entry_price"
+                    )
+                    if isinstance(points.get(key), dict)
+                ), None)
+                if main_point is not None:
+                    window = self.windows.find_calibrated_main(
+                        pattern, main_point, platform=platform
+                    )
+                else:
+                    window = self.windows.find(pattern)
+            else:
+                window = self.windows.find(pattern)
         bound_window = window
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
         if _is_ctrader(platform):
-            self._verify_ctrader_account(platform, profile, role, window)
+            with timed_phase("OCR核對cTrader帳號", platform=platform, role=role):
+                self._verify_ctrader_account(platform, profile, role, window)
 
         mt5_order_window = None
         should_open_panel = _is_mt5(platform) or profile.get(
@@ -126,9 +169,10 @@ class PlatformAutomation:
             from .demo_broker_port import DemoUiBrokerPort
             port = DemoUiBrokerPort(self, self.log)
             port.set_expected_symbol(instruction.symbol)
-            _, mt5_order_window = port._form_window(
-                platform, role, allow_absent=True
-            )
+            with timed_phase("尋找已開啟的MT5訂單視窗", platform=platform, role=role):
+                _, mt5_order_window = port._form_window(
+                    platform, role, allow_absent=True
+                )
             if mt5_order_window is not None:
                 self.log(
                     f"{role_text} {platform} 新訂單視窗已開啟，"
@@ -139,22 +183,23 @@ class PlatformAutomation:
                     raise AutomationError(
                         f"{role_text} MT5 新訂單視窗未開啟且尚未校準新訂單按鈕。"
                     )
-                self.windows.click(bound_window, points["new_order_button"])
-                deadline = time.monotonic() + 2.5
-                while time.monotonic() < deadline:
-                    self.emergency.guard()
-                    _, mt5_order_window = port._form_window(
-                        platform, role, allow_absent=True
-                    )
-                    if mt5_order_window is not None:
-                        break
-                    time.sleep(0.05)
-                if mt5_order_window is None:
-                    raise AutomationError(
-                        f"{role_text} MT5 點擊新訂單後未找到唯一、"
-                        "商品與校準尺寸均符合的訂單視窗；"
-                        "不以主視窗或過時標題代替，已停止填寫。"
-                    )
+                with timed_phase("開啟並確認MT5訂單視窗", platform=platform, role=role):
+                    self.windows.click(bound_window, points["new_order_button"])
+                    deadline = time.monotonic() + 2.5
+                    while time.monotonic() < deadline:
+                        self.emergency.guard()
+                        _, mt5_order_window = port._form_window(
+                            platform, role, allow_absent=True
+                        )
+                        if mt5_order_window is not None:
+                            break
+                        time.sleep(0.05)
+                    if mt5_order_window is None:
+                        raise AutomationError(
+                            f"{role_text} MT5 點擊新訂單後未找到唯一、"
+                            "商品與校準尺寸均符合的訂單視窗；"
+                            "不以主視窗或過時標題代替，已停止填寫。"
+                        )
             self.log(f"{role_text} {platform} 訂單視窗：{mt5_order_window.title}")
         elif should_open_panel and "new_order_button" in points:
             panel_is_open = self.windows.point_window_exists(
@@ -191,45 +236,52 @@ class PlatformAutomation:
                 f"正在選擇{role_text} cTrader "
                 f"{'買入' if direction == 'BUY' else '賣出'}方向。"
             )
-            direction_window = self._window_for_point(
-                profile, role, points[direction_point]
-            )
-            self.windows.click(direction_window, points[direction_point])
-        if _is_mt5(platform):
-            self._fill_field(
-                profile,
-                role,
-                points,
-                role_text,
-                platform,
-                "lot_input",
-                "手數",
-                _plain(side.lot),
-                forced_window=mt5_order_window,
-            )
+            with timed_phase("選擇cTrader進場方向", platform=platform, role=role):
+                direction_window = self._window_for_point(
+                    profile, role, points[direction_point]
+                )
+                self.windows.click(direction_window, points[direction_point])
         current_price = None
         if _is_mt5(platform):
-            price_point_name = self._mt5_price_point(role, direction)
-            if price_point_name in points:
+            bid_key, ask_key = "bid_price_left", "ask_price_right"
+            if bid_key in points and ask_key in points:
                 price_window = mt5_order_window or self._window_for_point(
-                    profile, role, points[price_point_name]
+                    profile, role, points[ask_key]
                 )
-                try:
-                    current_price = self.windows.read_number(
-                        price_window, points[price_point_name]
+                with timed_phase("OCR讀取MT5左右報價", platform=platform, role=role):
+                    current_price = self._read_mt5_quote_pair(
+                        price_window,
+                        points[bid_key],
+                        points[ask_key],
+                        instruction,
+                        direction,
+                        role_text,
                     )
-                    self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
-                except AutomationError as exc:
-                    if instruction.estimated_price is None:
-                        raise
-                    current_price = instruction.estimated_price
-                    self.log(
-                        f"{role_text} MT5 目前價格辨識失敗，"
-                        f"改用表格估算價格：{current_price}。原因：{exc}"
-                    )
+            elif "ask_price" in points:
+                # Compatibility path for non-BTC instructions using profiles
+                # saved before separate Bid/Ask calibration was introduced.
+                price_window = mt5_order_window or self._window_for_point(
+                    profile, role, points["ask_price"]
+                )
+                current_price = self._read_mt5_reference_price(
+                    price_window, points["ask_price"], instruction, role_text
+                )
             elif instruction.estimated_price is None:
                 raise AutomationError(
-                    f"MT5 尚未校準 {price_point_name}，也沒有設定備用估算價格。"
+                    "MT5 尚未校準左右報價，也沒有設定備用估算價格。"
+                )
+        if _is_mt5(platform):
+            with timed_phase("填入MT5手數", platform=platform, role=role):
+                self._fill_field(
+                    profile,
+                    role,
+                    points,
+                    role_text,
+                    platform,
+                    "lot_input",
+                    "手數",
+                    _plain(side.lot),
+                    forced_window=mt5_order_window,
                 )
         ctrader_uses_point_size = (
             self._ctrader_uses_point_size(platform, profile, role, points)
@@ -245,36 +297,41 @@ class PlatformAutomation:
             ctrader_uses_point_size=ctrader_uses_point_size,
         )
         if _is_ctrader(platform):
-            self._ensure_ctrader_risk_fields(profile, role, points)
+            with timed_phase("確認cTrader止損止盈勾選", platform=platform, role=role):
+                self._ensure_ctrader_risk_fields(profile, role, points)
         for point_name, label, value in values:
             if _is_mt5(platform) and point_name == "lot_input":
                 continue
-            self._fill_field(
-                profile,
-                role,
-                points,
-                role_text,
-                platform,
-                point_name,
-                label,
-                value,
-                forced_window=mt5_order_window if _is_mt5(platform) else None,
+            with timed_phase(
+                f"填入欄位－{label}", platform=platform, role=role
+            ):
+                self._fill_field(
+                    profile,
+                    role,
+                    points,
+                    role_text,
+                    platform,
+                    point_name,
+                    label,
+                    value,
+                    forced_window=mt5_order_window if _is_mt5(platform) else None,
+                )
+        with timed_phase("整側欄位讀回核對", platform=platform, role=role):
+            self._verify_filled_side(
+                profile, role, platform, role_text, points, window,
+                mt5_order_window, direction, values,
             )
-        self._verify_filled_side(
-            profile, role, platform, role_text, points, window,
-            mt5_order_window, direction, values,
-        )
-        # The MT5 prices here are the actual values written and checked
-        # using this fill's quote (not a later recalculation from a moved
-        # quote). cTrader native/gooey point modes have already been
-        # applied by _field_values. A failed fill never reaches this line.
+        verified_values = {
+            key: self._normalize_numeric_input(value)
+            for key, _label, value in values
+        }
         self._last_verified_fills[(platform, role)] = {
             "direction": direction,
-            "symbol": instruction.symbol,
-            "values": {
-                key: self._normalize_numeric_input(value)
-                for key, _, value in values
-            },
+            # The test override changes only the instrument identity used by
+            # the broker workflow. Lots, direction and SL/TP still come from
+            # the original instruction and were read back above.
+            "symbol": str(effective_test_symbol(instruction.symbol)).strip().upper(),
+            "values": verified_values,
         }
         self.log(f"{role_text} {platform} 欄位全部讀回核對正確，沒有送出訂單。")
 
@@ -333,6 +390,7 @@ class PlatformAutomation:
         repairs). UIA access failure != confirmed value mismatch; stop rather
         than risking blind repeat input or order clicks.
         """
+        verification_started=time.perf_counter()
         attempts={key:1 for key,_,_ in values}
         expected={key:self._normalize_numeric_input(value)
                   for key,_,value in values}
@@ -425,6 +483,11 @@ class PlatformAutomation:
                     verified[point_name]=readback
             if not mismatches:
                 self.log(
+                    f"{role_text} {platform} 單側核對耗時 "
+                    f"{time.perf_counter()-verification_started:.2f} 秒；"
+                    "全部必要欄位已重新讀回。"
+                )
+                self.log(
                     f"{role_text} {platform} 核對通過："
                     + "、".join(
                         f"{label}={verified[key]}"
@@ -515,7 +578,171 @@ class PlatformAutomation:
 
     @staticmethod
     def _mt5_price_point(role: str, direction: str) -> str:
-        return "ask_price"
+        return "ask_price_right" if direction == "BUY" else "bid_price_left"
+
+    def _read_mt5_quote_pair(
+        self,
+        window,
+        bid_point: dict[str, float],
+        ask_point: dict[str, float],
+        instruction: TradeInstruction,
+        direction: str,
+        role_text: str,
+    ) -> Decimal:
+        symbol = effective_test_symbol(instruction.symbol).strip().upper()
+        minimum = (
+            Decimal("1000")
+            if active_test_symbol_override() == symbol
+            else None
+        )
+        last_error = None
+        bid = ask = spread = None
+        role = "internal" if role_text == "場內" else "external"
+        for attempt in range(2):
+            try:
+                with timed_phase(
+                    f"MT5 報價快速讀取第{attempt + 1}輪",
+                    platform="MT5",role=role,
+                ):
+                    with timed_phase("MT5 Bid OCR",platform="MT5",role=role):
+                        bid = self.windows.read_number(window, bid_point)
+                    with timed_phase("MT5 Ask OCR",platform="MT5",role=role):
+                        ask = self.windows.read_number(window, ask_point)
+                if bid <= 0 or ask <= 0:
+                    raise AutomationError(
+                        f"左右報價無效（Bid {bid}、Ask {ask}）"
+                    )
+                if bid > ask:
+                    inverted_mid = (bid + ask) / Decimal("2")
+                    inverted_spread_ratio = (bid - ask) / inverted_mid
+                    if inverted_spread_ratio > MAX_MT5_QUOTE_SPREAD_RATIO:
+                        raise AutomationError(
+                            f"Bid／Ask 順序顛倒且價差超過 1%（{bid}／{ask}）"
+                        )
+                    bid, ask = ask, bid
+                    self.log(
+                        f"{role_text} MT5 報價讀值順序顛倒，差距未超過 1%；"
+                        f"已按低價 Bid {bid}／高價 Ask {ask} 使用。"
+                    )
+                spread = ask - bid
+                mid = (ask + bid) / Decimal("2")
+                if spread / mid > MAX_MT5_QUOTE_SPREAD_RATIO:
+                    raise AutomationError(
+                        f"Bid／Ask 價差超過 1%（{bid}／{ask}），"
+                        "可能讀到截斷數字或校準位置不正確"
+                    )
+                if minimum is not None and min(bid, ask) < minimum:
+                    raise AutomationError(
+                        f"{symbol} 報價低於 LAB 測試下限 {minimum}（{bid}／{ask}）；"
+                        "可能只讀到尾端數字"
+                    )
+                break
+            except (AutomationError, InvalidOperation, TypeError, ValueError) as exc:
+                last_error = exc
+                candidate_reader = getattr(
+                    self.windows, "read_number_candidates", None
+                )
+                if attempt == 0 and callable(candidate_reader):
+                    try:
+                        with timed_phase(
+                            "MT5 Bid 完整候選 OCR",platform="MT5",role=role,
+                        ):
+                            bid_candidates = candidate_reader(window, bid_point)
+                        with timed_phase(
+                            "MT5 Ask 完整候選 OCR",platform="MT5",role=role,
+                        ):
+                            ask_candidates = candidate_reader(window, ask_point)
+                        bid_counts = Counter(bid_candidates)
+                        ask_counts = Counter(ask_candidates)
+                        valid_pairs = []
+                        for candidate_bid, bid_count in bid_counts.items():
+                            for candidate_ask, ask_count in ask_counts.items():
+                                if (
+                                    candidate_bid <= 0
+                                    or candidate_ask <= candidate_bid
+                                    or (minimum is not None and min(
+                                        candidate_bid, candidate_ask
+                                    ) < minimum)
+                                ):
+                                    continue
+                                candidate_spread = candidate_ask-candidate_bid
+                                candidate_mid = (
+                                    candidate_ask+candidate_bid
+                                )/Decimal("2")
+                                if candidate_spread/candidate_mid > MAX_MT5_QUOTE_SPREAD_RATIO:
+                                    continue
+                                # A candidate must be seen in multiple OCR crops
+                                # or preprocessing variants before it can repair
+                                # a failed fast read.
+                                if bid_count < 2 or ask_count < 2:
+                                    continue
+                                digits = (
+                                    len(candidate_bid.as_tuple().digits)
+                                    + len(candidate_ask.as_tuple().digits)
+                                )
+                                valid_pairs.append((
+                                    bid_count+ask_count,
+                                    digits,
+                                    -(candidate_spread/candidate_mid),
+                                    candidate_bid,
+                                    candidate_ask,
+                                    candidate_spread,
+                                ))
+                        if valid_pairs:
+                            _, _, _, bid, ask, spread = max(valid_pairs)
+                            self.log(
+                                f"{role_text} MT5 報價經完整 OCR 候選交叉核對："
+                                f"Bid {bid}／Ask {ask}，價差 {spread}。"
+                            )
+                            price_key = self._mt5_price_point(role_text, direction)
+                            return ask if price_key == "ask_price_right" else bid
+                    except Exception as candidate_exc:
+                        last_error = AutomationError(
+                            f"完整 OCR 候選讀取失敗：{candidate_exc}"
+                        )
+                if attempt < 2:
+                    time.sleep(0.05)
+        else:
+            raise AutomationError(
+                f"{role_text} MT5 報價連續 2 次未能可靠核對，已停止填寫。"
+                f"最後結果：{last_error}。請確認商品與校準位置。"
+            ) from last_error
+        self.log(
+            f"已交叉核對{role_text} MT5 報價：Bid {bid}／Ask {ask}，"
+            f"價差 {spread}。"
+        )
+        price_key = self._mt5_price_point(role_text, direction)
+        return ask if price_key == "ask_price_right" else bid
+
+    @staticmethod
+    def _allow_sheet_price_fallback(symbol: str) -> bool:
+        original=str(symbol or "").strip().upper()
+        return effective_test_symbol(original).strip().upper()==original
+
+    def _read_mt5_reference_price(
+        self, window, point: dict[str, float], instruction: TradeInstruction,
+        role_text: str,
+    ) -> Decimal:
+        try:
+            current_price=self.windows.read_number(window,point)
+            self.log(f"已讀取{role_text} MT5 目前價格：{current_price}")
+            return current_price
+        except AutomationError as exc:
+            if instruction.estimated_price is None:
+                raise
+            if not self._allow_sheet_price_fallback(instruction.symbol):
+                raise AutomationError(
+                    f"LAB {effective_test_symbol(instruction.symbol).strip().upper()} "
+                    "測試讀不到 MT5 當前報價，已停止填入；"
+                    "不會拿表格原商品的估算價格代替測試商品價格。"
+                    "請重新校準 MT5 目前價格位置後再試。"
+                ) from exc
+            current_price=instruction.estimated_price
+            self.log(
+                f"{role_text} MT5 目前價格辨識失敗，"
+                f"改用表格估算價格：{current_price}。原因：{exc}"
+            )
+            return current_price
 
     def _ensure_ctrader_risk_fields(
         self,
@@ -553,7 +780,9 @@ class PlatformAutomation:
         if not expected_digits or not point:
             return
         role_text = "場內" if role == "internal" else "場外"
-        detected = self.windows.read_account_number(window, point)
+        detected = self.windows.read_account_number(
+            window, point, expected_digits=expected_digits
+        )
         if detected != expected_digits:
             raise AutomationError(
                 f"{role_text} cTrader 帳號不符：目前偵測到 {detected}，"
@@ -584,21 +813,33 @@ class PlatformAutomation:
             ]
         else:
             patterns = [str(profile["window_title"][role]).strip()]
-        # Every cTrader/GooeyTrade field and position-read entrypoint uses
-        # one canonical calibrated MAIN window resolver, not the first
-        # same-title modal from Win32's Z-order.
+        # The same calibrated MAIN selection is used by every cTrader
+        # field, checkbox, post-entry SL/TP and price-read operation.
+        # Never allow a same-title order or modify popup to impersonate it.
         if (
             isinstance(self.windows, WindowController)
             and (profile is self.config["platforms"].get("cTrader")
                  or profile is self.config["platforms"].get("GooeyTrade"))
         ):
             platform = (
-                "GooeyTrade"
-                if profile is self.config["platforms"].get("GooeyTrade")
+                "GooeyTrade" if profile is self.config["platforms"].get("GooeyTrade")
                 else "cTrader"
             )
             return self.windows.find_calibrated_main(
                 str(profile["window_title"][role]), point, platform=platform
+            )
+        if (
+            isinstance(self.windows, WindowController)
+            and profile is self.config["platforms"].get("MT5")
+            and any(
+                point is profile.get("points", {}).get(key)
+                for key in (
+                    "new_order_button", "trade_tab", "positions_entry_price"
+                )
+            )
+        ):
+            return self.windows.find_calibrated_main(
+                str(profile["window_title"][role]), point, platform="MT5"
             )
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):
@@ -841,258 +1082,6 @@ class PlatformAutomation:
             self.windows.wait(0.35)
             self.log(f"TradingView 已新增{label}價格鬧鐘：{text}")
 
-    def _legacy_sync_external_sl_tp(
-        self,
-        instruction: TradeInstruction,
-        *,
-        internal_platform: str,
-        external_platform: str,
-        entry_price_override: Decimal | None = None,
-    ) -> None:
-        self.emergency.guard()
-        if entry_price_override is not None:
-            entry_price = entry_price_override
-            self.log(
-                "使用手動場內實際進場價："
-                f"{instruction.format_price(entry_price)}"
-            )
-        else:
-            entry_price = self._read_internal_entry_price(
-                instruction, internal_platform
-            )
-        sl_price, tp_price = instruction.estimated_prices(
-            instruction.external_direction,
-            instruction.external,
-            entry_price,
-        )
-
-        profile = self.config["platforms"][external_platform]
-        points = profile.get("points", {})
-        if _is_mt5(external_platform):
-            required = [
-                "position_sl_input",
-                "position_tp_input",
-                "position_order_lot",
-                "position_order_lot_next",
-                "position_order_row",
-            ]
-        else:
-            required = ["sl_input", "tp_input"]
-            required.extend(["sl_checkbox", "tp_checkbox"])
-        missing = [name for name in required if name not in points]
-        if missing:
-            raise AutomationError(
-                f"{external_platform} 尚未完成以下校準：{', '.join(missing)}"
-            )
-
-        if _is_mt5(external_platform):
-            expected_lot = instruction.external.lot
-            matched_row = self._find_mt5_position_row(
-                profile,
-                points,
-                expected_lot,
-                max_rows=30,
-            )
-            if matched_row is None:
-                raise AutomationError(
-                    "找不到手數符合的 MT5 場外訂單，已停止修改。"
-                    f"試算表要求 {expected_lot}。"
-                )
-            position_point = self._offset_position_point(
-                points["position_order_row"],
-                points["position_order_lot"],
-                points["position_order_lot_next"],
-                matched_row,
-            )
-            self.log(
-                f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
-                "正在雙擊開啟修改視窗。"
-            )
-            position_window = self._window_for_point(
-                profile, "external", position_point
-            )
-            self.windows.double_click(position_window, position_point)
-            self.windows.wait_for_point_window(
-                profile,
-                "external",
-                points["position_sl_input"],
-                timeout=3.0,
-            )
-            values = (
-                (
-                    "position_sl_input",
-                    "正式止損價",
-                    instruction.format_price(sl_price),
-                ),
-                (
-                    "position_tp_input",
-                    "正式止盈價",
-                    instruction.format_price(tp_price),
-                ),
-            )
-        else:
-            self._ensure_ctrader_risk_fields(profile, "external", points)
-            external_values = self._field_values(
-                external_platform,
-                instruction.external_direction,
-                instruction.external,
-                instruction,
-                ctrader_uses_point_size=self._ctrader_uses_point_size(
-                    external_platform, profile, "external", points
-                ),
-            )
-            values = (
-                (
-                    "sl_input",
-                    "止損點數",
-                    next(
-                        value
-                        for point_name, _, value in external_values
-                        if point_name == "sl_input"
-                    ),
-                ),
-                (
-                    "tp_input",
-                    "止盈點數",
-                    next(
-                        value
-                        for point_name, _, value in external_values
-                        if point_name == "tp_input"
-                    ),
-                ),
-            )
-
-        for point_name, label, value in values:
-            self._fill_field(
-                profile,
-                "external",
-                points,
-                "場外",
-                external_platform,
-                point_name,
-                label,
-                value,
-            )
-        self.log(
-            f"場外 {external_platform} 止盈止損已填入："
-            f"場內成交價 {instruction.format_price(entry_price)}，"
-            f"止損 {instruction.format_price(sl_price)}，"
-            f"止盈 {instruction.format_price(tp_price)}。"
-            "程式沒有按下最後確認按鈕。"
-        )
-
-    def sync_external_sl_tp(
-        self,
-        instruction: TradeInstruction,
-        *,
-        internal_platform: str,
-        external_platform: str,
-        entry_price_override: Decimal | None = None,
-    ) -> None:
-        self.emergency.guard()
-        profile = self.config["platforms"][external_platform]
-        points = profile.get("points", {})
-        if _is_mt5(external_platform):
-            required = [
-                "position_sl_input",
-                "position_tp_input",
-                "position_order_lot",
-                "position_order_lot_next",
-                "position_order_row",
-            ]
-        else:
-            required = ["sl_input", "tp_input", "sl_checkbox", "tp_checkbox"]
-        missing = [name for name in required if name not in points]
-        if missing:
-            raise AutomationError(
-                f"{external_platform} missing calibration points: {', '.join(missing)}"
-            )
-
-        if _is_mt5(external_platform):
-            matched_row = self._find_mt5_position_row(
-                profile,
-                points,
-                instruction.external.lot,
-                max_rows=30,
-            )
-            if matched_row is None:
-                raise AutomationError(
-                    "找不到手數符合的 MT5 場外訂單，已停止修改。"
-                    f"試算表要求 {instruction.external.lot}。"
-                )
-            position_point = self._offset_position_point(
-                points["position_order_row"],
-                points["position_order_lot"],
-                points["position_order_lot_next"],
-                matched_row,
-            )
-            self.log(
-                f"已找到第 {matched_row + 1} 筆手數相符的 MT5 場外訂單，"
-                "正在雙擊開啟持倉修改視窗。"
-            )
-            self.windows.double_click(
-                self._window_for_point(profile, "external", position_point),
-                position_point,
-            )
-            self.windows.wait_for_point_window(
-                profile,
-                "external",
-                points["position_sl_input"],
-                timeout=3.0,
-            )
-            values = (
-                ("position_sl_input", "止損點數", _plain(instruction.external.sl_points)),
-                ("position_tp_input", "止盈點數", _plain(instruction.external.tp_points)),
-            )
-        else:
-            self._ensure_ctrader_risk_fields(profile, "external", points)
-            external_values = self._field_values(
-                external_platform,
-                instruction.external_direction,
-                instruction.external,
-                instruction,
-                ctrader_uses_point_size=self._ctrader_uses_point_size(
-                    external_platform, profile, "external", points
-                ),
-            )
-            values = (
-                (
-                    "sl_input",
-                    "止損點數",
-                    next(
-                        value
-                        for point_name, _, value in external_values
-                        if point_name == "sl_input"
-                    ),
-                ),
-                (
-                    "tp_input",
-                    "止盈點數",
-                    next(
-                        value
-                        for point_name, _, value in external_values
-                        if point_name == "tp_input"
-                    ),
-                ),
-            )
-
-        for point_name, label, value in values:
-            self._fill_field(
-                profile,
-                "external",
-                points,
-                "場外",
-                external_platform,
-                point_name,
-                label,
-                value,
-            )
-        self.log(
-            f"場外 {external_platform} 止盈止損已填入："
-            f"止損 {_plain(instruction.external.sl_points)} 點，"
-            f"止盈 {_plain(instruction.external.tp_points)} 點。"
-        )
-
     def sync_external_sl_tp(
         self,
         instruction: TradeInstruction,
@@ -1105,7 +1094,11 @@ class PlatformAutomation:
         entry_price = (
             entry_price_override
             if entry_price_override is not None
-            else self._read_internal_entry_price(instruction, internal_platform)
+            else timed_call(
+                "讀取場內成交價", self._read_internal_entry_price,
+                instruction, internal_platform,
+                platform=internal_platform, role="internal",
+            )
         )
         sl_price, tp_price = instruction.estimated_prices(
             instruction.external_direction,
@@ -1123,6 +1116,8 @@ class PlatformAutomation:
                 "position_order_lot",
                 "position_order_row",
             ]
+            if _is_mt5(external_platform):
+                required.append("position_order_lot_next")
         else:
             required = ["sl_input", "tp_input", "sl_checkbox", "tp_checkbox"]
         missing = [name for name in required if name not in points]
@@ -1136,82 +1131,137 @@ class PlatformAutomation:
         if use_position_modify_flow:
             if (_is_ctrader(external_platform)
                     and isinstance(self.windows, WindowController)):
-                bound_window = self.windows.find_calibrated_main(
+                bound_window = timed_call(
+                    "定位場外主視窗", self.windows.find_calibrated_main,
                     profile["window_title"]["external"],
-                    points["position_order_row"], platform=external_platform
+                    points["position_order_row"], platform=external_platform,
+                    role="external",
                 )
             else:
-                bound_window = self.windows.find(
-                    profile["window_title"]["external"]
+                bound_window = timed_call(
+                    "定位場外主視窗", self.windows.find,
+                    profile["window_title"]["external"],
+                    platform=external_platform, role="external",
                 )
             self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")
             if _is_ctrader(external_platform):
-                self._verify_ctrader_account(
-                    external_platform, profile, "external", bound_window
+                timed_call(
+                    "核對 cTrader 帳戶", self._verify_ctrader_account,
+                    external_platform, profile, "external", bound_window,
+                    platform=external_platform, role="external",
                 )
             if _is_mt5(external_platform):
                 trade_tab = points.get("trade_tab")
                 if trade_tab is not None:
                     self.log("正在切到 MT5 交易欄位。")
-                    self.windows.click(bound_window, trade_tab)
+                    timed_call(
+                        "切換 MT5 交易頁", self.windows.click,
+                        bound_window, trade_tab,
+                        platform=external_platform, role="external",
+                    )
                     self.windows.wait(0.2)
-            lot_window = bound_window
-            operation_points = points
-            try:
-                detected_lot = self.windows.read_number_near(
-                    lot_window,
+                # MT5's calibrated lot coordinate can land on nearby table
+                # values (e.g. profit) and OCR can return a plausible but
+                # unrelated number. Use the read-only native position list
+                # to match symbol, direction and volume, then correlate the
+                # unique ticket to the visible Trade row before opening it.
+                from .demo_broker_port import DemoUiBrokerPort
+                matched_row, matched_position = timed_call(
+                    "唯一辨識 MT5 場外持倉",
+                    DemoUiBrokerPort(self, self.log).find_mt5_position_row,
+                    external_platform, "external",
+                    expected_symbol=effective_test_symbol(instruction.symbol),
+                    expected_direction=instruction.external_direction,
+                    expected_volume=instruction.external.lot,
+                    window=bound_window,
+                    platform=external_platform, role="external",
+                )
+                operation_points = points
+                position_point = self._offset_position_point(
+                    points["position_order_row"],
                     points["position_order_lot"],
-                    instruction.external.lot,
+                    points["position_order_lot_next"],
+                    matched_row,
                 )
-            except AutomationError:
-                detected_lot = None
-
-            if not (
-                detected_lot is not None
-                and _decimal_close(
-                    detected_lot, instruction.external.lot, Decimal("0.001")
-                )
-            ):
                 self.log(
-                    f"{external_platform} 第一筆場外訂單手數不符合，"
-                    "未開啟修改視窗；"
-                    "已計算場外止盈止損價格供手動複製。"
+                    f"MT5 唯讀持倉已唯一核對：單號 {matched_position.ticket}，"
+                    f"{matched_position.symbol} {matched_position.direction} "
+                    f"{_plain(matched_position.volume)} 手；"
+                    "正在開啟該列修改視窗。"
                 )
-                return {
-                    "entry": instruction.format_price(entry_price),
-                    "sl": instruction.format_price(sl_price),
-                    "tp": instruction.format_price(tp_price),
-                    "expected_lot": _plain(instruction.external.lot),
-                    "detected_lot": ""
-                    if detected_lot is None
-                    else _plain(detected_lot),
-                }
+            else:
+                # cTrader exposes a native Positions grid through UIA; retain
+                # its platform-specific readback and calibration path.
+                lot_window = bound_window
+                operation_points = points
+                try:
+                    detected_lot = timed_call(
+                        "讀取 cTrader 場外手數", self.windows.read_number_near,
+                        lot_window, points["position_order_lot"],
+                        instruction.external.lot,
+                        platform=external_platform, role="external",
+                    )
+                except CalibrationMismatchError as exc:
+                    raise CalibrationMismatchError(
+                        f"場外 {external_platform} 持倉手數位置校準尺寸不符；"
+                        f"不會把它當成手數不符處理。{exc}"
+                    ) from exc
+                except AutomationError:
+                    detected_lot = None
 
-            self.log(
-                f"{external_platform} 第一筆場外訂單手數符合，"
-                "正在開啟持倉修改視窗。"
-            )
+                if not (
+                    detected_lot is not None
+                    and _decimal_close(
+                        detected_lot, instruction.external.lot, Decimal("0.001")
+                    )
+                ):
+                    self.log(
+                        f"{external_platform} 第一筆場外訂單手數不符合，"
+                        "未開啟修改視窗；"
+                        "已計算場外止盈止損價格供手動複製。"
+                    )
+                    return {
+                        "entry": instruction.format_price(entry_price),
+                        "sl": instruction.format_price(sl_price),
+                        "tp": instruction.format_price(tp_price),
+                        "expected_lot": _plain(instruction.external.lot),
+                        "detected_lot": ""
+                        if detected_lot is None
+                        else _plain(detected_lot),
+                    }
+                position_point = points["position_order_row"]
+                self.log(
+                    f"{external_platform} 場外持倉核對符合，"
+                    "正在開啟持倉修改視窗。"
+                )
             row_window = bound_window
-            self.windows.double_click(
-                row_window,
-                points["position_order_row"],
+            timed_call(
+                "開啟場外持倉修改視窗", self.windows.double_click,
+                row_window, position_point,
+                platform=external_platform, role="external",
             )
             try:
-                modify_window = self.windows.wait_for_active_window_change(
-                    row_window,
-                    timeout=3.0,
+                modify_window = timed_call(
+                    "等待場外修改視窗", self.windows.wait_for_active_window_change,
+                    row_window, timeout=3.0,
+                    platform=external_platform, role="external",
                 )
             except AutomationError:
                 self.log(
                     f"{external_platform} 修改視窗沒有自動切到最上層，"
                     "改用校準尺寸尋找並點擊輸入欄。"
                 )
-                modify_window = self.windows.wait_for_window_matching_point_size(
-                    points["position_sl_input"],
-                    timeout=3.0,
+                modify_window = timed_call(
+                    "尋找場外修改視窗", self.windows.wait_for_window_matching_point_size,
+                    points["position_sl_input"], timeout=3.0,
                     exclude_handles={row_window.handle},
+                    platform=external_platform, role="external",
                 )
-                self.windows.click(modify_window, points["position_sl_input"])
+                timed_call(
+                    "定位場外 SL 輸入欄", self.windows.click,
+                    modify_window, points["position_sl_input"],
+                    platform=external_platform, role="external",
+                )
                 modify_window = self.windows.active_window()
             self.log(
                 f"已偵測到 {external_platform} 持倉修改視窗："
@@ -1254,38 +1304,108 @@ class PlatformAutomation:
             )
             operation_points = points
 
-        for point_name, label, value in values:
-            if modify_window is not None:
+        if use_position_modify_flow:
+            current_values: dict[str, Decimal] = {}
+            for point_name, label, value in values:
+                raw = timed_call(
+                    f"讀取場外{label}", self.windows.read_edit_value,
+                    modify_window, operation_points[point_name],
+                    platform=external_platform, role="external",
+                )
+                current_values[point_name] = self._normalize_numeric_input(
+                    raw, Decimal(value)
+                )
+
+            if all(
+                current_values[point_name] == Decimal(value)
+                for point_name, _, value in values
+            ):
+                self.emergency.guard()
+                self.windows.press(modify_window, "esc")
+                self.windows.wait_for_active_window_change(
+                    modify_window, timeout=2.0
+                )
+                self.log(
+                    f"場外 {external_platform} 的止盈止損已與目標相同；"
+                    "不需送出，已關閉修改視窗。"
+                )
+                return None
+
+            confirm_point = points.get("position_modify_confirm")
+            if not confirm_point:
+                self.emergency.guard()
+                self.windows.press(modify_window, "esc")
+                self.windows.wait_for_active_window_change(
+                    modify_window, timeout=2.0
+                )
+                raise AutomationError(
+                    f"場外 {external_platform} 缺少「套用持倉 SL／TP」校準；"
+                    "未送出修改。"
+                )
+
+            for point_name, label, value in values:
+                if current_values[point_name] == Decimal(value):
+                    continue
                 self.emergency.guard()
                 self.log(f"正在填入場外 {external_platform} 的{label}：{value}")
-                self.windows.click_and_type(
-                    modify_window,
-                    operation_points[point_name],
-                    value,
+                timed_call(
+                    f"輸入場外{label}", self.windows.click_and_type,
+                    modify_window, operation_points[point_name], value,
+                    platform=external_platform, role="external",
                 )
-            else:
-                self._fill_field(
-                    profile,
-                    "external",
-                    operation_points,
-                    "場外",
-                    external_platform,
-                    point_name,
-                    label,
-                    value,
+                raw = timed_call(
+                    f"讀回場外{label}", self.windows.read_edit_value,
+                    modify_window, operation_points[point_name],
+                    platform=external_platform, role="external",
                 )
-        if use_position_modify_flow:
-            self.log(
-                f"場外 {external_platform} 持倉止盈止損價格已填入："
-                f"止損 {instruction.format_price(sl_price)}，"
-                f"止盈 {instruction.format_price(tp_price)}。"
+                actual = self._normalize_numeric_input(raw, Decimal(value))
+                if actual != Decimal(value):
+                    self.emergency.guard()
+                    self.windows.press(modify_window, "esc")
+                    self.windows.wait_for_active_window_change(
+                        modify_window, timeout=2.0
+                    )
+                    raise AutomationError(
+                        f"場外 {external_platform} 的{label}欄位讀回 {raw}，"
+                        f"與目標 {value} 不符；未送出。"
+                    )
+
+            self.emergency.guard()
+            timed_call(
+                "送出場外 SL/TP", self.windows.click,
+                modify_window, confirm_point,
+                platform=external_platform, role="external",
             )
-        else:
+            try:
+                timed_call(
+                    "等待場外修改完成", self.windows.wait_for_active_window_change,
+                    modify_window, timeout=2.0,
+                    platform=external_platform, role="external",
+                )
+            except AutomationError as exc:
+                raise AutomationError(
+                    f"已按場外 {external_platform} 修改送出，但修改視窗仍未關閉；"
+                    "結果不明，請先核對持倉列，不要重複送出。"
+                ) from exc
             self.log(
-                f"場外 {external_platform} 止盈止損已填入："
-                f"止損 {_plain(instruction.external.sl_points)} 點，"
-                f"止盈 {_plain(instruction.external.tp_points)} 點。"
+                f"場外 {external_platform} 持倉止盈止損已送出；"
+                "修改視窗已關閉，請核對持倉列。"
             )
+            return None
+
+        for point_name, label, value in values:
+            if modify_window is None:
+                timed_call(
+                    f"填入場外{label}", self._fill_field,
+                    profile, "external", operation_points, "場外",
+                    external_platform, point_name, label, value,
+                    platform=external_platform, role="external",
+                )
+        self.log(
+            f"場外 {external_platform} 止盈止損已填入："
+            f"止損 {_plain(instruction.external.sl_points)} 點，"
+            f"止盈 {_plain(instruction.external.tp_points)} 點。"
+        )
         return None
 
     def _activate_mt5_trade_tab(
@@ -1300,42 +1420,6 @@ class PlatformAutomation:
         self.log("正在切到 MT5 交易欄位。")
         self._click_profile_point(profile, role, point)
         self.windows.wait(0.2)
-
-    def _find_mt5_position_row(
-        self,
-        profile: dict[str, Any],
-        points: dict[str, dict[str, Any]],
-        expected_lot: Decimal,
-        *,
-        max_rows: int,
-    ) -> int | None:
-        first_lot = points["position_order_lot"]
-        next_lot = points["position_order_lot_next"]
-        for row_index in range(max_rows):
-            self.emergency.guard()
-            lot_point = self._offset_position_point(
-                first_lot, first_lot, next_lot, row_index
-            )
-            lot_window = self._window_for_point(
-                profile, "external", lot_point
-            )
-            try:
-                detected_lot = self.windows.read_number_near(
-                    lot_window, lot_point, expected_lot
-                )
-            except AutomationError:
-                self.log(
-                    f"MT5 場外第 {row_index + 1} 筆無法辨識手數，"
-                    "停止往下搜尋。"
-                )
-                return None
-            self.log(
-                f"MT5 場外第 {row_index + 1} 筆手數："
-                f"{detected_lot}，預期 {expected_lot}。"
-            )
-            if _decimal_close(detected_lot, expected_lot, Decimal("0.001")):
-                return row_index
-        return None
 
     @staticmethod
     def _offset_position_point(
@@ -1365,9 +1449,15 @@ class PlatformAutomation:
             raise AutomationError(
                 f"{internal_platform} 尚未校準持倉成交價位置。"
             )
-        entry_window = self._window_for_point(
-            internal_profile, "internal", entry_point
-        )
+        try:
+            entry_window = self._window_for_point(
+                internal_profile, "internal", entry_point
+            )
+        except CalibrationMismatchError as exc:
+            raise CalibrationMismatchError(
+                f"場內 {internal_platform}「已進場持倉成交價」校準位置無法使用。"
+                f"{exc}"
+            ) from exc
         self.log(
             f"正在依場內平台選擇讀取視窗：{internal_platform}，"
             f"視窗：{entry_window.title}"
@@ -1381,9 +1471,67 @@ class PlatformAutomation:
                 raise AutomationError(
                     f"{internal_platform} 請先校準交易頁面按鈕。"
                 )
-            self.log(f"正在切到場內 {internal_platform} 交易頁面。")
-            self.windows.click(entry_window, trade_tab)
-            self.windows.wait(0.2)
+            calibrated_size = (
+                int(trade_tab.get("window_width", 0)),
+                int(trade_tab.get("window_height", 0)),
+            )
+            current_size = (entry_window.width, entry_window.height)
+            tab_size_matches = (
+                calibrated_size[0] > 0
+                and calibrated_size[1] > 0
+                and abs(calibrated_size[0] - current_size[0]) <= 2
+                and abs(calibrated_size[1] - current_size[1]) <= 2
+            )
+            if tab_size_matches:
+                self.log(f"正在切到場內 {internal_platform} 交易頁面。")
+                self.windows.click(entry_window, trade_tab)
+                self.windows.wait(0.2)
+            else:
+                # Manual sync can start while the cTrader Positions tab is
+                # already visible. If only the old tab-switch point belongs
+                # to a different window size, never click its stale pixel;
+                # first verify the calibrated lot cell on the current view.
+                lot_point = internal_points.get("position_order_lot")
+                lot_size_matches = bool(
+                    lot_point
+                    and int(lot_point.get("window_width", 0)) > 0
+                    and int(lot_point.get("window_height", 0)) > 0
+                    and abs(int(lot_point["window_width"]) - current_size[0]) <= 2
+                    and abs(int(lot_point["window_height"]) - current_size[1]) <= 2
+                )
+                if not lot_size_matches:
+                    raise CalibrationMismatchError(
+                        f"場內 {internal_platform} 的交易頁按鈕校準尺寸為 "
+                        f"{calibrated_size[0]}×{calibrated_size[1]}，目前主視窗為 "
+                        f"{current_size[0]}×{current_size[1]}；"
+                        "手數位置也無法在目前尺寸下核對。未操作平台，"
+                        "請只重新校準交易頁按鈕。"
+                    )
+                try:
+                    visible_lot = self.windows.read_number_near(
+                        entry_window, lot_point, instruction.internal.lot
+                    )
+                except AutomationError as exc:
+                    raise CalibrationMismatchError(
+                        f"場內 {internal_platform} 的交易頁按鈕校準尺寸為 "
+                        f"{calibrated_size[0]}×{calibrated_size[1]}，目前主視窗為 "
+                        f"{current_size[0]}×{current_size[1]}；"
+                        "未點擊舊位置，也無法確認目前是否顯示持倉列表。"
+                        "請切到持倉列表後重試，或只重新校準交易頁按鈕。"
+                    ) from exc
+                if not _decimal_close(
+                    visible_lot, instruction.internal.lot, Decimal("0.001")
+                ):
+                    raise AutomationError(
+                        f"場內 {internal_platform} 目前持倉列表讀到的手數為 "
+                        f"{_plain(visible_lot)}，預期 "
+                        f"{_plain(instruction.internal.lot)}；"
+                        "無法確認成交價所在列，未繼續同步。"
+                    )
+                self.log(
+                    f"場內 {internal_platform} 交易頁按鈕是舊尺寸校準，"
+                    "未點擊；已在目前顯示的持倉列表核對手數後讀取成交價。"
+                )
             entry_price = self.windows.read_hover_number(
                 entry_window, entry_point
             )

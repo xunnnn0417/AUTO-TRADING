@@ -55,6 +55,30 @@ class NativeReadbackTests(unittest.TestCase):
         with self.assertRaisesRegex(AutomationError,"找到 0 個"):
             self.read()
 
+    def test_fill_snapshot_refreshes_once_when_calibrated_field_is_temporarily_missing(self):
+        points={
+            "lot_input":dict(window_width=800,window_height=600,x_px=110,y_px=110),
+            "sl_input":dict(window_width=800,window_height=600,x_px=210,y_px=210),
+            "tp_input":dict(window_width=800,window_height=600,x_px=310,y_px=310),
+        }
+        partial=[
+            FakeEdit((95,100,140,125),"0.740"),
+            FakeEdit((295,300,340,325),"3378"),
+        ]
+        complete=partial+[FakeEdit((195,200,240,225),"-527")]
+        roots=[
+            SimpleNamespace(descendants=lambda:partial),
+            SimpleNamespace(descendants=lambda:complete),
+        ]
+        desktop=SimpleNamespace(window=lambda handle:roots.pop(0))
+        with patch("pywinauto.Desktop",side_effect=[desktop,desktop]), \
+             patch("trading_helper.windows.time.sleep") as sleep:
+            snapshot=self.controller.read_fill_snapshot(self.window,points)
+        self.assertEqual(snapshot["values"],{
+            "lot_input":"0.740","sl_input":"-527","tp_input":"3378",
+        })
+        sleep.assert_called_once_with(0.12)
+
 
 if __name__=="__main__":
     unittest.main()
