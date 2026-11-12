@@ -214,6 +214,16 @@ class AutoEntryWorkflowTests(unittest.TestCase):
             ["internal","external"],
         )
 
+    def test_normal_paired_entry_accepts_verified_ctrader_without_type_label(self):
+        self.port.accounts["internal"]=replace(
+            self.port.accounts["internal"],is_demo=None
+        )
+        self.run_case(sync=False,draw=False)
+        self.assertEqual(
+            [event[1] for event in self.port.events if event[0]=="submit"],
+            ["internal","external"],
+        )
+
     def test_unverified_account_stops_before_any_submission(self):
         self.port.accounts["internal"]=replace(
             self.port.accounts["internal"],is_demo=False,verified=False,
