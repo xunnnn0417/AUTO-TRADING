@@ -39,12 +39,13 @@
 5. 啟動後確認新的可見 helper 視窗仍在、程序路徑指向 LAB 的 `main.py` 與指定 Python 執行環境，並確認它沒有啟動後立即退出。若舊程序無法辨認／關閉、仍有自動工作、啟動失敗或無法驗證視窗與程式路徑，停止重試並如實回報；不可把單次 `Start-Process` 成功或短暫 PID 當成重啟完成。
 6. 最後用白話回報修改、測試結果、舊程序是否關閉、新 LAB 視窗是否驗證成功，以及尚未完成的驗收項目。離線測試不等於真實交易端到端驗收。
 
-## 目前統一版
+## 目前統一版（2026-11-13 核對）
 
 - 工作目錄：`C:\Users\User\Desktop\codex\AUTO-TRADING-lab-unified`
-- 本機分支：`codex/lab-unified-2026-10-17`
-- 基礎 GitHub LAB 提交：`2a20e95d21e01a762cd24bc4159f767e2800dc03`
-- 已整合並驗證的本機程式提交：`f7468a01aa61aeec6b98e24fc9947ee70f77c704`
-- 此分支是本機 LAB 工作版本；使用者已要求程式修改以 PR 推送至安全 LAB 分支，勿自動合併或改 `main`。
+- 本機分支：`codex/live-account-readonly-sync`；本機 HEAD：`637af0df5e6bab54882b167cd7ef1b26ce42f101`
+- GitHub 安全 LAB 分支：`lab/2026-10-16-safe-defaults-preflight`；目前提交：`ee4b9a8591e52f89f308445be955b1d3d1efb721`
+- 本機程式檔案樹與 GitHub 安全 LAB 相同：`a5811dafba78c3be7022dd6f74fb5180125d817b`。本機和遠端提交歷史不同時，先比對實際差異，不要直接覆蓋或重設。
+- GitHub PR #3 已合併至安全 LAB 分支；程式修改仍須經 PR，不得自動合併或改 `main`。
 - 使用的 Python 執行檔可唯讀借用：`C:\Users\User\Desktop\codex\trading-workflow-helper\.venv\Scripts\pythonw.exe`。
 - 使用者設定和 journal 位於 `%APPDATA%\TradingWorkflowHelper_TEST\`；不要複製、清空或以範例設定取代。
+
