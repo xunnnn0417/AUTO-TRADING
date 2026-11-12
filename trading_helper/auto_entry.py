@@ -31,7 +31,7 @@ class DemoAccount:
     platform: str
     account_id: str
     server: str
-    is_demo: bool
+    is_demo: bool | None
     verified: bool
 
 
@@ -273,7 +273,7 @@ class AutoEntryWorkflow:
                 })
         for account,platform in ((account_i,internal_platform),
                                  (account_e,external_platform)):
-            if (not account.verified or not isinstance(account.is_demo,bool)
+            if (not account.verified
                 or not account.account_id or not account.server
                 or account.platform!=platform):
                 raise AutomationError(
