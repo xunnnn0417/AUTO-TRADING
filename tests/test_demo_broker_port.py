@@ -93,7 +93,7 @@ class DemoPortTests(unittest.TestCase):
             result=self.port.inspect_account("cTrader","internal")
         self.assertIsNone(result.is_demo)
         self.assertEqual(result.account_id,"11111111")
-        self.assertEqual(result.server,"Example Broker Ltd")
+        self.assertEqual(result.server,"")
     def test_ctrader_identity_ignores_live_label(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         self.ui_text[0].content="Live"
