@@ -1479,12 +1479,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             bool(self.store.data["ui"].get("auto_fast_pair",False))
         )
         self.auto_fast_pair.toggled.connect(self._confirm_fast_pair_toggle)
-        automation_layout.addWidget(self.auto_fast_pair)
+        # Keep the saved speed preference active, but hide its control from
+        # the compact automation row as requested.
+        self.auto_fast_pair.setParent(self)
+        self.auto_fast_pair.hide()
         self.auto_sync_sl_tp_after_entry = QCheckBox("同步 SL/TP")
         self.auto_sync_sl_tp_after_entry.setObjectName("auto_sync_sl_tp_after_entry")
-        self.auto_sync_sl_tp_after_entry.setParent(self)
-        self.auto_sync_sl_tp_after_entry.setChecked(True)
-        self.auto_sync_sl_tp_after_entry.hide()
+        self.auto_sync_sl_tp_after_entry.setText("同步")
+        self.auto_sync_sl_tp_after_entry.setChecked(
+            bool(self.store.data["ui"].get(
+                "auto_sync_sl_tp_after_entry", True
+            ))
+        )
+        self.auto_sync_sl_tp_after_entry.toggled.connect(
+            lambda enabled: self._confirm_future_auto_option(
+                self.auto_sync_sl_tp_after_entry, enabled, "同步 SL/TP"
+            )
+        )
+        automation_layout.addWidget(self.auto_sync_sl_tp_after_entry)
         self.auto_draw_tv_after_entry = QCheckBox("繪製 TV")
         self.auto_draw_tv_after_entry.setObjectName("auto_draw_tv_after_entry")
         self.auto_draw_tv_after_entry.setText("TV")
@@ -1542,6 +1554,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.test_scenario_checkboxes[action] = choice
         for option in (
             self.auto_entry_on_fill_both, self.auto_fast_pair,
+            self.auto_sync_sl_tp_after_entry,
             self.auto_draw_tv_after_entry,
             self.test_mode_checkbox, *self.test_asset_checkboxes.values(),
             *self.test_scenario_checkboxes.values(),
@@ -3361,8 +3374,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         auto_entry = self.auto_entry_on_fill_both.isChecked()
         fast_control = getattr(self,"auto_fast_pair",None)
         fast_pair = bool(fast_control is not None and fast_control.isChecked() and auto_entry)
+        sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
             auto_entry
+            and (sync_control is None or sync_control.isChecked())
         )
         auto_draw = bool(
             getattr(self, "auto_draw_tv_after_entry", None)
@@ -4762,7 +4777,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self.auto_fast_pair.isChecked()
                     if hasattr(self,"auto_fast_pair") else False
                 ),
-                "auto_sync_sl_tp_after_entry": True,
+                "auto_sync_sl_tp_after_entry": (
+                    self.auto_sync_sl_tp_after_entry.isChecked()
+                    if hasattr(self, "auto_sync_sl_tp_after_entry")
+                    else bool(self.store.data["ui"].get(
+                        "auto_sync_sl_tp_after_entry", True
+                    ))
+                ),
                 "auto_draw_tv_after_entry": self.auto_draw_tv_after_entry.isChecked(),
             }
         )
@@ -4775,27 +4796,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         the confirmation handlers recursively.
         """
         first = getattr(self, "auto_entry_on_fill_both", None)
+        sync = getattr(self, "auto_sync_sl_tp_after_entry", None)
         third = getattr(self, "auto_draw_tv_after_entry", None)
         fast = getattr(self, "auto_fast_pair", None)
         if first is None or third is None:
             return
         first_checked = first.isChecked()
         if fast is not None:
-            if not first_checked and fast.isChecked():
-                prev=fast.blockSignals(True)
-                fast.setChecked(False)
-                fast.blockSignals(prev)
             fast.setEnabled(first_checked)
+        sync_checked = bool(sync is not None and sync.isChecked())
         third.setToolTip(
             "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
-            if first_checked else
-            "請先勾選「自動進場」。"
+            if first_checked and sync_checked else
+            "請先勾選「自動進場」與「同步」。"
         )
-        if not first_checked and third.isChecked():
+        if (not first_checked or not sync_checked) and third.isChecked():
             was_blocked = third.blockSignals(True)
             third.setChecked(False)
             third.blockSignals(was_blocked)
-        third.setEnabled(first_checked)
+        third.setEnabled(first_checked and sync_checked)
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
         if not enabled:
@@ -4832,7 +4851,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         accepted = QMessageBox.question(
             self,
             "啟用自動進場？",
-            "按下「填入兩邊」後自動進場並同步場外 SL／TP。Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
+            "按下「填入兩邊」後自動進場"
+            + (
+                "並同步場外 SL／TP。"
+                if getattr(
+                    self, "auto_sync_sl_tp_after_entry", None
+                ) is None or self.auto_sync_sl_tp_after_entry.isChecked()
+                else "；不會自動同步場外 SL／TP。"
+            )
+            + "Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",
@@ -4870,10 +4897,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             TradingHelperApp._refresh_auto_option_dependencies(self)
             self.save_ui_state()
             return
+        if checkbox is self.auto_sync_sl_tp_after_entry:
+            title = "啟用自動同步？"
+            message = (
+                "雙邊進場核對後會同步場外 SL／TP。"
+                "Live 會修改真實持倉的止盈止損。啟用？"
+            )
+        else:
+            title = f"啟用「{label}」？"
+            message = (
+                "雙邊進場與 SL／TP 完成後會在 TradingView 繪圖。"
+                "Live 自動進場會建立真實倉位。啟用？"
+            )
         accepted = QMessageBox.question(
             self,
-            f"啟用「{label}」？",
-            "雙邊進場與 SL／TP 完成後會在 TradingView 繪圖。Live 自動進場會建立真實倉位。啟用？",
+            title,
+            message,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="啟用", no_text="取消",
@@ -5010,7 +5049,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.auto_entry_on_fill_both.setChecked(
             bool(ui.get("auto_entry_on_fill_both",False))
         )
-        self.auto_sync_sl_tp_after_entry.setChecked(True)
+        self.auto_sync_sl_tp_after_entry.setChecked(
+            bool(ui.get("auto_sync_sl_tp_after_entry", True))
+        )
         self.auto_draw_tv_after_entry.setChecked(
             bool(ui.get("auto_draw_tv_after_entry",False))
         )
@@ -5033,7 +5074,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ui["auto_fast_pair"] = (
             fast_control.isChecked() if fast_control is not None else False
         )
-        ui["auto_sync_sl_tp_after_entry"] = True
+        ui["auto_sync_sl_tp_after_entry"] = (
+            self.auto_sync_sl_tp_after_entry.isChecked()
+        )
         ui["auto_draw_tv_after_entry"] = (
             self.auto_draw_tv_after_entry.isChecked()
         )
@@ -7142,3 +7185,4 @@ class SettingsDialog(ThemedDialog):
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
+
