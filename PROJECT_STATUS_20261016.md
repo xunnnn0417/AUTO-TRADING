@@ -2,12 +2,14 @@
 
 ## 2026-11-13 最新核對
 - GitHub PR [#3](https://github.com/xunnnn0417/AUTO-TRADING/pull/3) 已合併到安全 LAB 分支 `lab/2026-10-16-safe-defaults-preflight`；沒有合併到 `main`。
-- 本機 0.1.24 在 `codex/lab-one-click-updater-20261113`；與 GitHub [PR #5](https://github.com/xunnnn0417/AUTO-TRADING/pull/5) 的程式檔案樹相同（tree `17b59246979bc5fb2d4fcf41684a2746c9e2218f`）。PR #5 尚未合併，安全 LAB 分支仍是 PR #3 的版本。
-- 本輪完整離線測試 717 項通過（93.222 秒），compileall 與 CRLF-aware diff check 通過；Ruff 未安裝，未執行。此結果不代表交易或真正 GitHub 升級已實機驗收。
+- 本機 0.1.25 在 `codex/lab-one-click-updater-20261113`；與 GitHub [PR #5](https://github.com/xunnnn0417/AUTO-TRADING/pull/5) 的程式檔案樹相同（tree `d23725499e43a8db87617c578fcdd964ec6a8696`）。PR #5 尚未合併，安全 LAB 分支仍是 PR #3 的版本。
+- 本輪完整離線測試 727 項通過（98.857 秒），compileall、workflow YAML 解析與 CRLF-aware diff check 通過；Ruff 未安裝，未執行。此結果不代表交易或真正 GitHub 升級已實機驗收。
 - PR #3 已移除 Demo／Live 帳戶類型判定；平台、帳號身分、持倉等其他核對仍保留。四種測試情境已有離線模擬測試，雙平台實際流程仍待使用者驗收。
 - 一鍵更新已實作：下載固定 LAB 提交並核對檔案、備份、等待舊程序退出後換檔及重開；啟動失敗時還原舊版。未保存的本機程式修改或依賴環境變更會阻擋自動更新。設定、校準、紀錄和捷徑不在更新範圍。
 - 隔離測試已驗證換檔／啟動與失敗還原，Windows 更新彈窗預覽正常；真正從 GitHub 升級 LAB 仍待新版合併後驗收。
-- 啟動前查核沒有舊 LAB 程序；已使用指定 pythonw 啟動本機 LAB，確認新主畫面持續可見。沒有執行送單、補單、平倉或同步倉位操作。
+- 已正常關閉原 LAB，確認原視窗及程序退出後，使用指定 pythonw 開啟 0.1.25，確認新主畫面持續可見。沒有執行送單、補單、平倉或同步倉位操作。
+- 自動打包已接入原 GitHub workflow：安全 LAB 分支合併後先測試，再沿用測試套件／快取打包，檢查 Qt、OCR、MT5 唯讀套件及更新紀錄，通過後發布 LAB prerelease；只改 Markdown 時略過。
+- 本機已實際產生 372.9 MiB 免安裝 ZIP，包內獨立 Python 檢查、ZIP CRC 與 SHA-256 通過，未包含個人設定／金鑰／交易資料。GitHub 第一次合併後的自動發布及新電腦首次使用仍待驗收。
 - 此文件下方 2026-10-17 以前的進度是歷史紀錄，不能單獨代表目前狀態；遇到與本節衝突時，以本節和最新程式／PR 狀態為準。
 
 範圍：僅 LAB，正式版 main 不變。本紀錄不是交易授權；任何實機 Demo 送單仍由使用者明確操作。
