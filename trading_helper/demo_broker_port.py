@@ -329,9 +329,9 @@ class DemoUiBrokerPort:
             )
         from pywinauto import Desktop
         try:
-            # cTrader can expose its UIA tree before every account label has
-            # populated. Retry an incomplete read-only identity snapshot, but
-            # never guess Demo/Live or choose among duplicate controls.
+            # cTrader's Demo/Live label is not a reliable identity source and
+            # is not needed for normal paired entry. Verify the unique account
+            # number and broker only; never guess identity or choose duplicates.
             attempts = 1 if _controls is not None else 3
             incomplete_reason = "帳戶資訊尚未完整"
             for attempt in range(attempts):
@@ -345,14 +345,10 @@ class DemoUiBrokerPort:
                 number_nodes=[e for e in visible if
                     str(e.element_info.automation_id)==
                     "CTraderAccountNumberTextBlock_AId"]
-                type_nodes=[e for e in visible if
-                    str(e.element_info.automation_id)==
-                    "CTraderAccountTypeTextBlock_AId"]
                 broker_nodes=[e for e in visible if
                     "BrokerNameShort" in str(e.element_info.automation_id)]
                 for label, nodes in (
                     ("帳號", number_nodes),
-                    ("Demo/Live 類型", type_nodes),
                     ("券商名稱", broker_nodes),
                 ):
                     if len(nodes)>1:
@@ -362,41 +358,20 @@ class DemoUiBrokerPort:
 
                 if not number_nodes:
                     incomplete_reason="帳號欄位尚未讀到"
-                elif not type_nodes:
-                    incomplete_reason="Demo/Live 類型欄位尚未讀到"
                 elif not broker_nodes:
                     incomplete_reason="券商名稱欄位尚未讀到"
                 else:
                     number=str(number_nodes[0].window_text()).strip()
-                    kind=str(type_nodes[0].window_text()).strip()
                     broker_name=str(broker_nodes[0].window_text()).strip()
-                    account_kind=kind.casefold()
-                    if account_kind in {"demo","模擬","模擬帳戶"}:
-                        is_demo=True
-                    elif account_kind in {
-                        "live","real","實盤","真實","真實帳戶","實盤帳戶"
-                    }:
-                        is_demo=False
-                    elif not kind:
-                        is_demo=None
-                        incomplete_reason="Demo/Live 類型文字尚未讀到"
-                    else:
-                        raise AutomationError(
-                            "cTrader 帳戶類型不是可辨識的 Demo/Live，"
-                            "已停止操作。"
-                        )
-
                     if not number.isdigit() or len(number)<5:
                         incomplete_reason="帳號文字尚未完整讀到"
-                    elif is_demo is None:
-                        pass
                     elif not broker_name:
                         incomplete_reason="券商名稱文字尚未讀到"
                     else:
                         return self._bind_verified_account(
                             platform,role,
                             DemoAccount(
-                                platform,number,broker_name,is_demo,True
+                                platform,number,broker_name,None,True
                             )
                         )
 
