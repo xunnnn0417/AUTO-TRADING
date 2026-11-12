@@ -203,6 +203,7 @@ class SettingsAndDialogTests(unittest.TestCase):
     def test_auto_entry_confirmation_is_concise(self):
         self.parent.auto_entry_on_fill_both=QCheckBox()
         self.parent.auto_sync_sl_tp_after_entry=QCheckBox()
+        self.parent.auto_sync_sl_tp_after_entry.setChecked(True)
         self.parent.auto_draw_tv_after_entry=QCheckBox()
         self.parent.save_ui_state=MagicMock()
         self.parent.auto_entry_on_fill_both.setChecked(True)
@@ -221,3 +222,4 @@ class SettingsAndDialogTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
