@@ -329,57 +329,87 @@ class DemoUiBrokerPort:
             )
         from pywinauto import Desktop
         try:
-            # A transient UIA tree may omit the cTrader account number
-            # during a window transition. Retry ONLY when its count is zero.
-            # Duplicate IDs, changed identities and unknown account types still fail closed.
-            for attempt in range(1 if _controls is not None else 3):
+            # cTrader can expose its UIA tree before every account label has
+            # populated. Retry an incomplete read-only identity snapshot, but
+            # never guess Demo/Live or choose among duplicate controls.
+            attempts = 1 if _controls is not None else 3
+            incomplete_reason = "帳戶資訊尚未完整"
+            for attempt in range(attempts):
                 elements=(
-                    _controls if _controls is not None
+                    list(_controls) if _controls is not None
                     else Desktop(backend="uia").window(
                         handle=window.handle
                     ).descendants()
                 )
-                number_nodes=[
-                    element for element in elements
-                    if (str(element.element_info.automation_id)==
-                        "CTraderAccountNumberTextBlock_AId"
-                        and element.is_visible())
-                ]
-                if number_nodes or _controls is not None or attempt==2:
-                    break
-                self.log(
-                    "cTrader identity UIA temporarily missing; "
-                    f"read-only retry {attempt+1}/2."
-                )
-                time.sleep(0.12)
-            def unique(aid):
-                found=[e for e in elements if e.is_visible() and
-                       str(e.element_info.automation_id)==aid]
-                if len(found)!=1:
-                    raise AutomationError(
-                        f"cTrader 缺少唯一的 {aid} 帳戶控制項。"
-                    )
-                return str(found[0].window_text()).strip()
-            number=unique("CTraderAccountNumberTextBlock_AId")
-            kind=unique("CTraderAccountTypeTextBlock_AId")
-            account_kind=kind.casefold().strip()
-            if account_kind in {"demo","模擬","模擬帳戶"}:
-                is_demo=True
-            elif account_kind in {"live","real","實盤","真實"}:
-                is_demo=False
-            else:
-                is_demo=None
-            broker=[e for e in elements if e.is_visible() and
+                visible=[e for e in elements if e.is_visible()]
+                number_nodes=[e for e in visible if
+                    str(e.element_info.automation_id)==
+                    "CTraderAccountNumberTextBlock_AId"]
+                type_nodes=[e for e in visible if
+                    str(e.element_info.automation_id)==
+                    "CTraderAccountTypeTextBlock_AId"]
+                broker_nodes=[e for e in visible if
                     "BrokerNameShort" in str(e.element_info.automation_id)]
-            if (not number.isdigit() or len(number)<5 or
-                is_demo is None or len(broker)!=1 or
-                not broker[0].window_text().strip()):
-                raise AutomationError("cTrader 沒有可確認的 Demo/Live 帳戶識別。")
-            return self._bind_verified_account(
-                platform,role,
-                DemoAccount(
-                    platform,number,broker[0].window_text().strip(),is_demo,True
-                )
+                for label, nodes in (
+                    ("帳號", number_nodes),
+                    ("Demo/Live 類型", type_nodes),
+                    ("券商名稱", broker_nodes),
+                ):
+                    if len(nodes)>1:
+                        raise AutomationError(
+                            f"cTrader {label}欄位不唯一，無法安全辨識帳戶。"
+                        )
+
+                if not number_nodes:
+                    incomplete_reason="帳號欄位尚未讀到"
+                elif not type_nodes:
+                    incomplete_reason="Demo/Live 類型欄位尚未讀到"
+                elif not broker_nodes:
+                    incomplete_reason="券商名稱欄位尚未讀到"
+                else:
+                    number=str(number_nodes[0].window_text()).strip()
+                    kind=str(type_nodes[0].window_text()).strip()
+                    broker_name=str(broker_nodes[0].window_text()).strip()
+                    account_kind=kind.casefold()
+                    if account_kind in {"demo","模擬","模擬帳戶"}:
+                        is_demo=True
+                    elif account_kind in {
+                        "live","real","實盤","真實","真實帳戶","實盤帳戶"
+                    }:
+                        is_demo=False
+                    elif not kind:
+                        is_demo=None
+                        incomplete_reason="Demo/Live 類型文字尚未讀到"
+                    else:
+                        raise AutomationError(
+                            "cTrader 帳戶類型不是可辨識的 Demo/Live，"
+                            "已停止操作。"
+                        )
+
+                    if not number.isdigit() or len(number)<5:
+                        incomplete_reason="帳號文字尚未完整讀到"
+                    elif is_demo is None:
+                        pass
+                    elif not broker_name:
+                        incomplete_reason="券商名稱文字尚未讀到"
+                    else:
+                        return self._bind_verified_account(
+                            platform,role,
+                            DemoAccount(
+                                platform,number,broker_name,is_demo,True
+                            )
+                        )
+
+                if attempt+1 < attempts:
+                    self.log(
+                        "cTrader 帳戶唯讀辨識資訊未完整 "
+                        f"({incomplete_reason})，短暫重讀 "
+                        f"{attempt+2}/{attempts}。"
+                    )
+                    time.sleep(0.12)
+            raise AutomationError(
+                f"cTrader 無法讀取完整帳戶資訊：{incomplete_reason}；"
+                "請確認主視窗已載入並重新綁定。"
             )
         except AutomationError:
             raise
