@@ -49,6 +49,37 @@ class CTraderAccountRetryTests(unittest.TestCase):
             sleep.assert_called_once_with(0.12)
         self.run_with_snapshots([[], identity()], verify)
 
+    def test_visible_account_with_temporarily_blank_identity_recovers(self):
+        partial = [
+            node("CTraderAccountNumberTextBlock_AId", "1234567"),
+            node("CTraderAccountTypeTextBlock_AId", ""),
+            node("SomeBrokerNameShort", ""),
+        ]
+
+        def verify(port, window, sleep):
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertTrue(account.is_demo)
+            self.assertEqual(window.descendants.call_count, 2)
+            sleep.assert_called_once_with(0.12)
+
+        self.run_with_snapshots([partial, identity()], verify)
+
+    def test_persistent_partial_identity_fails_closed_with_specific_reason(self):
+        partial = [
+            node("CTraderAccountNumberTextBlock_AId", "1234567"),
+            node("CTraderAccountTypeTextBlock_AId", ""),
+            node("SomeBrokerNameShort", "DemoBroker"),
+        ]
+
+        def verify(port, window, sleep):
+            with self.assertRaisesRegex(AutomationError, "Demo/Live"):
+                port.inspect_account("cTrader", "external")
+            self.assertEqual(window.descendants.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+
+        self.run_with_snapshots([partial, partial, partial], verify)
+
     def test_persistent_missing_account_fails_closed_after_three_reads(self):
         def verify(port, window, sleep):
             with self.assertRaises(AutomationError):
