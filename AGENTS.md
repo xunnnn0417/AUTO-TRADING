@@ -27,6 +27,7 @@
 - 修改前保留現有工作樹差異；不執行 `reset --hard`、`git clean`、強制切換分支或盲目覆寫。
 - 不使用 `git add .`。只提交本次已檢查、與任務直接相關的檔案。
 - 使用者要求每次程式修改都要留存 GitHub PR：驗證後在 `codex/` 工作分支提交並推送，建立目標為安全 LAB 分支 `lab/2026-10-16-safe-defaults-preflight` 的 PR；不得自動合併，也不得推送或修改 `main`。每個包含程式碼的 PR 都要更新 `trading_helper/__init__.py` 的 `__version__`，讓啟動時的更新提示能辨識新版本。
+- 使用者要求合併後由 GitHub 自動跑測試、打包並發布 Windows 免安裝下載；只改 Markdown 時略過。沿用測試套件與執行環境快取，不必由 AI 每次手動打包。發布成功前不得聲稱 GitHub 下載包已完成；首次雲端發布仍需核對實際結果。
 - 不覆寫使用者的設定、profile、校準、方案、歷史紀錄或 journal。它們是使用者資料，不是程式碼更新的一部分。
 - 不下單、不補單、不平倉、不修改／取消既有委託，也不修改任何倉位的 SL/TP；Demo 也適用。
 
@@ -42,9 +43,9 @@
 ## 目前統一版（2026-11-13 核對）
 
 - 工作目錄：`C:\Users\User\Desktop\codex\AUTO-TRADING-lab-unified`
-- 本機分支：`codex/lab-one-click-updater-20261113`；本機 HEAD：`d35e42d2090e2c909c7d78356461c3dcb11f9b05`
+- 本機分支：`codex/lab-one-click-updater-20261113`；本機 HEAD：`ccc4cfec6129c0d31335569f0877f3a878591fbf`
 - GitHub 安全 LAB 分支：`lab/2026-10-16-safe-defaults-preflight`；目前提交：`ee4b9a8591e52f89f308445be955b1d3d1efb721`
-- 本機 0.1.24 程式檔案樹與 GitHub PR #5 相同：`17b59246979bc5fb2d4fcf41684a2746c9e2218f`；PR 尚未合併到安全 LAB。本機和遠端提交歷史不同時，先比對實際差異，不要直接覆蓋或重設。
+- 本機 0.1.25 程式檔案樹與 GitHub PR #5 相同：`d23725499e43a8db87617c578fcdd964ec6a8696`；PR 尚未合併到安全 LAB。本機和遠端提交歷史不同時，先比對實際差異，不要直接覆蓋或重設。
 - GitHub PR #3 已合併至安全 LAB 分支；程式修改仍須經 PR，不得自動合併或改 `main`。
 - 使用的 Python 執行檔可唯讀借用：`C:\Users\User\Desktop\codex\trading-workflow-helper\.venv\Scripts\pythonw.exe`。
 - 使用者設定和 journal 位於 `%APPDATA%\TradingWorkflowHelper_TEST\`；不要複製、清空或以範例設定取代。
