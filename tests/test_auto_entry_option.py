@@ -30,6 +30,8 @@ class AutoEntryOptionTests(unittest.TestCase):
     def setUp(self):
         self.parent = QMainWindow()
         self.parent.auto_entry_on_fill_both = QCheckBox("填入兩邊時自動進場")
+        self.parent.auto_sync_sl_tp_after_entry = QCheckBox("同步")
+        self.parent.auto_sync_sl_tp_after_entry.setChecked(True)
         self.parent.save_ui_state = MagicMock()
         self.parent.log = MagicMock()
         self.parent.auto_entry_on_fill_both.toggled.connect(
@@ -38,6 +40,7 @@ class AutoEntryOptionTests(unittest.TestCase):
 
     def tearDown(self):
         self.parent.auto_entry_on_fill_both.close()
+        self.parent.auto_sync_sl_tp_after_entry.close()
         self.parent.close()
 
     def test_default_is_off_for_existing_profiles(self):
@@ -174,11 +177,13 @@ class AutoEntryOptionTests(unittest.TestCase):
             auto_draw_tv_after_entry=QCheckBox(),
             save_config=MagicMock(),
         )
+        source.auto_sync_sl_tp_after_entry.setChecked(True)
         TradingHelperApp.save_ui_state(source)
         self.assertTrue(source.store.data["ui"]["auto_entry_on_fill_both"])
         self.assertTrue(source.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         source.save_config.assert_called_once()
         source.internal_platform.close();source.external_platform.close()
+        source.auto_sync_sl_tp_after_entry.close()
         source.tv_draw_internal.close();checkbox.close()
 
     def test_profile_restore_does_not_prompt_confirmation(self):
@@ -291,3 +296,4 @@ class AutoEntryOptionTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
