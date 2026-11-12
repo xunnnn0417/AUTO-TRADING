@@ -1,5 +1,13 @@
 # 對沖小幫手｜最新工程進度與待驗收｜2026-10-16
 
+## 2026-11-13 最新核對
+- GitHub PR [#3](https://github.com/xunnnn0417/AUTO-TRADING/pull/3) 已合併到安全 LAB 分支 `lab/2026-10-16-safe-defaults-preflight`；沒有合併到 `main`。
+- 本機程式與 GitHub 安全 LAB 的檔案樹相同（tree `a5811dafba78c3be7022dd6f74fb5180125d817b`）。本機目前在 `codex/live-account-readonly-sync`，提交歷史與 GitHub 分支不同，但程式檔案內容一致。
+- PR #3 說明列出離線測試 701 項通過；該 PR 沒有 GitHub Actions 執行紀錄。本輪沒有重跑測試，因此沿用 PR 的測試結果，不當成本輪驗證。
+- PR #3 已移除 Demo／Live 帳戶類型判定；平台、帳號身分、持倉等其他核對仍保留。四種測試情境已有離線模擬測試，雙平台實際流程仍待使用者驗收。
+- 本輪唯讀檢查沒有找到正在執行的 LAB 程式或「對沖小幫手」視窗，因此目前沒有可確認版本的執行中程式。本輪只改進度文件，沒有程式碼變更或重啟。
+- 此文件下方 2026-10-17 以前的進度是歷史紀錄，不能單獨代表目前狀態；遇到與本節衝突時，以本節和最新程式／PR 狀態為準。
+
 範圍：僅 LAB，正式版 main 不變。本紀錄不是交易授權；任何實機 Demo 送單仍由使用者明確操作。
 
 ## 最新修正：平台互換不應被快速雙邊阻擋
@@ -120,3 +128,4 @@
 - GitHub LAB 已安全修改：cTrader 主視窗身份與座標有效性分層；填值後只記錄本次三欄實際驗證的數值，最後送單前精確比對 SL/TP；UIA traversal 錯誤轉成 fail-closed；journal JSON flush+fsync 後才 atomic replace；單次新鮮 UIA inventory 進行 cTrader 最後核對（此前已寫入）。
 - **GitHub Windows CI** 2026-10-17：[525/525 PASS](https://github.com/xunnnn0417/AUTO-TRADING/actions/runs/38968709491)，編譯及 Git clean PASS，驗收程式 commit `11aeed38fcb82f3025b0f09d0174e6a91ed8ea37`。測試初輪因未更新測試替身等失敗，已修正後全數通過，沒有真實券商 API 或下單。
 - 最新本機 LAB 未能同步、重啟或測量真實 MT5/cTrader click gap：Desktop Commander 額度 0。**禁止宣稱新版已部署／加速已在實機驗收、既有持倉 SL/TP 已同步，或可在 UNKNOWN 自動補單。**正式版及 main 未動。
+
