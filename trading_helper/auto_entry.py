@@ -31,6 +31,8 @@ class DemoAccount:
     platform: str
     account_id: str
     server: str
+    # cTrader's account number is the required identity. Its UI may omit both
+    # broker name and Demo/Live labels; these stay optional for paired entry.
     is_demo: bool | None
     verified: bool
 
@@ -274,13 +276,23 @@ class AutoEntryWorkflow:
         for account,platform in ((account_i,internal_platform),
                                  (account_e,external_platform)):
             if (not account.verified
-                or not account.account_id or not account.server
+                or not account.account_id
+                or (not account.server and platform.casefold() not in {
+                    "ctrader", "gooeytrade",
+                })
                 or account.platform!=platform):
                 raise AutomationError(
                     f"{platform} 帳戶身分未完整核對，拒絕自動送單。"
                 )
-        if (account_i.platform,account_i.account_id,account_i.server)==(
-            account_e.platform,account_e.account_id,account_e.server):
+        same_account=(
+            account_i.platform==account_e.platform
+            and account_i.account_id==account_e.account_id
+            and (
+                not account_i.server or not account_e.server
+                or account_i.server.casefold()==account_e.server.casefold()
+            )
+        )
+        if same_account:
             raise AutomationError("場內與場外不可使用同一交易帳戶。")
         self.last_account_ids={
             "internal":account_i.account_id,
