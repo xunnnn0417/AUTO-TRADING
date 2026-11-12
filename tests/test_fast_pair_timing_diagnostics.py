@@ -21,12 +21,15 @@ class FreshCheckFake(FakeBrokerPort):
         self.counts[role]+=1
         time.sleep(.018)
         return super().verify_order_form(platform,role,direction,lot)
-    def submit_once(self,platform,role,direction,lot,key):
-        # The actual DemoUiBrokerPort does a fresh readback as part of
-        # submit_once. Model the same invariant, with no real clicks.
-        self.verify_order_form(platform,role,direction,lot)
+    def submit_once(
+        self,platform,role,direction,lot,key,submit_deadline=None
+    ):
+        # FakeBrokerPort models the actual adapter's fresh readback inside
+        # submit_once. Keep only the dispatch timestamp here.
         self.submit_times[role]=time.perf_counter()
-        return super().submit_once(platform,role,direction,lot,key)
+        return super().submit_once(
+            platform,role,direction,lot,key,submit_deadline=submit_deadline
+        )
 
 
 class FastPairTimingTests(unittest.TestCase):
@@ -71,7 +74,6 @@ class FastPairTimingTests(unittest.TestCase):
         desktop=SimpleNamespace(window=lambda **kwargs:native_root)
         window=SimpleNamespace(handle=123)
         windows=SimpleNamespace(
-            focus=MagicMock(),
             screen_point=MagicMock(return_value=(50,50)),
             click=MagicMock(),
         )
@@ -81,6 +83,16 @@ class FastPairTimingTests(unittest.TestCase):
                 emergency=SimpleNamespace(guard=lambda:None),
             ),lambda _:None
         )
+        adapter.automation._last_verified_fills={
+            ("cTrader","external"):{
+                "direction":"BUY", "symbol":"GOLD",
+                "values":{"lot_input":Decimal("0.1"),
+                          "sl_input":Decimal("-527"),
+                          "tp_input":Decimal("3378")},
+            }
+        }
+        adapter.set_expected_symbol("GOLD")
+        windows.focus=MagicMock()
         adapter.verify_order_form=MagicMock()
         adapter.inspect_account=MagicMock(
             side_effect=AssertionError("should not re-scan account")
@@ -94,17 +106,13 @@ class FastPairTimingTests(unittest.TestCase):
             adapter.submit_once("cTrader","external","BUY",
                                 Decimal("0.1"),"fake-key")
         adapter.verify_order_form.assert_called_once()
-        controls=adapter.verify_order_form.call_args.kwargs["_controls"]
-        self.assertEqual(len(controls),1)
-        self.assertEqual(
-            controls[0].element_info.automation_id,
-            Button.element_info.automation_id,
-        )
         adapter.inspect_account.assert_not_called()
-        windows.focus.assert_called_once_with(window)
         windows.click.assert_called_once()
         timing=adapter.submit_phase_timings["external"]
         self.assertLessEqual(timing["start"],timing["form_verified"])
+        self.assertLessEqual(
+            timing["uia_inventory_returned"],timing["form_verified"]
+        )
         self.assertLessEqual(timing["form_verified"],timing["click_started"])
         self.assertLessEqual(timing["click_started"],timing["click_returned"])
 
@@ -122,6 +130,24 @@ class FastPairTimingTests(unittest.TestCase):
         self.assertIn("填入兩邊診斷",text)
         self.assertIn("場內",text)
         self.assertIn("場外",text)
+
+    def test_position_confirmation_records_read_poll_count_and_duration(self):
+        adapter=DemoUiBrokerPort(
+            SimpleNamespace(emergency=SimpleNamespace(guard=lambda:None)),
+            lambda _message:None,
+        )
+        adapter._snapshot_positions_for_fill_confirmation=MagicMock(
+            side_effect=[(),(SimpleNamespace(ticket="new-ticket"),)]
+        )
+        adapter.remember_verified_position_role=MagicMock()
+        with patch("trading_helper.demo_broker_port.time.sleep"):
+            found=adapter.confirm_new_position(
+                "cTrader","external",(),"BUY",Decimal("0.1"),"demo-id"
+            )
+        self.assertEqual(found.ticket,"new-ticket")
+        timing=adapter.submit_phase_timings["external"]
+        self.assertEqual(timing["confirm_snapshot_count"],2)
+        self.assertGreaterEqual(timing["confirm_snapshot_total_ms"],0)
 
 
 if __name__=="__main__":

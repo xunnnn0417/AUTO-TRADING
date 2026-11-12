@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QGroupBox, QScrollArea
 from PySide6.QtCore import QPoint
 from PySide6.QtTest import QTest
 
@@ -211,6 +211,28 @@ class RulerGui(unittest.TestCase):
         self.assertEqual(w.store.data["sheet"]["worksheet"],"主要計算區")
         self.assertIsNotNone(w.account_ruler.state)
         self.assertEqual(len(w.data_labels),11)
+
+    def test_last_trade_data_row_stays_clear_of_ruler_heading(self):
+        w = self.win
+        w.resize(1150, 800)
+        w.show()
+        self.app.processEvents()
+        last_row = w.data_labels["external_sl"]
+        last_row_bottom = last_row.mapTo(w, QPoint(0, last_row.height())).y()
+        ruler_title_top = w.ruler_title.mapTo(w, QPoint(0, 0)).y()
+        self.assertGreaterEqual(ruler_title_top - last_row_bottom, 16)
+        self.assertGreaterEqual(
+            w.findChild(QGroupBox, "dataCard").height(), 320
+        )
+        row_tops = [
+            w.data_labels[key].parentWidget().mapTo(w, QPoint(0, 0)).y()
+            for key in (
+                "external_direction", "external_lot", "external_tp", "external_sl"
+            )
+        ]
+        row_gaps = [right - left for left, right in zip(row_tops, row_tops[1:])]
+        self.assertEqual(len(set(row_gaps)), 1)
+        self.assertGreaterEqual(row_gaps[0], 20)
 
     def test_missing_sheet_fails_closed_without_blocking_trade_data(self):
         w = self.win
@@ -474,7 +496,7 @@ class RulerGui(unittest.TestCase):
                 self.app.processEvents()
                 ruler = w.account_ruler
                 ruler.grab()
-                self.assertGreaterEqual(w.height(), 630)
+                self.assertGreaterEqual(w.height(), 660)
                 self.assertGreaterEqual(ruler.height(), 206)
                 from PySide6.QtWidgets import QGroupBox
                 from PySide6.QtCore import QPoint

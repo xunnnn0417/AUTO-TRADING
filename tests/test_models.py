@@ -7,6 +7,8 @@ from trading_helper.sheets import SheetReader, _cell_position
 from trading_helper.windows import (
     KEYEVENTF_KEYUP,
     INPUT,
+    AutomationError,
+    CalibrationMismatchError,
     VK_LMENU,
     VK_LSHIFT,
     VK_RIGHT,
@@ -79,7 +81,7 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(sl, Decimal("1900.00"))
         self.assertEqual(tp, Decimal("2200.00"))
 
-    def test_gold_mt5_uses_sheet_price_distances(self) -> None:
+    def test_sample_mt5_uses_sheet_price_distances(self) -> None:
         values = valid_values()
         values["external_sl_points"] = "-31.35"
         values["external_tp_points"] = "6.05"
@@ -87,23 +89,23 @@ class TradeInstructionTests(unittest.TestCase):
         values["price_digits"] = "2"
         item = TradeInstruction.from_mapping(2, values)
         sl, tp = item.estimated_prices(
-            "SELL", item.external, Decimal("4172.89")
+            "SELL", item.external, Decimal("1000.00")
         )
-        self.assertEqual(item.format_price(sl), "4204.24")
-        self.assertEqual(item.format_price(tp), "4166.84")
+        self.assertEqual(item.format_price(sl), "1031.35")
+        self.assertEqual(item.format_price(tp), "993.95")
 
-    def test_mt5_estimate_always_reads_ask(self) -> None:
+    def test_mt5_buy_uses_ask_and_sell_uses_bid(self) -> None:
         self.assertEqual(
             PlatformAutomation._mt5_price_point("external", "BUY"),
-            "ask_price",
+            "ask_price_right",
         )
         self.assertEqual(
             PlatformAutomation._mt5_price_point("external", "SELL"),
-            "ask_price",
+            "bid_price_left",
         )
         self.assertEqual(
             PlatformAutomation._mt5_price_point("internal", "SELL"),
-            "ask_price",
+            "bid_price_left",
         )
 
     def test_rejects_unknown_direction(self) -> None:
@@ -185,10 +187,10 @@ class TradeInstructionTests(unittest.TestCase):
         }
         reader = FakeReader()
 
-        target = reader.write_value(config, "internal_entry_price", "4174.64")
+        target = reader.write_value(config, "internal_entry_price", "1000.00")
 
         self.assertEqual(target, "D8")
-        self.assertEqual(reader.worksheet.updated, ("D8", "4174.64"))
+        self.assertEqual(reader.worksheet.updated, ("D8", "1000.00"))
 
     def test_read_and_restore_a1_values(self) -> None:
         class FakeCell:
@@ -256,12 +258,12 @@ class TradeInstructionTests(unittest.TestCase):
         target = reader.write_value(
             config,
             "internal_entry_price",
-            "4174.64",
+            "1000.00",
             source_row=5,
         )
 
         self.assertEqual(target, "B5")
-        self.assertEqual(reader.worksheet.updated, ("B5", "4174.64"))
+        self.assertEqual(reader.worksheet.updated, ("B5", "1000.00"))
 
     def test_calibration_uses_exact_pixels_when_window_size_matches(self) -> None:
         controller = WindowController(None)
@@ -269,6 +271,20 @@ class TradeInstructionTests(unittest.TestCase):
         point = controller.relative_point(calibrated, 725, 410)
         moved = WindowInfo(1, "test", 300, 120, 1300, 920)
         self.assertEqual(controller.screen_point(moved, point), (925, 480))
+
+    def test_size_mismatch_reminds_to_recalibrate_only_affected_field(self) -> None:
+        controller = WindowController(None)
+        calibrated = WindowInfo(1, "test", 100, 50, 1163, 1078)
+        point = controller.relative_point(calibrated, 450, 400)
+        current = WindowInfo(1, "test", 0, 0, 1938, 1038)
+
+        with self.assertRaises(CalibrationMismatchError) as raised:
+            controller.screen_point(current, point)
+
+        message = str(raised.exception)
+        self.assertIn("重新綁定只會更新視窗名稱", message)
+        self.assertIn("只重新校準這個欄位", message)
+        self.assertIn("其他黃框不用重做", message)
 
     def test_plain_number_keeps_integer_trailing_zeroes(self) -> None:
         self.assertEqual(_plain(Decimal("4410")), "4410")
@@ -463,10 +479,10 @@ class TradeInstructionTests(unittest.TestCase):
     def test_mt5_window_binding_uses_account_and_server_only(self) -> None:
         pattern = _window_title_pattern(
             "原版MT5",
-            "569569160 - Bybit-Live-2 - Hedge - Infra Capital Limited - [GOLD_,M1]",
+            "TEST_ACCOUNT - Example-Demo - Hedge - Example Broker Ltd - [SAMPLE,M1]",
         )
 
-        self.assertEqual(pattern, r"569569160.*Bybit\-Live\-2")
+        self.assertEqual(pattern, r"TEST_ACCOUNT.*Example\-Demo")
 
     def test_mt5_points_prefer_order_window_title(self) -> None:
         automation = PlatformAutomation(
@@ -632,9 +648,11 @@ class TradeInstructionTests(unittest.TestCase):
         points = {
             "trade_tab": dict(stale_point, id="trade_tab"),
             "position_order_lot": dict(stale_point, id="lot"),
+            "position_order_lot_next": dict(stale_point, id="next_lot"),
             "position_order_row": dict(stale_point, id="row"),
             "position_sl_input": dict(stale_point, id="sl"),
             "position_tp_input": dict(stale_point, id="tp"),
+            "position_modify_confirm": dict(stale_point, id="confirm"),
         }
         automation = PlatformAutomation(
             {
@@ -659,6 +677,9 @@ class TradeInstructionTests(unittest.TestCase):
                 self.double_clicked = []
                 self.typed = []
                 self.read_from = []
+                self.initial_values = {"sl": "1", "tp": "2"}
+                self.pressed = []
+                self.window_changes = 0
 
             def find(self, pattern):
                 if pattern != "Right MT5":
@@ -672,37 +693,228 @@ class TradeInstructionTests(unittest.TestCase):
                 return None
 
             def read_number_near(self, window, point, expected):
-                self.read_from.append(window.title)
-                return Decimal("0.44")
+                raise AssertionError("MT5 hand size must use read-only position data")
 
             def double_click(self, window, point):
                 self.double_clicked.append((window.title, point["id"]))
 
             def wait_for_active_window_change(self, window, timeout):
-                if window.title != "Right MT5":
-                    raise AssertionError(window.title)
-                return WindowInfo(2, "Modify from Right MT5", 0, 0, 100, 100)
+                self.window_changes += 1
+                if window.title == "Right MT5":
+                    return WindowInfo(2, "Modify from Right MT5", 0, 0, 100, 100)
+                if window.title == "Modify from Right MT5":
+                    return WindowInfo(1, "Right MT5", 0, 0, 100, 100)
+                raise AssertionError(window.title)
 
             def click_and_type(self, window, point, value):
                 self.typed.append((window.title, point["id"], value))
 
+            def read_edit_value(self, window, point):
+                matches = [
+                    value for title, key, value in self.typed
+                    if title == window.title and key == point["id"]
+                ]
+                return matches[-1] if matches else self.initial_values[point["id"]]
+
+            def press(self, window, key):
+                self.pressed.append((window.title, key))
+
         fake = FakeWindows()
         automation.windows = fake
 
-        automation.sync_external_sl_tp(
-            item,
-            internal_platform="MT5",
-            external_platform="MT5",
-            entry_price_override=Decimal("100"),
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from trading_helper.demo_broker_port import DemoUiBrokerPort
+        matched_position = SimpleNamespace(
+            ticket="123456", symbol="EURUSD", direction="SELL",
+            volume=Decimal("0.8"),
+        )
+        with patch.object(
+            DemoUiBrokerPort,"find_mt5_position_row",
+            return_value=(0,matched_position),
+        ) as match:
+            automation.sync_external_sl_tp(
+                item,
+                internal_platform="MT5",
+                external_platform="MT5",
+                entry_price_override=Decimal("100"),
+            )
+        self.assertEqual(match.call_args.kwargs["expected_symbol"],"EURUSD")
+        self.assertEqual(
+            match.call_args.kwargs["expected_volume"],item.external.lot
         )
 
-        self.assertEqual(fake.clicked, [("Right MT5", "trade_tab")])
-        self.assertEqual(fake.read_from, ["Right MT5"])
+        self.assertEqual(
+            fake.clicked,
+            [("Right MT5", "trade_tab"), ("Modify from Right MT5", "confirm")],
+        )
+        self.assertEqual(fake.read_from, [])
         self.assertEqual(fake.double_clicked, [("Right MT5", "row")])
         self.assertTrue(fake.typed)
         self.assertTrue(
             all(title == "Modify from Right MT5" for title, _, _ in fake.typed)
         )
+
+    def test_mt5_external_sync_stops_when_readonly_lot_does_not_match(self) -> None:
+        item = TradeInstruction.from_mapping(2, valid_values())
+        point = {
+            "x": 0.5,
+            "y": 0.5,
+            "window_width": 100,
+            "window_height": 100,
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "MT5": {
+                        "window_title": {"internal": "Internal MT5", "external": "External MT5"},
+                        "points": {
+                            "position_order_lot": point,
+                            "position_order_lot_next": point,
+                            "position_order_row": point,
+                            "position_sl_input": point,
+                            "position_tp_input": point,
+                            "position_modify_confirm": point,
+                        },
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        class FakeWindows:
+            double_clicked = False
+
+            def find(self, pattern):
+                self.asserted_pattern = pattern
+                return WindowInfo(1, "External MT5", 0, 0, 200, 100)
+
+            def double_click(self, window, target):
+                self.double_clicked = True
+
+        fake = FakeWindows()
+        automation.windows = fake
+        from unittest.mock import patch
+        from trading_helper.demo_broker_port import DemoUiBrokerPort
+        with patch.object(
+            DemoUiBrokerPort,"find_mt5_position_row",
+            side_effect=AutomationError("MT5 唯讀持倉核對未找到唯一目標"),
+        ):
+            with self.assertRaisesRegex(AutomationError,"唯讀持倉核對"):
+                automation.sync_external_sl_tp(
+                    item,
+                    internal_platform="MT5",
+                    external_platform="MT5",
+                    entry_price_override=Decimal("1.1"),
+                )
+        self.assertFalse(fake.double_clicked)
+
+    def test_internal_entry_price_explains_which_calibration_is_stale(self) -> None:
+        item = TradeInstruction.from_mapping(2, valid_values())
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "cTrader": {
+                        "window_title": {"internal": "cTrader", "external": "cTrader"},
+                        "points": {"positions_entry_price": {"x": 0.5, "y": 0.5}},
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+
+        def stale_calibration(profile, role, point):
+            raise CalibrationMismatchError("尺寸不符；重新綁定不會改座標。")
+
+        automation._window_for_point = stale_calibration
+        with self.assertRaisesRegex(
+            CalibrationMismatchError, "場內 cTrader「已進場持倉成交價」"
+        ):
+            automation._read_internal_entry_price(item, "cTrader")
+
+    def test_ctrader_manual_price_read_avoids_stale_tab_point_safely(self) -> None:
+        item = TradeInstruction.from_mapping(2, valid_values())
+        main_window = WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
+        points = {
+            "positions_entry_price": {
+                "x": 0.3, "y": 0.6, "window_width": 100, "window_height": 100,
+            },
+            "trade_tab": {
+                "x": 0.1, "y": 0.5, "window_width": 200, "window_height": 100,
+            },
+            "position_order_lot": {
+                "x": 0.2, "y": 0.6, "window_width": 100, "window_height": 100,
+            },
+        }
+        automation = PlatformAutomation(
+            {
+                "platforms": {
+                    "cTrader": {
+                        "window_title": {"internal": "cTrader", "external": "cTrader"},
+                        "points": points,
+                    }
+                }
+            },
+            None,
+            FakeEmergency(),
+            lambda _: None,
+        )
+        automation._window_for_point = lambda profile, role, point: main_window
+        automation._verify_ctrader_account = lambda *args: None
+
+        class FakeWindows:
+            clicked = False
+            waited = False
+            lot_read = None
+
+            def click(self, window, point):
+                self.clicked = True
+                raise CalibrationMismatchError("old tab calibration size")
+
+            def read_number_near(self, window, point, expected):
+                self.lot_read = expected
+                return expected
+
+            def read_hover_number(self, window, point):
+                return Decimal("1000.00")
+
+            def wait(self, seconds):
+                self.waited = True
+
+        fake = FakeWindows()
+        automation.windows = fake
+
+        result = automation._read_internal_entry_price(item, "cTrader")
+
+        self.assertEqual(result, Decimal("1000.00"))
+        self.assertFalse(fake.clicked)
+        self.assertFalse(fake.waited)
+        self.assertEqual(fake.lot_read, item.internal.lot)
+
+    def test_read_number_near_selects_text_near_point_not_distant_pnl(self) -> None:
+        controller = WindowController(FakeEmergency())
+        window = WindowInfo(1, "test", 0, 0, 100, 100)
+        controller.focus = lambda current: current
+        controller._validate_calibrated_window = lambda current, point: None
+        controller.screen_point = lambda current, point: (50, 50)
+        controller._read_positioned_number_candidates_ocr = (
+            lambda *args, **kwargs: [
+                (Decimal("26.904"), 84.0, 50.0),
+                (Decimal("0.10"), 51.0, 50.0),
+            ]
+        )
+
+        result = controller.read_number_near(
+            window,
+            {"x": 0.5, "y": 0.5, "window_width": 100, "window_height": 100},
+            Decimal("0.1"),
+        )
+
+        self.assertEqual(result, Decimal("0.10"))
 
     def test_ctrader_window_binding_uses_platform_keyword(self) -> None:
         self.assertEqual(
@@ -771,7 +983,7 @@ class TradeInstructionTests(unittest.TestCase):
                 return [WindowInfo(1, pattern, 0, 0, 100, 100)]
 
             def read_number(self, window, point):
-                return Decimal("4174.64")
+                return Decimal("1000.00")
 
             def read_hover_number(self, window, point):
                 self.hover_called = True
@@ -782,14 +994,14 @@ class TradeInstructionTests(unittest.TestCase):
 
         price = automation._read_internal_entry_price(item, "MT5")
 
-        self.assertEqual(price, Decimal("4174.64"))
+        self.assertEqual(price, Decimal("1000.00"))
         self.assertFalse(fake.hover_called)
 
     def test_ctrader_external_sync_modifies_open_position_prices(self) -> None:
         values = valid_values()
         values.update(
             {
-                "symbol": "GOLD",
+                "symbol": "SAMPLE",
                 "direction": "BUY",
                 "external_lot": "0.8",
                 "external_sl_points": "-6",
@@ -800,12 +1012,27 @@ class TradeInstructionTests(unittest.TestCase):
         )
         item = TradeInstruction.from_mapping(2, values)
         points = {
-            "positions_entry_price": {"id": "entry"},
-            "trade_tab": {"id": "trade"},
-            "position_order_lot": {"id": "lot"},
-            "position_order_row": {"id": "row"},
-            "position_sl_input": {"id": "sl"},
-            "position_tp_input": {"id": "tp"},
+            "positions_entry_price": {
+                "id": "entry", "window_width": 100, "window_height": 100,
+            },
+            "trade_tab": {
+                "id": "trade", "window_width": 100, "window_height": 100,
+            },
+            "position_order_lot": {
+                "id": "lot", "window_width": 100, "window_height": 100,
+            },
+            "position_order_row": {
+                "id": "row", "window_width": 100, "window_height": 100,
+            },
+            "position_sl_input": {
+                "id": "sl", "window_width": 100, "window_height": 100,
+            },
+            "position_tp_input": {
+                "id": "tp", "window_width": 100, "window_height": 100,
+            },
+            "position_modify_confirm": {
+                "id": "confirm", "window_width": 100, "window_height": 100,
+            },
         }
         automation = PlatformAutomation(
             {
@@ -829,6 +1056,9 @@ class TradeInstructionTests(unittest.TestCase):
                 self.typed = []
                 self.clicked = []
                 self.double_clicked = False
+                self.pressed = []
+                self.initial_values = {"sl": "90", "tp": "120"}
+                self.readback_override = {}
 
             def find(self, pattern):
                 return WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
@@ -837,7 +1067,7 @@ class TradeInstructionTests(unittest.TestCase):
                 return [WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)]
 
             def read_hover_number(self, window, point):
-                return Decimal("4174.64")
+                return Decimal("1000.00")
 
             def read_number_near(self, window, point, expected):
                 return Decimal("0.8")
@@ -852,10 +1082,26 @@ class TradeInstructionTests(unittest.TestCase):
                 self.double_clicked = True
 
             def wait_for_active_window_change(self, window, timeout):
-                return WindowInfo(2, "Modify Position", 0, 0, 100, 100)
+                if window.title == "cTrader 5.7.14":
+                    return WindowInfo(2, "Modify Position", 0, 0, 100, 100)
+                if window.title == "Modify Position":
+                    return WindowInfo(1, "cTrader 5.7.14", 0, 0, 100, 100)
+                raise AssertionError(window.title)
 
             def click_and_type(self, window, point, value):
                 self.typed.append((window.title, point["id"], value))
+
+            def read_edit_value(self, window, point):
+                matches = [
+                    value for title, key, value in self.typed
+                    if title == window.title and key == point["id"]
+                ]
+                if matches:
+                    return self.readback_override.get(point["id"], matches[-1])
+                return self.initial_values[point["id"]]
+
+            def press(self, window, key):
+                self.pressed.append((window.title, key))
 
         fake = FakeWindows()
         automation.windows = fake
@@ -872,10 +1118,41 @@ class TradeInstructionTests(unittest.TestCase):
         self.assertEqual(
             fake.typed,
             [
-                ("Modify Position", "sl", "4180.64"),
-                ("Modify Position", "tp", "4169.64"),
+                ("Modify Position", "sl", "1006.00"),
+                ("Modify Position", "tp", "995.00"),
             ],
         )
+        self.assertIn(("Modify Position", "confirm"), fake.clicked)
+
+        # When both values already match, do not leave the disabled submit
+        # button open or submit an unchanged modification.
+        fake.typed.clear()
+        fake.clicked.clear()
+        fake.initial_values = {"sl": "1006.00", "tp": "995.00"}
+        fake.pressed.clear()
+        automation.sync_external_sl_tp(
+            item,
+            internal_platform="cTrader",
+            external_platform="cTrader",
+        )
+        self.assertNotIn(("Modify Position", "confirm"), fake.clicked)
+        self.assertEqual(fake.typed, [])
+        self.assertIn(("Modify Position", "esc"), fake.pressed)
+
+        # A value that cannot be read back exactly must never be submitted.
+        fake.typed.clear()
+        fake.clicked.clear()
+        fake.pressed.clear()
+        fake.initial_values = {"sl": "90", "tp": "120"}
+        fake.readback_override = {"sl": "999"}
+        with self.assertRaises(AutomationError):
+            automation.sync_external_sl_tp(
+                item,
+                internal_platform="cTrader",
+                external_platform="cTrader",
+            )
+        self.assertNotIn(("Modify Position", "confirm"), fake.clicked)
+        self.assertIn(("Modify Position", "esc"), fake.pressed)
 
     def test_tradingview_draw_internal_uses_internal_direction(self) -> None:
         values = valid_values()
@@ -936,7 +1213,7 @@ class TradeInstructionTests(unittest.TestCase):
                 return None
 
             def read_number(self, window, point):
-                return Decimal("4174.64")
+                return Decimal("1000.00")
 
             def click_and_type(self, window, point, value):
                 self.clicked.append(point["id"])
@@ -953,7 +1230,7 @@ class TradeInstructionTests(unittest.TestCase):
         automation.draw_tradingview(
             item,
             internal_platform="cTrader",
-            entry_price_override=Decimal("4174.64"),
+            entry_price_override=Decimal("1000.00"),
             draw_internal=True,
         )
 
@@ -1000,3 +1277,4 @@ class TradeInstructionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

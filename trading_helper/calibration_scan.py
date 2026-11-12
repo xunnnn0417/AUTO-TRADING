@@ -33,6 +33,8 @@ RULES: dict[str, tuple[frozenset[str], str]] = {
     "new_order_button": (BUTTON, r"(?:new.?order|新訂單|新订单)"),
     "trade_tab": (TAB, r"(?:\btrade\b|交易)"),
     "ask_price": (TEXT, r"(?:\bask\b|askprice)"),
+    "bid_price_left": (TEXT, r"(?:\bbid\b|bidprice|賣價|卖价)"),
+    "ask_price_right": (TEXT, r"(?:\bask\b|askprice|買價|买价)"),
     # Submission controls require *additional* trade-dialog context below.
     # A direction RadioButton or New Order launcher is never a submit target.
     "order_submit_button": (BUTTON, r"(?:place|submit|send|execute|confirm).{0,35}(?:market)?order|(?:market)?order.{0,30}(?:place|submit|send|execute|confirm)"),
@@ -312,11 +314,10 @@ def _mt5_market_submit_suggestions(controls: list[Control]) -> dict[str, Candida
 
 
 def _mt5_current_price_suggestion(controls: list[Control]) -> Candidate | None:
-    """A single visible price-with-number label, not an empty 'Price:' label.
+    """Find the legacy single quote label, not an empty 'Price:' label.
 
-    Reuses legacy ask_price key so the existing MT5 field-fill code uses a
-    SINGLE reference quote for BUY and SELL without changing order logic.
-    If multiple price numbers are exposed, require manual selection.
+    Kept for older non-BTC profiles. BTCUSD testing requires separate Bid
+    and Ask targets.
     """
     labels = []
     for c in controls:
@@ -330,8 +331,34 @@ def _mt5_current_price_suggestion(controls: list[Control]) -> Candidate | None:
         return None
     return Candidate(
         "ask_price",labels[0].rect,
-        "低信度：MT5 唯一顯示數字的目前報價標籤；"
-        "買／賣共用同一參考價格，僅供黃框預覽",
+        "低信度：MT5 舊式單一報價參考標籤；僅供黃框預覽",
+    )
+
+def _mt5_bid_ask_suggestion(
+    controls: list[Control], key: str,
+) -> Candidate | None:
+    if key == "bid_price_left":
+        role = re.compile(r"(?:\bbid\b|bidprice|賣價|卖价)", re.I)
+        label = "左側 Bid"
+    elif key == "ask_price_right":
+        role = re.compile(r"(?:\bask\b|askprice|買價|买价)", re.I)
+        label = "右側 Ask"
+    else:
+        return None
+    labels = []
+    for control in controls:
+        if control.kind not in {"Text", "Static"} or _is_position(control):
+            continue
+        identity = (control.name + " " + control.automation_id).strip()
+        if role.search(identity) and re.search(
+            r"(?<!\d)\d{2,7}[.,]\d{1,6}(?!\d)", control.name
+        ):
+            labels.append(control)
+    if len(labels) != 1:
+        return None
+    return Candidate(
+        key, labels[0].rect,
+        f"低信度：MT5 唯一顯示數字的{label}標籤；僅供黃框預覽",
     )
 
 def _modify_confirmation_suggestion(controls: list[Control]) -> Candidate | None:
@@ -422,7 +449,13 @@ def match_all(
             if key in {"lot_input", "sl_input", "tp_input"} and position:
                 continue
             # For the value-only label "Ask", require a more specific UIA id.
-            if key == "ask_price" and not re.search(r"ask", ctrl.automation_id, re.I):
+            if key in {"ask_price", "ask_price_right"} and not re.search(
+                r"ask", ctrl.automation_id, re.I
+            ):
+                continue
+            if key == "bid_price_left" and not re.search(
+                r"bid", ctrl.automation_id, re.I
+            ):
                 continue
             evidence = (
                 f"UIA AutomationId={_safe_id(ctrl.automation_id)} / {ctrl.kind}"
@@ -477,6 +510,12 @@ def match_all(
             if current_price is not None:
                 result.candidates["ask_price"]=current_price
                 result.reasons.pop("ask_price",None)
+        for key in ("bid_price_left", "ask_price_right"):
+            if key in dict(inventory) and key not in result.candidates:
+                quote = _mt5_bid_ask_suggestion(controls, key)
+                if quote is not None:
+                    result.candidates[key] = quote
+                    result.reasons.pop(key, None)
         # In the separate MT5 order dialog, localized input fields can
         # have an empty UIA name. Offer only uniquely adjacent labeled edits,
         # as explicitly LOW CONFIDENCE yellow-box preview candidates.
@@ -621,7 +660,8 @@ def inspect_all_targets(
     # normal yellow-outline preview and explicit manual save.
     requested = {key for key, _ in targets}
     missed = requested.intersection({
-        "ask_price", "order_submit_buy", "order_submit_sell",
+        "ask_price", "bid_price_left", "ask_price_right",
+        "order_submit_buy", "order_submit_sell",
     }).difference(report.candidates)
     if (platform in {"MT5", "BYBIT MT5", "原版MT5"} and missed
             and re.search(r"order|訂單|订单|下單", str(win.window_text()), re.I)):
@@ -655,7 +695,7 @@ def inspect_all_targets(
                         key,
                         (xa + capture_origin[0], ya + capture_origin[1],
                          xb + capture_origin[0], yb + capture_origin[1]),
-                        "低信度：MT5 紅 Sell／藍 Buy 與單一參考價格的"
+                        "低信度：MT5 紅 Sell／藍 Buy 報價對的"
                         "用戶區座標已對齊候選；仍須黃框人工核對（從未點擊）",
                     )
                     report.candidates[key] = candidate

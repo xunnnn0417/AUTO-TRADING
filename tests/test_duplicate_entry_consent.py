@@ -98,7 +98,7 @@ class DuplicateConsentTests(unittest.TestCase):
                 "MT5","external",(),"SELL",D("0.2"),"222222"
             ),
         )
-        with self.assertRaisesRegex(Exception,"已存在持倉"):
+        with self.assertRaisesRegex(Exception,"存在持倉"):
             self.run_flow(self.token(prior))
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
         self.assertEqual(self.journal.entry(self.key),prior)

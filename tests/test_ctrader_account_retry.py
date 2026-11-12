@@ -40,14 +40,47 @@ class CTraderAccountRetryTests(unittest.TestCase):
             window.descendants.side_effect = snapshots
             verify(port, window, sleep)
 
-    def test_zero_then_unique_account_recovers_without_changing_identity(self):
+    def test_zero_then_unique_account_recovers_identity_without_type(self):
         def verify(port, window, sleep):
             acc = port.inspect_account("cTrader", "external")
             self.assertEqual(acc.account_id, "1234567")
-            self.assertTrue(acc.is_demo)
+            self.assertIsNone(acc.is_demo)
+            self.assertTrue(acc.verified)
             self.assertEqual(window.descendants.call_count, 2)
             sleep.assert_called_once_with(0.12)
         self.run_with_snapshots([[], identity()], verify)
+
+    def test_visible_account_does_not_require_demo_live_label(self):
+        partial = [
+            node("CTraderAccountNumberTextBlock_AId", "1234567"),
+            node("SomeBrokerNameShort", "DemoBroker"),
+        ]
+
+        def verify(port, window, sleep):
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertIsNone(account.is_demo)
+            self.assertTrue(account.verified)
+            self.assertEqual(window.descendants.call_count, 1)
+            sleep.assert_not_called()
+
+        self.run_with_snapshots([partial], verify)
+
+    def test_missing_broker_does_not_block_unique_account_identity(self):
+        partial = [
+            node("CTraderAccountNumberTextBlock_AId", "1234567"),
+        ]
+
+        def verify(port, window, sleep):
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertEqual(account.server, "")
+            self.assertIsNone(account.is_demo)
+            self.assertTrue(account.verified)
+            self.assertEqual(window.descendants.call_count, 1)
+            sleep.assert_not_called()
+
+        self.run_with_snapshots([partial, partial, partial], verify)
 
     def test_persistent_missing_account_fails_closed_after_three_reads(self):
         def verify(port, window, sleep):
@@ -67,10 +100,12 @@ class CTraderAccountRetryTests(unittest.TestCase):
             "CTraderAccountNumberTextBlock_AId", "9999999"
         )]], verify)
 
-    def test_live_account_identity_fails_immediately(self):
+    def test_live_account_identity_is_verified_immediately(self):
         def verify(port, window, sleep):
-            with self.assertRaises(AutomationError):
-                port.inspect_account("cTrader", "external")
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertFalse(account.is_demo)
+            self.assertTrue(account.verified)
             self.assertEqual(window.descendants.call_count, 1)
             sleep.assert_not_called()
         self.run_with_snapshots([identity(kind="Live")], verify)

@@ -67,7 +67,9 @@ class FastPairOfflineBenchmark(unittest.TestCase):
         self.assertEqual(len([e for e in self.port.events if e[0]=="submit"]),2)
     def test_wrong_account_preflight_never_submits(self):
         from dataclasses import replace
-        self.port.accounts["external"]=replace(self.port.accounts["external"],is_demo=False)
+        self.port.accounts["external"]=replace(
+            self.port.accounts["external"],is_demo=False,verified=False
+        )
         with self.assertRaises(AutomationError):self.run_flow(True)
         self.assertFalse(self.port.submit_times)
 

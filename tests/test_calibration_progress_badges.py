@@ -83,14 +83,14 @@ class ProgressTests(unittest.TestCase):
             dlg.close()
             parent.close()
 
-    def test_missing_ctrader_first_stage_from_full_15(self):
+    def test_missing_ctrader_first_stage_from_full_16(self):
         all_keys=[k for k,_ in CALIBRATION_TARGETS["cTrader"]]
         first=all_keys[:9]
         saved={k:pt() for k in all_keys}
         for k in first:saved.pop(k)
-        self.assertEqual(completion(saved,all_keys),(6,15))
+        self.assertEqual(completion(saved,all_keys),(7,16))
         self.assertEqual(completion(saved,first),(0,9))
-        self.assertEqual(completion(saved,all_keys[9:]),(6,6))
+        self.assertEqual(completion(saved,all_keys[9:]),(7,7))
 
     def test_tiny_stage_notification_dot_size(self):
         parent=QMainWindow()
@@ -105,7 +105,8 @@ class ProgressTests(unittest.TestCase):
                 marker=dlg._calibration_tabs.tabBar().tabButton(
                     index,QTabBar.RightSide)
                 self.assertIsNotNone(marker)
-                self.assertEqual((marker.width(),marker.height()),(10,13))
+                self.assertEqual((marker.width(),marker.height()),(6,6))
+                self.assertIn("border-radius:3px", marker.styleSheet())
         finally:
             dlg._hover_outline.close()
             dlg.close()

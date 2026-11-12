@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from trading_helper.gui import TradingHelperApp
 from trading_helper.config import DEFAULT_CONFIG
 from trading_helper.windows import AutomationError
+from trading_helper.auto_entry import DuplicateEntryDecisionRequired
 
 
 def combo(text):
@@ -29,6 +30,8 @@ class AutoEntryOptionTests(unittest.TestCase):
     def setUp(self):
         self.parent = QMainWindow()
         self.parent.auto_entry_on_fill_both = QCheckBox("填入兩邊時自動進場")
+        self.parent.auto_sync_sl_tp_after_entry = QCheckBox("同步")
+        self.parent.auto_sync_sl_tp_after_entry.setChecked(True)
         self.parent.save_ui_state = MagicMock()
         self.parent.log = MagicMock()
         self.parent.auto_entry_on_fill_both.toggled.connect(
@@ -37,6 +40,7 @@ class AutoEntryOptionTests(unittest.TestCase):
 
     def tearDown(self):
         self.parent.auto_entry_on_fill_both.close()
+        self.parent.auto_sync_sl_tp_after_entry.close()
         self.parent.close()
 
     def test_default_is_off_for_existing_profiles(self):
@@ -55,7 +59,8 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.assertTrue(self.parent.auto_entry_on_fill_both.isChecked())
             self.assertEqual(self.parent.save_ui_state.call_count, 1)
             args = question.call_args.args
-            self.assertIn("兩個 Demo 帳戶", args[2])
+            self.assertIn("自動進場並同步場外 SL／TP", args[2])
+            self.assertIn("Live", args[2])
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.assertEqual(self.parent.save_ui_state.call_count, 2)
         self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
@@ -105,6 +110,30 @@ class AutoEntryOptionTests(unittest.TestCase):
             TradingHelperApp._fill_both_task(fake,"cTrader","MT5",True)
         hook.assert_not_called()
 
+    def test_duplicate_preflight_stops_before_any_platform_fill(self):
+        preflight=MagicMock(
+            side_effect=DuplicateEntryDecisionRequired("k",{"status":"complete"},True)
+        )
+        fill=MagicMock()
+        fake=SimpleNamespace(
+            _require_instruction=lambda:"instruction",
+            _preflight_duplicate_entry=preflight,
+            automation=SimpleNamespace(fill=fill),
+            log=MagicMock(),
+        )
+        with self.assertRaises(DuplicateEntryDecisionRequired):
+            TradingHelperApp._fill_both_task(
+                fake,"cTrader","MT5",True,sync_sl_tp=True
+            )
+        preflight.assert_called_once()
+        fill.assert_not_called()
+
+    def test_operation_completion_restores_window_instead_of_minimizing(self):
+        restore=MagicMock()
+        self.parent._restore_after_operation=restore
+        TradingHelperApp._minimize_after_operation(self.parent)
+        restore.assert_called_once_with()
+
     def test_fill_both_dispatches_to_preflight_before_start(self):
         verify=MagicMock()
         fake=SimpleNamespace(_launch_fill=verify)
@@ -131,7 +160,10 @@ class AutoEntryOptionTests(unittest.TestCase):
         TradingHelperApp._start_fill_worker(fake,("internal","external"),platforms)
         button.setChecked(False)
         run.call_args.args[1]()
-        fill.assert_called_once_with("cTrader","MT5",True)
+        fill.assert_called_once_with(
+            "cTrader", "MT5", True, sync_sl_tp=True, draw_tv=False,
+            draw_internal=False, fast_pair=False,
+        )
         button.close();inside.close();outside.close()
 
     def test_save_ui_state_includes_per_profile_toggle(self):
@@ -145,10 +177,13 @@ class AutoEntryOptionTests(unittest.TestCase):
             auto_draw_tv_after_entry=QCheckBox(),
             save_config=MagicMock(),
         )
+        source.auto_sync_sl_tp_after_entry.setChecked(True)
         TradingHelperApp.save_ui_state(source)
         self.assertTrue(source.store.data["ui"]["auto_entry_on_fill_both"])
+        self.assertTrue(source.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         source.save_config.assert_called_once()
         source.internal_platform.close();source.external_platform.close()
+        source.auto_sync_sl_tp_after_entry.close()
         source.tv_draw_internal.close();checkbox.close()
 
     def test_profile_restore_does_not_prompt_confirmation(self):
@@ -176,7 +211,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         fake.auto_entry_on_fill_both.toggled.connect(dialog)
         TradingHelperApp._apply_profile_ui(fake)
         self.assertTrue(fake.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(fake.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(fake.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(fake.auto_draw_tv_after_entry.isChecked())
         dialog.assert_not_called()
         self.assertIsNone(fake.instruction)
@@ -186,7 +221,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         dialog.assert_not_called()
         fake.close()
 
-    def test_fast_pair_confirm_newlines_and_only_when_user_enables(self):
+    def test_fast_pair_confirmation_is_concise_and_only_when_user_enables(self):
         self.parent.auto_fast_pair=QCheckBox("快速雙邊")
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.parent.auto_fast_pair.toggled.connect(
@@ -205,15 +240,22 @@ class AutoEntryOptionTests(unittest.TestCase):
             self.parent.auto_fast_pair.setChecked(True)
             self.assertTrue(self.parent.auto_fast_pair.isChecked())
             message=question.call_args.args[2]
-            self.assertIn("\n\n",message)
+            self.assertIn("單邊結果不明就停止",message)
+            self.assertIn("不補單或平倉",message)
             self.assertNotIn(chr(92)+"n",message)
+            self.assertEqual(question.call_args.kwargs["yes_text"],"啟用")
+            self.assertEqual(question.call_args.kwargs["no_text"],"取消")
             question.assert_called_once()
         self.parent.auto_fast_pair.close()
 
     def test_records_log_room_and_no_per_fill_confirmation(self):
         source=inspect.getsource(TradingHelperApp._build)
-        self.assertIn("self.log_text.setMinimumHeight(140)",source)
-        self.assertIn("log_box.setMaximumHeight(235)",source)
+        self.assertIn("self.log_text.setMinimumHeight(150)",source)
+        self.assertIn("record_layout.setContentsMargins(16, 0, 16, 12)",source)
+        self.assertIn("record_layout.addWidget(log_box, 0, Qt.AlignTop)",source)
+        resize_source=inspect.getsource(TradingHelperApp._update_activity_log_height)
+        self.assertIn("contentsRect().height() * 2 / 3",resize_source)
+        self.assertIn("box.setFixedHeight(height)",resize_source)
         fill_source=inspect.getsource(TradingHelperApp._start_fill_worker)
         self.assertNotIn("QMessageBox.question",fill_source)
 

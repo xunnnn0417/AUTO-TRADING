@@ -15,7 +15,7 @@ from trading_helper.windows import AutomationError, WindowInfo
 class ExistingMt5OrderDialogTests(unittest.TestCase):
     def setUp(self):
         self.main = WindowInfo(
-            10, "55512345 - ICMarketsSC-Demo", 0, 0, 1920, 1040,
+            10, "11111111 - Example-Demo", 0, 0, 1920, 1040,
         )
         self.dialog = WindowInfo(
             11, "訂單: XAUUSD - Gold vs US Dollar", 389, 229, 1531, 792,
@@ -34,8 +34,8 @@ class ExistingMt5OrderDialogTests(unittest.TestCase):
             "window_height": 1040,
         }
         self.profile = {
-            "window_title": {"internal": "ICMarketsSC-Demo",
-                             "external": "ICMarketsSC-Demo"},
+            "window_title": {"internal": "Example-Demo",
+                             "external": "Example-Demo"},
             "points": self.points,
         }
         self.windows = MagicMock()

@@ -20,11 +20,11 @@ def _runs(row):
 
 
 def detect_order_dialog_regions(image: Image.Image) -> dict[str, tuple[int,int,int,int]]:
-    """Return relative image rectangles for a unique red Sell / blue Buy pair.
+    """Return relative rectangles for a unique red Sell / blue Buy quote pair.
 
-    A single reference quote is located above the BUY half of the paired
-    controls. An empty result explicitly means visual identification failed.
-    No price number is asserted or OCR'd here.
+    Bid and Ask candidates are located above their matching Sell and Buy
+    controls. Empty output means visual identification failed. No price number
+    is asserted or OCR'd here; each candidate remains a manual preview only.
     """
     import numpy as np
     pixels = np.asarray(image.convert("RGB"), dtype=np.int16)
@@ -76,22 +76,32 @@ def detect_order_dialog_regions(image: Image.Image) -> dict[str, tuple[int,int,i
     # Color-run samples from rows where text does not interrupt the bar.
     y0=min(ys); y1=max(ys)+1
     bw=e-c
-    # The single reference quote is the RIGHT price (Ask) above blue Buy.
-    # Keep the preview near the numerals, not in the empty space above.
-    quote = (
-        max(0,round(c+bw*.07)),
-        max(0,round(y0-bw*.50)),
-        min(w,round(c+bw*.63)),
-        min(h,round(y0-bw*.30)),
-    )
-    if quote[2]-quote[0] < 55 or quote[3]-quote[1] < 25:
-        return {}
-    text_region=pixels[quote[1]:quote[3],quote[0]:quote[2]]
-    # Price above bars must visibly contain white digits; otherwise do not
-    # infer the reference-price position from button colors alone.
-    white=(text_region.min(axis=2)>185)
-    if int(white.sum()) < 65:
-        return {}
+    # Keep each preview near the numerals over its matching order side.
+    def quote_rect(
+        left: int, right: int, start: float, end: float,
+    ) -> tuple[int,int,int,int]:
+        width = right - left
+        return (
+            max(0,round(left+width*start)),
+            max(0,round(y0-width*.50)),
+            min(w,round(left+width*end)),
+            min(h,round(y0-width*.30)),
+        )
+
+    # MT5 centers the two large quote numbers around the slash between them:
+    # Bid sits toward the right edge of the Sell button; Ask starts near the
+    # left edge of the Buy button. Symmetric rectangles clipped the Bid tail.
+    bid_quote = quote_rect(a, b, .25, 1.00)
+    ask_quote = quote_rect(c, e, .00, .70)
+    for quote in (bid_quote, ask_quote):
+        if quote[2]-quote[0] < 55 or quote[3]-quote[1] < 25:
+            return {}
+        text_region=pixels[quote[1]:quote[3],quote[0]:quote[2]]
+        # Both sides must visibly contain white quote digits. Otherwise do
+        # not infer either price location from button colors alone.
+        white=(text_region.min(axis=2)>185)
+        if int(white.sum()) < 45:
+            return {}
     # Yellow calibration outlines should surround the FULL clickable
     # colored bars, not float inside/above them. All rects are still only
     # preview candidates, never click commands.
@@ -104,5 +114,6 @@ def detect_order_dialog_regions(image: Image.Image) -> dict[str, tuple[int,int,i
     return {
         "order_submit_sell":sell_rect,
         "order_submit_buy":buy_rect,
-        "ask_price":quote,
+        "bid_price_left":bid_quote,
+        "ask_price_right":ask_quote,
     }
