@@ -87,27 +87,28 @@ class DemoPortTests(unittest.TestCase):
         self.assertFalse(result.is_demo)
         self.assertTrue(result.verified)
         self.assertEqual(result.server,"Example-Live")
-    def test_ctrader_demo_verified_only_with_unique_native_labels(self):
+    def test_ctrader_identity_does_not_read_demo_live_label(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader 5.10.20")
         with self.with_uia(self.ui_text):
             result=self.port.inspect_account("cTrader","internal")
-        self.assertTrue(result.is_demo)
+        self.assertIsNone(result.is_demo)
         self.assertEqual(result.account_id,"11111111")
         self.assertEqual(result.server,"Example Broker Ltd")
-    def test_ctrader_live_account_identity_is_verified(self):
+    def test_ctrader_identity_ignores_live_label(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         self.ui_text[0].content="Live"
         with self.with_uia(self.ui_text):
             result=self.port.inspect_account("cTrader","internal")
-        self.assertFalse(result.is_demo)
+        self.assertIsNone(result.is_demo)
         self.assertTrue(result.verified)
 
-    def test_unknown_account_type_stays_unverified(self):
+    def test_unknown_account_type_is_not_required_for_identity(self):
         self.automation.windows.find.return_value=FakeWindow("cTrader")
         self.ui_text[0].content="Contest"
         with self.with_uia(self.ui_text):
-            with self.assertRaisesRegex(AutomationError,"Demo/Live"):
-                self.port.inspect_account("cTrader","internal")
+            result=self.port.inspect_account("cTrader","internal")
+        self.assertIsNone(result.is_demo)
+        self.assertTrue(result.verified)
 
     def test_mt5_position_row_is_matched_by_readonly_ticket(self):
         account=DemoAccount("MT5","11111111","Example-Demo",True,True)
