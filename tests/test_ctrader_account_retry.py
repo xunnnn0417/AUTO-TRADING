@@ -66,17 +66,19 @@ class CTraderAccountRetryTests(unittest.TestCase):
 
         self.run_with_snapshots([partial], verify)
 
-    def test_missing_broker_still_fails_after_three_reads(self):
+    def test_missing_broker_does_not_block_unique_account_identity(self):
         partial = [
             node("CTraderAccountNumberTextBlock_AId", "1234567"),
-            node("SomeBrokerNameShort", ""),
         ]
 
         def verify(port, window, sleep):
-            with self.assertRaisesRegex(AutomationError, "券商名稱"):
-                port.inspect_account("cTrader", "external")
-            self.assertEqual(window.descendants.call_count, 3)
-            self.assertEqual(sleep.call_count, 2)
+            account = port.inspect_account("cTrader", "external")
+            self.assertEqual(account.account_id, "1234567")
+            self.assertEqual(account.server, "")
+            self.assertIsNone(account.is_demo)
+            self.assertTrue(account.verified)
+            self.assertEqual(window.descendants.call_count, 1)
+            sleep.assert_not_called()
 
         self.run_with_snapshots([partial, partial, partial], verify)
 
