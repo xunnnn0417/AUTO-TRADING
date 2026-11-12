@@ -1,0 +1,2 @@
+# Additional read-only MT5 source shipped in the portable download.
+MetaTrader5==5.0.6231

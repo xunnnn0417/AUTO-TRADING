@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QProgressBar, Q
 from . import __version__
 from .self_update import prepare_update, start_worker
 from .ui_theme import DIALOG_THEME
-from .update_check import check_for_update, UPDATE_PAGE_URL
+from .update_check import check_for_update, DOWNLOAD_PAGE_URL
 from .window_chrome import ThemedDialog
 
 
@@ -51,8 +51,8 @@ class UpdateDialog(ThemedDialog):
         self.later = QPushButton("稍後", self)
         self.later.clicked.connect(self.reject)
         self.install = QPushButton("更新並重新開啟", self)
-        self.github = QPushButton("開啟 GitHub", self)
-        self.github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(UPDATE_PAGE_URL)))
+        self.github = QPushButton("下載完整包", self)
+        self.github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(DOWNLOAD_PAGE_URL)))
         self.github.hide()
         buttons.addWidget(self.github)
         buttons.addWidget(self.later)

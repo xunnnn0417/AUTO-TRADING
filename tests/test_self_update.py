@@ -108,6 +108,17 @@ class SelfUpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "執行環境"):
                 update.prepare_update(self.root, "1.0.0")
 
+    def test_portable_sdk_dependency_change_keeps_old_environment(self):
+        target = self.root / "requirements-portable.txt"
+        target.write_bytes(b"MetaTrader5==1\n")
+        self.before["requirements-portable.txt"] = update.digest(target.read_bytes())
+        (self.root / update.RECEIPT).write_text(json.dumps({"files": self.before}))
+        self.files["requirements-portable.txt"] = b"MetaTrader5==2\n"
+        with patch.object(update, "read_download", side_effect=self.download()):
+            with self.assertRaisesRegex(ValueError, "執行環境"):
+                update.prepare_update(self.root, "1.0.0")
+        self.assertEqual(target.read_bytes(), b"MetaTrader5==1\n")
+
     def test_production_folder_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "LAB"):
             update.require_lab(self.root.parent / "trading-workflow-helper")

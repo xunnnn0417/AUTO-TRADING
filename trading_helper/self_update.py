@@ -28,7 +28,7 @@ def managed(path: str) -> bool:
     return bool(
         bool(p.parts) and not p.is_absolute() and ".." not in p.parts and "\\" not in path
         and ":" not in path
-        and (path in ("main.py", "requirements.txt")
+        and (path in ("main.py", "requirements.txt", "requirements-portable.txt")
              or (p.parts[0] == "trading_helper" and p.suffix == ".py")
              or (p.parts[0] == "assets" and p.suffix in (".ico", ".png", ".svg")))
     )
@@ -134,8 +134,11 @@ def prepare_update(root: Path, current_version: str) -> Path:
     current = _version_tuple(current_version)
     if latest is None or current is None or latest <= current:
         raise ValueError("目前已是最新版，無須更新。")
-    if files["requirements.txt"].replace(b"\r\n", b"\n").strip() != (root / "requirements.txt").read_bytes().replace(b"\r\n", b"\n").strip():
-        raise ValueError("此版本需要更新執行環境，請使用 GitHub 更新頁；目前版本已保留。")
+    for name in ("requirements.txt", "requirements-portable.txt"):
+        if name in files:
+            installed = (root / name).read_bytes() if (root / name).exists() else b""
+            if files[name].replace(b"\r\n", b"\n").strip() != installed.replace(b"\r\n", b"\n").strip():
+                raise ValueError("此版本需要更新執行環境，請下載新版完整包；目前版本已保留。")
     parent = root.parent / ".hedge-updates"
     parent.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="update-", dir=parent))
