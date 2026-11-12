@@ -1104,7 +1104,7 @@ class DemoUiBrokerPort:
                     raise AutomationError("持倉變化不只一筆，無法確認唯一成交。")
                 if time.monotonic()>=deadline:
                     raise AutomationError(
-                        "Demo 送單後 15 秒內未確認唯一新持倉，禁止再次送單。"
+                        "送單後 15 秒內未確認唯一新持倉，禁止再次送單。"
                     )
                 time.sleep(0.3)
         finally:
