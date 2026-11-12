@@ -216,13 +216,27 @@ class AutoEntryWorkflowTests(unittest.TestCase):
 
     def test_normal_paired_entry_accepts_verified_ctrader_without_type_label(self):
         self.port.accounts["internal"]=replace(
-            self.port.accounts["internal"],is_demo=None
+            self.port.accounts["internal"],is_demo=None,server=""
         )
         self.run_case(sync=False,draw=False)
         self.assertEqual(
             [event[1] for event in self.port.events if event[0]=="submit"],
             ["internal","external"],
         )
+
+    def test_duplicate_journal_still_blocks_ctrader_retry_without_broker_name(self):
+        self.port.accounts["internal"]=replace(
+            self.port.accounts["internal"],is_demo=None,server=""
+        )
+        accounts=(self.port.accounts["internal"],self.port.accounts["external"])
+        key=self.flow.fingerprint(
+            "A","https://docs.google.com/a",accounts,self.item
+        )
+        self.journal.record(key,"both_confirmed","T-internal/T-external")
+        with self.assertRaises(DuplicateEntryDecisionRequired):
+            self.flow.preflight_duplicate_entry(
+                self.item,"cTrader","MT5","A","https://docs.google.com/a"
+            )
 
     def test_unverified_account_stops_before_any_submission(self):
         self.port.accounts["internal"]=replace(
