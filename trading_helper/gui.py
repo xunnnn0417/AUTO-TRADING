@@ -801,6 +801,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._parameter_write_pending = False
         # Only one fill operation may control broker windows at any time.
         self._fill_task_lock = threading.Lock()
+        self._update_lock = threading.Lock()
+        self._active_tasks = 0
+        self._update_in_progress = False
+        self._allow_update_exit = False
         self._fill_confirmed_text: dict[str, str] = {}
         self._fill_waiting_for_sheet: dict | None = None
         self._parameter_write_active_signature: tuple[tuple[str, str], ...] | None = None
@@ -2644,6 +2648,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.status.emit("已停止")
         self.log("緊急停止：已取消所有待執行的滑鼠與鍵盤操作。")
 
+    def can_update(self) -> bool:
+        with self._update_lock:
+            return (not self._update_in_progress and self._active_tasks == 0
+                    and self._fill_waiting_for_sheet is None
+                    and not self._parameter_write_active and not self._parameter_write_pending)
+
+    def begin_update(self) -> bool:
+        with self._update_lock:
+            if (self._update_in_progress or self._active_tasks
+                    or self._fill_waiting_for_sheet is not None
+                    or self._parameter_write_active or self._parameter_write_pending):
+                return False
+            self._update_in_progress = True
+            return True
+
+    def end_update(self) -> None:
+        with self._update_lock:
+            self._update_in_progress = False
+
     def _start(
         self,
         name: str,
@@ -2662,6 +2685,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if is_fill and not self._fill_task_lock.acquire(blocking=False):
             self.log("已有填寫任務執行中，已忽略重複操作。")
             return
+        with self._update_lock:
+            if self._update_in_progress:
+                if is_fill:
+                    self._fill_task_lock.release()
+                return
+            self._active_tasks += 1
         task_profile_name = self.profiles.active_name
         task_sheet_url = str(
             self.store.data["sheet"].get("spreadsheet_url", "")
@@ -2729,6 +2758,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if not getattr(exc, "_auto_entry_result_emitted", False):
                     self.signals.error.emit(str(exc))
             finally:
+                with self._update_lock:
+                    self._active_tasks -= 1
                 if is_fill:
                     self._fill_task_lock.release()
                 if hide_during:
@@ -5121,6 +5152,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.log("已更新方案順序。")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._update_in_progress and not self._allow_update_exit:
+            event.ignore()
+            return
         self.save_ui_state()
         self.emergency.close()
         event.accept()

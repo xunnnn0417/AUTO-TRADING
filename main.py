@@ -1,4 +1,5 @@
 import ctypes
+import os
 import sys
 from pathlib import Path
 
@@ -42,43 +43,11 @@ def main() -> None:
     except (AttributeError, OSError):
         pass
 
-    from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, QUrl
-    from PySide6.QtGui import QDesktopServices, QIcon
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    from trading_helper.gui import TradingHelperApp
-    from trading_helper import __version__
-    from trading_helper.update_check import check_for_update
-
-    class UpdateCheckThread(QThread):
-        update_found = Signal(object)
-
-        def run(self) -> None:
-            notice = check_for_update(__version__)
-            if notice is not None:
-                self.update_found.emit(notice)
-
-    class UpdatePromptReceiver(QObject):
-        def __init__(self, parent_window) -> None:
-            super().__init__(parent_window)
-            self.parent_window = parent_window
-
-        @Slot(object)
-        def show_update_prompt(self, notice) -> None:
-            dialog = QMessageBox(self.parent_window)
-            dialog.setIcon(QMessageBox.Information)
-            dialog.setWindowTitle("有新版本")
-            dialog.setText(
-                f"GitHub LAB 有較新的版本：{notice.latest_version} "
-                f"（目前版本 {notice.current_version}）。\n\n"
-                "要開啟 GitHub 更新頁查看嗎？程式不會自動下載或覆蓋檔案。"
-            )
-            open_button = dialog.addButton(
-                "開啟 GitHub 更新頁", QMessageBox.AcceptRole
-            )
-            dialog.addButton("稍後", QMessageBox.RejectRole)
-            dialog.exec()
-            if dialog.clickedButton() is open_button:
-                QDesktopServices.openUrl(QUrl(notice.page_url))
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QIcon
+    from PySide6.QtWidgets import QApplication
+    from trading_helper.gui import TradingHelperApp, ThemedMessageBox as QMessageBox
+    from trading_helper.update_ui import UpdateController
 
     qt = QApplication(sys.argv)
     if APP_ICON.exists():
@@ -93,15 +62,25 @@ def main() -> None:
         sys.exit(0)
     app = TradingHelperApp()
     app.show()
-    update_check = UpdateCheckThread(qt)
-    update_prompt = UpdatePromptReceiver(app)
-    update_check.update_found.connect(update_prompt.show_update_prompt)
-    qt._update_check_thread = update_check
-    qt._update_prompt_receiver = update_prompt
-    QTimer.singleShot(1200, update_check.start)
+    updater = UpdateController(app, APP_BASE)
+    qt._update_controller = updater
+    QTimer.singleShot(1200, updater.start)
+    receipt = os.environ.pop("HEDGE_UPDATE_RECEIPT", "")
+    if receipt:
+        app.begin_update()
+        app.setEnabled(False)
+        def confirm_startup():
+            Path(receipt).write_text("started", encoding="utf-8")
+            app.end_update()
+            app.setEnabled(True)
+        QTimer.singleShot(2000, confirm_startup)
+    error_file = os.environ.pop("HEDGE_UPDATE_ERROR", "")
+    if error_file:
+        QTimer.singleShot(500, lambda: QMessageBox.warning(
+            app, "更新未完成", "已重新開啟原版本。\n" + Path(error_file).read_text(encoding="utf-8")))
     exit_code = qt.exec()
-    if update_check.isRunning():
-        update_check.wait(3500)
+    if updater.job is not None and updater.job.isRunning():
+        updater.job.wait(20_000)
     if mutex:
         ctypes.windll.kernel32.CloseHandle(mutex)
     sys.exit(exit_code)
