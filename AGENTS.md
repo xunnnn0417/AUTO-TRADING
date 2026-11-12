@@ -42,9 +42,9 @@
 ## 目前統一版（2026-11-13 核對）
 
 - 工作目錄：`C:\Users\User\Desktop\codex\AUTO-TRADING-lab-unified`
-- 本機分支：`codex/live-account-readonly-sync`；本機 HEAD：`637af0df5e6bab54882b167cd7ef1b26ce42f101`
+- 本機分支：`codex/lab-one-click-updater-20261113`；本機 HEAD：`d35e42d2090e2c909c7d78356461c3dcb11f9b05`
 - GitHub 安全 LAB 分支：`lab/2026-10-16-safe-defaults-preflight`；目前提交：`ee4b9a8591e52f89f308445be955b1d3d1efb721`
-- 本機程式檔案樹與 GitHub 安全 LAB 相同：`a5811dafba78c3be7022dd6f74fb5180125d817b`。本機和遠端提交歷史不同時，先比對實際差異，不要直接覆蓋或重設。
+- 本機 0.1.24 程式檔案樹與 GitHub PR #5 相同：`17b59246979bc5fb2d4fcf41684a2746c9e2218f`；PR 尚未合併到安全 LAB。本機和遠端提交歷史不同時，先比對實際差異，不要直接覆蓋或重設。
 - GitHub PR #3 已合併至安全 LAB 分支；程式修改仍須經 PR，不得自動合併或改 `main`。
 - 使用的 Python 執行檔可唯讀借用：`C:\Users\User\Desktop\codex\trading-workflow-helper\.venv\Scripts\pythonw.exe`。
 - 使用者設定和 journal 位於 `%APPDATA%\TradingWorkflowHelper_TEST\`；不要複製、清空或以範例設定取代。
