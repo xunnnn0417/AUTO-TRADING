@@ -1,4 +1,4 @@
-"""Offline regression for cTrader quantity UIA display (e.g. '0.74 Lots').
+"""Offline regression for cTrader quantity UIA display (e.g. '0.01 Lots').
 Synthetic native grid only; no broker mouse/keyboard access.
 """
 import unittest
@@ -15,13 +15,16 @@ class Node:
         self.element_info=SimpleNamespace(control_type=kind,automation_id=aid)
         self.text=content
         self.r=SimpleNamespace(left=rect[0],top=rect[1],right=rect[2],bottom=rect[3])
+        self.rectangle_calls=0
     def window_text(self):return self.text
-    def rectangle(self):return self.r
+    def rectangle(self):
+        self.rectangle_calls+=1
+        return self.r
 
 
 class Grid(Node):
     headers=("symbol","quantity","direction","entry price","sl","tp","created (utc+0)")
-    values=("XAUUSD","0.74 Lots","SELL","4170.91","4200.20","4137.12","2026-10-15 22:02")
+    values=("GOLD","0.01 Lots","SELL","100.0","101.0","99.0","2025-01-01 00:00")
     def __init__(self, vals=None):
         super().__init__("DataGrid","",(0,0,1400,300))
         vals=vals or self.values
@@ -30,10 +33,11 @@ class Grid(Node):
             for i,key in enumerate(self.headers)
         ]
         self.row=Node("DataItem","",(0,60,1400,110))
-        self.row.descendants=lambda: [
+        self.cells=[
             Node("Text",val,(i*190+10,70,i*190+160,92))
             for i,val in enumerate(vals)
         ]
+        self.row.descendants=lambda: self.cells
     def descendants(self,control_type):
         if control_type=="DataItem":return [self.row]
         if control_type=="HeaderItem":return self.heads
@@ -43,13 +47,13 @@ class Grid(Node):
 class CTraderLotReadbackTests(unittest.TestCase):
     def setUp(self):
         self.port=DemoUiBrokerPort(MagicMock(),lambda s:None)
-        self.demo=DemoAccount("cTrader","10000000","Demo Broker",True,True)
+        self.demo=DemoAccount("cTrader","11111111","Demo Broker",True,True)
 
     def test_single_and_plural_native_lots(self):
         for text,amount in [
-            ("0.74 Lots","0.74"),
+            ("0.01 Lots","0.01"),
             ("1 Lot","1"),
-            ("0.74 lots","0.74"),
+            ("0.01 lots","0.01"),
             ("1.25","1.25"),
             ("1,25 Lots","1.25"),
             ("1.000,25 Lots","1000.25"),
@@ -67,19 +71,20 @@ class CTraderLotReadbackTests(unittest.TestCase):
         )
         self.assertEqual(len(positions),1)
         pos=positions[0]
-        self.assertEqual(pos.volume,Decimal("0.74"))
+        self.assertEqual(pos.volume,Decimal("0.01"))
         self.assertEqual(pos.direction,"SELL")
-        self.assertEqual(pos.entry_price,Decimal("4170.91"))
-        self.assertEqual(pos.sl,Decimal("4200.20"))
-        self.assertEqual(pos.tp,Decimal("4137.12"))
+        self.assertEqual(pos.entry_price,Decimal("100.0"))
+        self.assertEqual(pos.sl,Decimal("101.0"))
+        self.assertEqual(pos.tp,Decimal("99.0"))
+        self.assertTrue(all(cell.rectangle_calls==1 for cell in grid.cells))
         AutoEntryWorkflow._validate_position(
-            pos,"cTrader","SELL",Decimal("0.74"),self.demo,"GOLD"
+            pos,"cTrader","SELL",Decimal("0.01"),self.demo,"GOLD"
         )
 
     def test_no_quantity_parse_of_arbitrary_units(self):
         for raw in (
-            "0.74 Lots USD", "0.74 EUR", "Lots 0.74",
-            "abc Lots", "0.74% Lots", "0.74xLots", "",
+            "0.01 Lots USD", "0.01 EUR", "Lots 0.01",
+            "abc Lots", "0.01% Lots", "0.01xLots", "",
             "1e999 Lots", "-1 Lots","0 Lots",
         ):
             with self.subTest(raw=raw),self.assertRaises(AutomationError):
@@ -92,7 +97,7 @@ class CTraderLotReadbackTests(unittest.TestCase):
 
     def test_native_grid_rejects_bad_quantity_before_confirming(self):
         vals=list(Grid.values)
-        vals[1]="0.74 Something"
+        vals[1]="0.01 Something"
         self.port._ctrader_grid=lambda *args:Grid(tuple(vals))
         with self.assertRaises(AutomationError):
             self.port._ctrader_positions("cTrader","internal",self.demo)

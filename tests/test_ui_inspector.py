@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton
+from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QComboBox
 
 from trading_helper import ui_inspector
 from trading_helper.gui import CalibrationDialog
@@ -21,6 +21,26 @@ class UIInspectorTests(unittest.TestCase):
         self.assertFalse(ui_inspector.valid_target_rectangle((20, 30, 220, 62), (300, 45)))
         self.assertFalse(ui_inspector.valid_target_rectangle((-32000, -32000, -31900, -31900), (50, 45)))
         self.assertFalse(ui_inspector.valid_target_rectangle((20, 30, 20, 62), (20, 45)))
+
+    def test_manual_hover_uses_enclosing_button_bounds_from_ancestor(self):
+        bounds, control_type = ui_inspector.select_control_rectangle(
+            [
+                ("Text", (98, 98, 102, 102)),
+                ("Button", (90, 90, 112, 110)),
+                ("Pane", (0, 80, 1200, 130)),
+            ],
+            (100, 100),
+        )
+        self.assertEqual(bounds, (90, 90, 112, 110))
+        self.assertEqual(control_type, "Button")
+
+    def test_manual_hover_does_not_treat_a_whole_row_as_a_button(self):
+        bounds, control_type = ui_inspector.select_control_rectangle(
+            [("Pane", (0, 80, 1200, 130))],
+            (100, 100),
+        )
+        self.assertIsNone(bounds)
+        self.assertEqual(control_type, "")
 
     def test_other_process_is_rejected_before_accessing_uia(self):
         with patch.object(ui_inspector, "_get_cursor", return_value=(120, 140)), \
@@ -57,14 +77,37 @@ class UIInspectorTests(unittest.TestCase):
             outline.display((50, 40, 49, 60))
         outline.close()
 
+    def test_saved_coordinate_marker_is_small_clickthrough_and_uses_screen_mapping(self):
+        marker = ui_inspector.CandidatePointMarker()
+        self.assertTrue(marker.testAttribute(ui_inspector.Qt.WA_TransparentForMouseEvents))
+        self.assertTrue(marker.testAttribute(ui_inspector.Qt.WA_TranslucentBackground))
+        self.assertTrue(bool(marker.windowFlags() & ui_inspector.Qt.WindowTransparentForInput))
+        with patch.object(
+            ui_inspector,
+            "qt_rect_for_physical",
+            return_value=ui_inspector.QRect(91, 191, 18, 18),
+        ) as map_rect:
+            marker.display((100, 200), 1000)
+        map_rect.assert_called_once_with((91, 191, 109, 209))
+        self.assertTrue(marker.isVisible())
+        self.assertEqual(marker.geometry(),ui_inspector.QRect(91,191,18,18))
+        marker.hide()
+        marker.close()
+
     def test_calibration_hides_hover_diagnostic_buttons_but_preserves_helpers(self):
         parent = QMainWindow()
         dialog = CalibrationDialog(parent, "cTrader")
         labels = {button.text() for button in dialog.findChildren(QPushButton)}
         self.assertNotIn("滑鼠指向檢查＋框線預覽", labels)
         self.assertNotIn("測試 UIA 自動辨識", labels)
-        self.assertIn("手動擷取所選欄位", labels)
-        self.assertIn("查看已校準位置", labels)
+        self.assertNotIn("手動擷取所選欄位", labels)
+        viewer=dialog.findChild(QComboBox,"calibratedPositionViewer")
+        self.assertIsNotNone(viewer)
+        self.assertEqual(viewer.placeholderText(),"查看已校準位置")
+        self.assertEqual(
+            [viewer.itemText(i) for i in range(viewer.count())],
+            ["查看此欄位","顯示本階段全部欄位"],
+        )
         self.assertFalse(dialog._hover_running)
         self.assertTrue(callable(dialog.inspect_hover))
         dialog._hover_outline.close()

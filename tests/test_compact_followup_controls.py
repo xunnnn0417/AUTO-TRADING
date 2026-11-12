@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox, QPushButton
 
 from trading_helper import gui
 from trading_helper.config import DEFAULT_CONFIG
@@ -39,7 +39,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.w.deleteLater()
         self.qtapp.processEvents()
 
-    def test_three_toggles_visible_off_by_default_with_two_second_help(self):
+    def test_sync_is_visible_and_on_by_default_while_quick_control_is_hidden(self):
         self.w.switch_workspace("交易")
         for name in (
             "auto_entry_on_fill_both",
@@ -49,43 +49,95 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             checkbox=getattr(self.w,name)
             self.assertIsInstance(checkbox,QCheckBox)
             self.assertTrue(checkbox.isVisible())
-            self.assertFalse(checkbox.isChecked())
             self.assertTrue(checkbox.toolTip())
             self.assertIn(checkbox,self.w._hover_help._details)
             self.assertTrue(self.w._hover_help.eventFilter(
                 checkbox,QEvent(QEvent.ToolTip)
             ))
+        sync=self.w.auto_sync_sl_tp_after_entry
+        self.assertTrue(sync.isChecked())
+        self.assertTrue(sync.isEnabled())
+        self.assertIn(sync,self.w.centralWidget().findChildren(QCheckBox))
+        self.assertFalse(self.w.auto_fast_pair.isVisible())
         self.assertEqual(self.w._hover_help._timer.interval(),2000)
         self.assertTrue(self.w.auto_entry_on_fill_both.isEnabled())
-        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isEnabled())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
-        for key in (
-            "auto_entry_on_fill_both",
-            "auto_sync_sl_tp_after_entry",
-            "auto_draw_tv_after_entry",
-        ):
-            self.assertFalse(DEFAULT_CONFIG["ui"][key])
+        self.assertFalse(DEFAULT_CONFIG["ui"]["auto_entry_on_fill_both"])
+        self.assertTrue(DEFAULT_CONFIG["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertFalse(DEFAULT_CONFIG["ui"]["auto_draw_tv_after_entry"])
 
-    def test_future_options_are_opt_in_and_saved_per_profile(self):
+    def test_automation_checkboxes_use_transparent_checkmark_style(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyle, QStyleOption
+        from trading_helper.ui_theme import CheckmarkOnlyIndicatorStyle
+
+        boxes = (
+            self.w.auto_entry_on_fill_both,
+            self.w.auto_fast_pair,
+            self.w.auto_sync_sl_tp_after_entry,
+            self.w.auto_draw_tv_after_entry,
+            self.w.test_mode_checkbox,
+            *self.w.test_asset_checkboxes.values(),
+            *self.w.test_scenario_checkboxes.values(),
+        )
+        for checkbox in boxes:
+            with self.subTest(checkbox=checkbox.objectName()):
+                self.assertTrue(checkbox.property("checkmarkOnlyIndicator"))
+                self.assertIsInstance(
+                    checkbox._checkmark_only_indicator_style,
+                    CheckmarkOnlyIndicatorStyle,
+                )
+
+        style = CheckmarkOnlyIndicatorStyle()
+        for checked in (False, True):
+            with self.subTest(checked=checked):
+                image = QImage(18, 18, QImage.Format.Format_ARGB32)
+                image.fill(Qt.GlobalColor.transparent)
+                option = QStyleOption()
+                option.rect = image.rect()
+                option.state = QStyle.StateFlag.State_Enabled
+                if checked:
+                    option.state |= QStyle.StateFlag.State_On
+                painter = QPainter(image)
+                style.drawPrimitive(
+                    QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+                    option, painter,
+                )
+                painter.end()
+                # A point inside the indicator but away from the tick stays
+                # transparent; the checked native white fill must not return.
+                self.assertEqual(image.pixelColor(9, 5).alpha(), 0)
+                if checked:
+                    self.assertGreater(image.pixelColor(9, 9).alpha(), 0)
+                    self.assertEqual(image.pixelColor(9, 9).name(), "#ffffff")
+                else:
+                    self.assertEqual(image.pixelColor(9, 9).alpha(), 0)
+
+    def test_sync_is_visible_toggle_and_tv_requires_auto_entry_and_sync(self):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             self.w.auto_entry_on_fill_both.setChecked(True)
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isEnabled())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.auto_draw_tv_after_entry.isEnabled())
+        self.w.auto_sync_sl_tp_after_entry.setChecked(False)
+        self.assertFalse(self.w.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
-        for checkbox in (
-            self.w.auto_sync_sl_tp_after_entry,
-            self.w.auto_draw_tv_after_entry,
-        ):
-            with patch("trading_helper.gui.QMessageBox.question",
-                       return_value=QMessageBox.No) as dialog:
-                checkbox.setChecked(True)
-                self.assertFalse(checkbox.isChecked())
-                dialog.assert_called_once()
-            with patch("trading_helper.gui.QMessageBox.question",
-                       return_value=QMessageBox.Yes) as dialog:
-                checkbox.setChecked(True)
-                self.assertTrue(checkbox.isChecked())
-                dialog.assert_called_once()
+        with patch("trading_helper.gui.QMessageBox.question") as dialog:
+            self.w.auto_draw_tv_after_entry.setChecked(True)
+            dialog.assert_not_called()
+        self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
+        with patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes) as dialog:
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
+            self.assertEqual(dialog.call_args.args[1], "啟用自動同步？")
+            self.assertIn("Live 會修改真實持倉", dialog.call_args.args[2])
+            dialog.assert_called_once()
+        with patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes) as dialog:
+            self.w.auto_draw_tv_after_entry.setChecked(True)
+            self.assertTrue(self.w.auto_draw_tv_after_entry.isChecked())
+            dialog.assert_called_once()
         self.assertTrue(self.w.store.data["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertTrue(self.w.store.data["ui"]["auto_draw_tv_after_entry"])
         self.assertTrue(self.w.profiles.load_profile()[
@@ -100,11 +152,28 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(self.w.auto_entry_on_fill_both.isChecked())
         self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertTrue(self.w.auto_draw_tv_after_entry.isChecked())
-        self.w.auto_sync_sl_tp_after_entry.setChecked(False)
-        self.assertFalse(self.w.store.data["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertTrue(self.w.store.data["ui"]["auto_sync_sl_tp_after_entry"])
+        self.w.auto_entry_on_fill_both.setChecked(False)
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(self.w.store.data["ui"]["auto_draw_tv_after_entry"])
+
+    def test_sync_checkbox_setting_reaches_fill_workflow(self):
+        with patch("trading_helper.gui.QMessageBox.question",
+                   return_value=QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+        self.w.auto_sync_sl_tp_after_entry.setChecked(False)
+        with patch.object(self.w, "_fill_both_task") as fill_task, \
+             patch.object(
+                 self.w, "_start",
+                 side_effect=lambda _title, task, **_kwargs: task(),
+             ):
+            self.w._start_fill_worker(
+                ("internal", "external"),
+                {"internal":"cTrader", "external":"MT5"},
+            )
+        self.assertTrue(fill_task.call_args.args[2])
+        self.assertFalse(fill_task.call_args.kwargs.get("sync_sl_tp", False))
 
     def test_new_scheme_starts_disabled_and_old_scheme_remembers(self):
         original=self.w.profiles.active_name
@@ -115,24 +184,28 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.auto_sync_sl_tp_after_entry.setChecked(True)
             self.w.auto_draw_tv_after_entry.setChecked(True)
         self.assertTrue(self.w.auto_fast_pair.isChecked())
-        with patch("trading_helper.gui.QInputDialog.getText",
+        with patch("trading_helper.gui.themed_input_text",
                    return_value=("新的空白方案",True)), \
              patch("trading_helper.gui.QMessageBox.question") as dialogs:
             self.w.create_profile()
             dialogs.assert_not_called()
         self.assertEqual(self.w.profiles.active_name,"新的空白方案")
         for key in ("auto_entry_on_fill_both","auto_fast_pair",
-                    "auto_sync_sl_tp_after_entry","auto_draw_tv_after_entry"):
+                    "auto_draw_tv_after_entry"):
             self.assertFalse(getattr(self.w,key).isChecked(),key)
             self.assertFalse(self.w.profiles.load_profile()["ui"][key])
             self.assertTrue(self.w.profiles.load_profile(original)["ui"][key])
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.profiles.load_profile()["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertTrue(self.w.profiles.load_profile(original)["ui"]["auto_sync_sl_tp_after_entry"])
         with patch("trading_helper.gui.QMessageBox.question") as dialogs, \
              patch.object(self.w, "read_sheet",return_value=None):
             self.w.switch_profile(original)
             dialogs.assert_not_called()
         for key in ("auto_entry_on_fill_both","auto_fast_pair",
-                    "auto_sync_sl_tp_after_entry","auto_draw_tv_after_entry"):
+                    "auto_draw_tv_after_entry"):
             self.assertTrue(getattr(self.w,key).isChecked(),key)
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         with patch.object(self.w,"read_sheet",return_value=None):
             self.w.switch_profile("新的空白方案")
         self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
@@ -147,7 +220,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             ask.assert_not_called()
         box=self.w._window_binding_dialog
         self.assertEqual(box.objectName(),"singleWindowBindingDialog")
-        self.assertIn("old-bound-regex",box.layout().itemAt(0).widget().text())
+        self.assertIn("old-bound-regex",box.findChild(QLabel,"windowBindingCurrentLabel").text())
         self.assertEqual(box.findChild(QPushButton,"windowBindingChangeButton").text(),
                          "更改綁定")
         box.close()
@@ -277,7 +350,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         with patch.object(
             self.w.windows,"foreground_top_level_window",
             return_value=SimpleNamespace(
-                handle=901,title="ICMarkets MT5 Terminal - 55512345"
+                handle=901,title="Example MT5 Terminal - TEST_ACCOUNT"
             )
         ) as foreground, \
              patch.object(self.w.windows,"window_at_cursor",
@@ -291,7 +364,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.qtapp.processEvents()
             foreground.assert_called_once()
             cursor.assert_not_called()
-        self.assertIn("ICMarkets",self.w.store.data[
+        self.assertIn("Example",self.w.store.data[
             "platforms"]["MT5"]["window_title"]["external"])
         self.assertIn("已更改完成",panel.findChild(
             QLabel,"windowBindingResultLabel").text())
@@ -386,44 +459,41 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertFalse(tv.isVisible())
         self.assertFalse(edit.isVisible())
 
-    def test_unchecking_first_cascades_and_can_restore_sequentially(self):
+    def test_sync_preference_stays_on_and_auto_entry_disarms_tv_only(self):
         first=self.w.auto_entry_on_fill_both
-        second=self.w.auto_sync_sl_tp_after_entry
         third=self.w.auto_draw_tv_after_entry
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             first.setChecked(True)
-            second.setChecked(True)
+            self.w.auto_fast_pair.setChecked(True)
             third.setChecked(True)
-        self.assertTrue(all(c.isChecked() for c in (first, second, third)))
-        self.assertTrue(all(c.isEnabled() for c in (first, second, third)))
+        self.assertTrue(first.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(third.isChecked())
         first.setChecked(False)
-        self.assertFalse(any(c.isChecked() for c in (first, second, third)))
-        self.assertFalse(second.isEnabled())
+        self.assertFalse(first.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
         self.assertFalse(third.isEnabled())
         self.assertFalse(any(self.w.store.data["ui"].get(k)
                              for k in (
                                  "auto_entry_on_fill_both",
-                                 "auto_sync_sl_tp_after_entry",
                                  "auto_draw_tv_after_entry"
                              )))
         with patch("trading_helper.gui.QMessageBox.question") as prompt:
             third.setChecked(True)
-            second.setChecked(True)
             prompt.assert_not_called()
-        self.assertFalse(second.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(third.isChecked())
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             first.setChecked(True)
-            second.setChecked(True)
             third.setChecked(True)
-        second.setChecked(False)
         self.assertTrue(first.isChecked())
-        self.assertFalse(second.isChecked())
-        self.assertFalse(third.isChecked())
-        self.assertTrue(second.isEnabled())
-        self.assertFalse(third.isEnabled())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
+        self.assertTrue(third.isChecked())
+        self.assertTrue(third.isEnabled())
 
     def test_invalid_saved_options_are_normalized_on_profile_restore(self):
         ui=self.w.store.data["ui"]
@@ -436,9 +506,9 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w._apply_profile_ui()
             prompt.assert_not_called()
         self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
-        self.assertFalse(ui["auto_sync_sl_tp_after_entry"])
+        self.assertTrue(ui["auto_sync_sl_tp_after_entry"])
         self.assertFalse(ui["auto_draw_tv_after_entry"])
         ui.update({
             "auto_entry_on_fill_both":True,
@@ -447,7 +517,6 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         })
         self.w._apply_profile_ui()
         self.assertTrue(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isEnabled())
         self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())

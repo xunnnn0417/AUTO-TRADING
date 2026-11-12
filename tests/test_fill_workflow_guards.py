@@ -83,6 +83,20 @@ class FillGuardTests(unittest.TestCase):
             self.w.fill_both()
         start.assert_not_called()
         self.assertIn("場外 MT5",warning.call_args.args[2])
+
+    def test_btc_test_preflight_requires_both_mt5_quote_points(self):
+        self.calibrated()
+        with patch.dict(os.environ, {
+            "TRADING_HELPER_TEST_SYMBOL_OVERRIDE":"BTCUSD",
+            "TRADING_HELPER_TEST_SKIP_SYMBOL_CHECK":"1",
+        }, clear=True):
+            with patch.object(gui.QMessageBox,"warning") as warning,\
+                 patch.object(self.w,"_start") as start:
+                self.w.fill_role("external")
+        start.assert_not_called()
+        message=warning.call_args.args[2]
+        self.assertIn("左側報價 Bid",message)
+        self.assertIn("右側報價 Ask",message)
     def test_confirmed_enter_allows_fill_when_calibrated(self):
         self.calibrated()
         w=self.w
@@ -156,6 +170,37 @@ class FillGuardTests(unittest.TestCase):
             self.qtapp.processEvents()
             start.assert_called_once()
             self.assertIsNone(w._fill_waiting_for_sheet)
+
+    def test_repeat_stop_prompt_happens_before_test_fill_starts(self):
+        self.calibrated()
+        w=self.w
+        w.instruction=gui.replace(
+            sample(),original_sl_points=D("-8.35"),
+            expected_sl_points=D("-8.59"),expected_sl_percent=None,
+        )
+        sheet_url=str(w.store.data["sheet"].get("spreadsheet_url",""))
+        context=w._expected_sl_repeat_signature(
+            w.profiles.active_name,sheet_url,w.instruction
+        )
+        ui=w.store.data.setdefault("ui",{})
+        ui["last_auto_entry_sl_context"]=context
+        ui["last_auto_entry_sl_points"]="-8.59"
+        w.auto_entry_on_fill_both.setChecked(False)
+        events=[]
+        def ask(*_args,**_kwargs):
+            events.append("repeat prompt")
+            return QMessageBox.No
+        def start(*_args,**_kwargs):
+            events.append("fill worker")
+        with patch.object(w,"_selected_test_action",return_value="reentry:internal"),\
+             patch.object(gui.TradingHelperApp,"_selected_test_symbol",return_value=None),\
+             patch.object(w,"_unconfirmed_fill_fields",return_value=[]),\
+             patch.object(w,"_test_action_missing",return_value=[]),\
+             patch.object(w,"_confirm_test_action",return_value=True),\
+             patch.object(w,"_start_fill_worker",side_effect=start),\
+             patch.object(gui.QMessageBox,"question",side_effect=ask):
+            w.fill_both()
+        self.assertEqual(events,["repeat prompt","fill worker"])
 
     def test_parallel_fill_task_is_interlocked(self):
         w=self.w

@@ -1,6 +1,6 @@
 """MT5 screenshot fallback is visual PREVIEW only; mock RGB frames, no broker."""
 import unittest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from types import SimpleNamespace
 from unittest.mock import patch
 from trading_helper.mt5_visual_scan import detect_order_dialog_regions
@@ -15,22 +15,28 @@ def frame():
     # color blocks and a white pseudo quote; no user/account pixels.
     g.rectangle((250,468,477,495),fill=(227,65,65))
     g.rectangle((495,468,722,495),fill=(63,121,250))
-    g.text((515,374),"4104.60",fill="white",stroke_width=1)
+    font=ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf",24)
+    g.text((329,366),"81380.06",fill="white",font=font)
+    g.text((515,366),"81385.06",fill="white",font=font)
     return img
 
 
 class VisualMT5OrderScanTests(unittest.TestCase):
-    def test_finds_three_distinct_preview_regions(self):
+    def test_finds_four_distinct_preview_regions(self):
         areas=detect_order_dialog_regions(frame())
         self.assertEqual(set(areas),{
-            "order_submit_sell","order_submit_buy","ask_price"
+            "order_submit_sell","order_submit_buy",
+            "bid_price_left","ask_price_right",
         })
         red=areas["order_submit_sell"]
         blue=areas["order_submit_buy"]
-        price=areas["ask_price"]
+        bid=areas["bid_price_left"]
+        ask=areas["ask_price_right"]
         self.assertLess(red[2],blue[0])
-        self.assertLess(price[3],red[1])
-        self.assertGreater((price[0]+price[2])/2,blue[0])
+        self.assertLess(bid[3],red[1])
+        self.assertLess(ask[3],blue[1])
+        self.assertLess((bid[0]+bid[2])/2,red[2])
+        self.assertGreater((ask[0]+ask[2])/2,blue[0])
     def test_real_scan_low_confidence_is_previews_not_blocking_warning(self):
         # Regression: visual fallback used to append an advisory to
         # ScanReport.warnings, which disabled ALL checkboxes after preview.
@@ -45,7 +51,8 @@ class VisualMT5OrderScanTests(unittest.TestCase):
         )
         fake_desktop=SimpleNamespace(window=lambda handle:fake_window)
         targets=(
-            ("ask_price","目前價格"),
+            ("bid_price_left","左側 Bid"),
+            ("ask_price_right","右側 Ask"),
             ("order_submit_sell","Sell 按市價"),
             ("order_submit_buy","Buy 按市價"),
         )
@@ -66,7 +73,8 @@ class VisualMT5OrderScanTests(unittest.TestCase):
         areas=detect_order_dialog_regions(frame())
         sell=areas["order_submit_sell"]
         buy=areas["order_submit_buy"]
-        quote=areas["ask_price"]
+        bid=areas["bid_price_left"]
+        ask=areas["ask_price_right"]
         # The dark-background outline must go AROUND each colored bar,
         # not inside the bar or 36 pixels above the clickable region.
         self.assertLessEqual(sell[0],250)
@@ -77,10 +85,18 @@ class VisualMT5OrderScanTests(unittest.TestCase):
         self.assertLessEqual(buy[1],468)
         self.assertGreaterEqual(buy[2],723)
         self.assertGreaterEqual(buy[3],496)
-        self.assertLess(quote[1],374)
-        self.assertGreater(quote[3],385)
-        self.assertLess(quote[0],515)
-        self.assertGreater(quote[2],575)
+        self.assertLess(bid[1],374)
+        self.assertGreater(bid[3],385)
+        draw=ImageDraw.Draw(frame())
+        font=ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf",24)
+        bid_text=draw.textbbox((329,366),"81380.06",font=font)
+        ask_text=draw.textbbox((515,366),"81385.06",font=font)
+        self.assertLessEqual(bid[0],bid_text[0])
+        self.assertGreaterEqual(bid[2],bid_text[2])
+        self.assertLess(ask[1],374)
+        self.assertGreater(ask[3],385)
+        self.assertLessEqual(ask[0],ask_text[0])
+        self.assertGreaterEqual(ask[2],ask_text[2])
 
     def test_screenshot_client_vs_full_window_origin(self):
         bounds=(100,100,1226,703)
@@ -95,7 +111,7 @@ class VisualMT5OrderScanTests(unittest.TestCase):
             _resolve_mt5_capture_origin(client.size,bounds,client_size,client_origin),
             (100,138))
         # Before fix this rect was 38px too high due to window/client mix.
-        quote=detect_order_dialog_regions(client)["ask_price"]
+        quote=detect_order_dialog_regions(client)["ask_price_right"]
         price_screen_y=(quote[1]+quote[3])/2+client_origin[1]
         self.assertGreater(price_screen_y,100+357)
         self.assertLess(price_screen_y,100+397)

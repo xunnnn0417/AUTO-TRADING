@@ -19,12 +19,14 @@ class DuplicateDialogTests(unittest.TestCase):
         self.ui.profiles.active_name="A"
         self.ui.store.data={"sheet":{"spreadsheet_url":"sheet"}}
         self.ui.instruction=self.item
+        self.ui._fill_both_task=MagicMock()
+        self.ui._auto_entry_after_fill_both_pending=MagicMock()
         self.ui.internal_platform.currentText.return_value="cTrader"
         self.ui.external_platform.currentText.return_value="MT5"
         self.data={
             "key":"abc",
             "entry":{
-                "status":"complete","time":"2026-10-16 05:25:00",
+                "status":"complete","time":"2025-01-01 05:25:00",
                 "details":"T-1/T-2"
             },
             "retryable":True,
@@ -55,18 +57,34 @@ class DuplicateDialogTests(unittest.TestCase):
         self.ui.showNormal.assert_called_once()
 
     def test_explicit_continue_resumes_safety_workflow(self):
-        self.decision(True)
+        dialog = self.decision(True)
+        self.assertEqual(
+            dialog.setWindowTitle.call_args.args[0],
+            "發現上次進場紀錄",
+        )
+        self.assertIn("上次進場紀錄", dialog.setText.call_args.args[0])
+        self.assertIn("2025-01-01 05:25:00", dialog.setInformativeText.call_args.args[0])
+        self.assertIn("重新檢查帳戶", dialog.setInformativeText.call_args.args[0])
         self.ui._start.assert_called_once()
         name,task=self.ui._start.call_args.args
         self.assertEqual(name,"重新確認進場")
         task()
-        args=self.ui._auto_entry_after_fill_both_pending.call_args
-        self.assertEqual(args.args,("cTrader","MT5",self.item))
+        args=self.ui._fill_both_task.call_args
+        self.assertEqual(args.args[:3],("cTrader","MT5",True))
+        self.assertTrue(args.kwargs["sync_sl_tp"])
         self.assertEqual(
             args.kwargs["duplicate_confirmation"],
-            ("abc","complete","2026-10-16 05:25:00","T-1/T-2"),
+            ("abc","complete","2025-01-01 05:25:00","T-1/T-2"),
         )
-        self.assertTrue(args.kwargs["sync_sl_tp"])
+        self.assertFalse(args.kwargs.get("manual_reconciliation_confirmed",False))
+
+    def test_late_duplicate_confirmation_does_not_fill_forms_twice(self):
+        self.data["request"]["fields_filled"]=True
+        self.decision(True)
+        _name,task=self.ui._start.call_args.args
+        task()
+        self.ui._auto_entry_after_fill_both_pending.assert_called_once()
+        self.ui._fill_both_task.assert_not_called()
 
     def test_changed_trade_instruction_blocks_continuation(self):
         self.ui.instruction=object()

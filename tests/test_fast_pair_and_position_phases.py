@@ -108,8 +108,8 @@ class FastPairSafetyTests(unittest.TestCase):
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
 
 class PhasedCalibrationUnitTests(unittest.TestCase):
-    def test_group_keys_3_and_3(self):
-        self.assertEqual(len(POSITION_GRID_KEYS),3)
+    def test_group_keys_4_and_3(self):
+        self.assertEqual(len(POSITION_GRID_KEYS),4)
         self.assertEqual(len(POSITION_EDIT_KEYS),3)
         self.assertFalse(set(POSITION_GRID_KEYS)&set(POSITION_EDIT_KEYS))
     def test_select_only_owned_process_matching_modify_dialog(self):

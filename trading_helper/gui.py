@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import re
 import sys
@@ -13,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal, QSize
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal, QSize, QPointF, QRectF
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -34,18 +36,18 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QLayout,
     QListView,
     QMainWindow,
     QMenu,
-    QMessageBox,
+    QMessageBox as QtMessageBox,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -70,8 +72,12 @@ from .auto_entry import (
     AutoEntryJournal, AutoEntryWorkflow, RecoveryRequired,
     DuplicateEntryDecisionRequired,
 )
+from .phase_timing_report import LocalPhaseTimingStore, timed_call, timed_operation
 from .demo_broker_port import DemoUiBrokerPort
-from .entry_status_report import build_entry_status_report
+from .entry_status_report import (
+    build_entry_status_report, summarize_interruption_reason,
+)
+from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adjustment_range
 from .config import APP_DIR
 from .field_detection import inspect_uia_window
 from .calibration_scan import ScanReport, inspect_all_targets
@@ -85,23 +91,33 @@ from .position_calibration import (
     scan_position_grid, select_broker_main_window,
     select_modify_dialog, scan_open_modify_dialog,
 )
-from .ui_inspector import CandidateOutline, hover_snapshot, process_id_for_window
+from .ui_inspector import (
+    CandidateOutline, CandidatePointMarker, hover_snapshot, process_id_for_window,
+)
 from .config import (
-    ConfigStore, ProfileStore, ctrader_mode_for_profile,
+    ConfigStore, DEFAULT_CONFIG, ProfileStore, ctrader_mode_for_profile,
     set_ctrader_mode_for_profile,
 )
+from .test_mode import effective_test_symbol, test_symbol_scope
 from .models import TradeInstruction, ValidationError
 from .automation import REQUIRED_POINTS
-from .sheets import SheetReader
+from .sheets import (
+    MISSING_SPREADSHEET_URL_MESSAGE, SheetReader, spreadsheet_gid_from_url,
+)
 from .trading_day import trading_day_key
-from .ui_theme import MAIN_THEME, themed_icon
+from .ui_theme import (
+    DIALOG_THEME, MAIN_THEME, install_checkmark_only_indicator, themed_icon,
+)
 from .delayed_help import DelayedHoverHelp
 from .calibration_status import completion
 from .progress_ruler import (
     AccountRuler, SHEET_RULER_REFERENCES, calculate_ruler_from_sheet,
     decimal_value, money,
 )
-from .window_chrome import CompactTitleBar, FramelessNativeMixin, WindowChromeButton
+from .window_chrome import (
+    ClearButtonLineEdit, CompactTitleBar, FramelessNativeMixin,
+    ThemedDialog, WindowChromeButton,
+)
 from .windows import (
     AutomationError,
     EmergencyController,
@@ -111,24 +127,47 @@ from .windows import (
 )
 
 
+class _CalibrationAbort:
+    def __init__(self):
+        self.event = threading.Event()
+
+    def stop(self) -> None:
+        self.event.set()
+
+
 PLATFORMS = ("cTrader", "MT5")
 APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 APP_ICON = APP_BASE / "assets" / "app.ico"
+
+
+def _service_account_email(path: str | Path) -> str:
+    """Return only the public client email from a local service key file."""
+    try:
+        content = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return ""
+    if not isinstance(content, dict):
+        return ""
+    return str(content.get("client_email", "")).strip()
+
+
 MT5_TARGETS = [
-    ("positions_entry_price", "已進場持倉的進場價（Trade 列，未開修改視窗）"),
-    ("new_order_button", "新訂單按鈕（填單前必需）"),
+    ("positions_entry_price", "已進場持倉成交價"),
+    ("new_order_button", "新訂單按鈕"),
     ("lot_input", "交易量輸入欄"),
-    ("ask_price", "目前價格（單一參考價格）"),
-    ("trade_tab", "MT5 交易欄位 / 交易分頁"),
+    ("bid_price_left", "左側報價 Bid（賣價）"),
+    ("ask_price_right", "右側報價 Ask（買價）"),
+    ("trade_tab", "MT5 交易分頁"),
     ("sl_input", "止損價格輸入欄"),
     ("tp_input", "止盈價格輸入欄"),
-    ("order_submit_buy", "確認進場：Buy by Market（送單鍵）"),
-    ("order_submit_sell", "確認進場：Sell by Market（送單鍵）"),
-    ("position_modify_confirm", "修改持倉：確認／套用 SL／TP 按鈕"),
-    ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
-    ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-    ("position_order_lot", "場外已進場訂單手數（第一筆）"),
-    ("position_order_row", "持倉列表的 SL 欄位（雙擊開啟持倉修改視窗）"),
+    ("order_submit_buy", "Buy 市價送單鍵"),
+    ("order_submit_sell", "Sell 市價送單鍵"),
+    ("position_modify_confirm", "套用持倉 SL／TP"),
+    ("position_sl_input", "持倉止損價格"),
+    ("position_tp_input", "持倉止盈價格"),
+    ("position_order_lot", "場外持倉手數"),
+    ("position_order_row", "持倉列表 SL 欄"),
+    ("position_close_button", "已進場持倉平倉按鈕"),
 ]
 CALIBRATION_TARGETS = {
     "GooeyTrade": [
@@ -140,11 +179,11 @@ CALIBRATION_TARGETS = {
         ("tp_input", "止盈點數輸入欄"),
         ("buy_button", "買入方向按鈕"),
         ("sell_button", "賣出方向按鈕"),
-        ("positions_entry_price", "持倉成交價懸浮位置（OCR 使用）"),
+        ("positions_entry_price", "持倉成交價"),
         ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
         ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-        ("position_order_lot", "場外已進場訂單手數（第一筆）"),
-        ("position_order_row", "已進場訂單列（雙擊開啟修改視窗）"),
+        ("position_order_lot", "已進場持倉手數"),
+        ("position_order_row", "持倉列表 TP 欄"),
     ],
     "cTrader": [
         ("account_number", "帳號數字位置"),
@@ -154,14 +193,15 @@ CALIBRATION_TARGETS = {
         ("tp_checkbox", "止盈啟用勾選框"),
         ("tp_input", "止盈點數輸入欄"),
         ("buy_button", "買入方向按鈕"),
-        ("sell_button", "賣出方向按鈕（只切換方向，不送單）"),
-        ("order_submit_button", "確認進場：真正送出 cTrader 訂單的按鈕"),
-        ("positions_entry_price", "持倉成交價懸浮位置（第二版 OCR 使用）"),
-        ("position_sl_input", "持倉修改視窗的止損價格輸入欄"),
-        ("position_tp_input", "持倉修改視窗的止盈價格輸入欄"),
-        ("position_order_lot", "已進場持倉手數（需唯一持倉）"),
-        ("position_order_row", "持倉列表 TP 欄位（雙擊開啟修改視窗）"),
-        ("position_modify_confirm", "修改持倉視窗的 Protect／套用按鈕"),
+        ("sell_button", "賣出方向選擇鍵，不會送單"),
+        ("order_submit_button", "確認進場送單鍵"),
+        ("positions_entry_price", "持倉成交價"),
+        ("position_sl_input", "持倉止損價格"),
+        ("position_tp_input", "持倉止盈價格"),
+        ("position_order_lot", "已進場持倉手數"),
+        ("position_order_row", "持倉列表 TP 欄"),
+        ("position_close_button", "已進場持倉平倉按鈕"),
+        ("position_modify_confirm", "套用持倉 SL／TP"),
     ],
     "MT5": MT5_TARGETS,
     "BYBIT MT5": MT5_TARGETS,
@@ -177,6 +217,260 @@ CALIBRATION_TARGETS = {
         ("confirm_button", "部位設定確認按鈕"),
     ],
 }
+
+
+class ThemedMessageBox(ThemedDialog):
+    """Message box with the same titlebar and surface as other LAB dialogs."""
+
+    Ok = QtMessageBox.Ok
+    Open = QtMessageBox.Open
+    Save = QtMessageBox.Save
+    Cancel = QtMessageBox.Cancel
+    Close = QtMessageBox.Close
+    Yes = QtMessageBox.Yes
+    No = QtMessageBox.No
+    Abort = QtMessageBox.Abort
+    Retry = QtMessageBox.Retry
+    Ignore = QtMessageBox.Ignore
+    Question = QtMessageBox.Question
+    Information = QtMessageBox.Information
+    Warning = QtMessageBox.Warning
+    Critical = QtMessageBox.Critical
+    AcceptRole = QtMessageBox.AcceptRole
+    RejectRole = QtMessageBox.RejectRole
+    DestructiveRole = QtMessageBox.DestructiveRole
+    ActionRole = QtMessageBox.ActionRole
+
+    _STANDARD_BUTTONS = (
+        (QtMessageBox.Ok, "確定", QtMessageBox.AcceptRole),
+        (QtMessageBox.Yes, "是", QtMessageBox.AcceptRole),
+        (QtMessageBox.No, "否", QtMessageBox.RejectRole),
+        (QtMessageBox.Cancel, "取消", QtMessageBox.RejectRole),
+        (QtMessageBox.Retry, "重試", QtMessageBox.AcceptRole),
+        (QtMessageBox.Abort, "中止", QtMessageBox.RejectRole),
+        (QtMessageBox.Ignore, "忽略", QtMessageBox.AcceptRole),
+        (QtMessageBox.Close, "關閉", QtMessageBox.RejectRole),
+    )
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setMinimumWidth(420)
+        self._clicked_button: QPushButton | None = None
+        self._standard_by_button: dict[QPushButton, object] = {}
+        self._button_by_standard: dict[int, QPushButton] = {}
+        self._buttons: list[QPushButton] = []
+        self._body = QVBoxLayout(self)
+        self._body.setContentsMargins(18, 14, 18, 12)
+        self._body.setSpacing(13)
+        message_row = QHBoxLayout()
+        message_row.setSpacing(12)
+        self._icon_label = QLabel(self)
+        self._icon_label.setObjectName("messageIcon")
+        self._icon_label.setFixedSize(30, 30)
+        self._icon_label.setAlignment(Qt.AlignCenter)
+        message_row.addWidget(self._icon_label, 0, Qt.AlignTop)
+        text_stack = QVBoxLayout()
+        text_stack.setSpacing(7)
+        self._primary_text = QLabel(self)
+        self._primary_text.setObjectName("messagePrimaryText")
+        self._primary_text.setWordWrap(True)
+        self._primary_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        text_stack.addWidget(self._primary_text)
+        self._informative_text = QLabel(self)
+        self._informative_text.setObjectName("messageInformativeText")
+        self._informative_text.setWordWrap(True)
+        self._informative_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._informative_text.hide()
+        text_stack.addWidget(self._informative_text)
+        message_row.addLayout(text_stack, 1)
+        self._body.addLayout(message_row)
+        self._auxiliary_layout = QVBoxLayout()
+        self._auxiliary_layout.setSpacing(8)
+        self._body.addLayout(self._auxiliary_layout)
+        self._button_layout = QHBoxLayout()
+        self._button_layout.setSpacing(8)
+        self._button_layout.addStretch(1)
+        self._body.addLayout(self._button_layout)
+        self.setStyleSheet(DIALOG_THEME)
+        self.install_chrome()
+
+    def setIcon(self, icon) -> None:
+        glyph, severity = {
+            QtMessageBox.Question: ("?", "question"),
+            QtMessageBox.Information: ("i", "information"),
+            QtMessageBox.Warning: ("!", "warning"),
+            QtMessageBox.Critical: ("×", "critical"),
+        }.get(icon, ("i", "information"))
+        self._icon_label.setText(glyph)
+        self._icon_label.setProperty("severity", severity)
+        self._icon_label.style().unpolish(self._icon_label)
+        self._icon_label.style().polish(self._icon_label)
+
+    def setWindowTitle(self, title: str) -> None:
+        super().setWindowTitle(title)
+        title_label = self.findChild(QLabel, "dialogTitle")
+        if title_label is not None:
+            title_label.setText(str(title))
+
+    def setText(self, text: str) -> None:
+        self._primary_text.setText(str(text))
+
+    def setInformativeText(self, text: str) -> None:
+        self._informative_text.setText(str(text))
+        self._informative_text.setVisible(bool(text))
+
+    def setCheckBox(self, checkbox: QCheckBox | None) -> None:
+        if checkbox is not None:
+            checkbox.setParent(self)
+            self._auxiliary_layout.addWidget(checkbox)
+
+    def addButton(self, text: str, role) -> QPushButton:
+        button = QPushButton(str(text), self)
+        button.setProperty(
+            "messageRole",
+            "accept" if role == QtMessageBox.AcceptRole else "normal",
+        )
+        button.clicked.connect(
+            lambda checked=False, target=button: self._on_message_button(target)
+        )
+        self._buttons.append(button)
+        self._button_layout.insertWidget(self._button_layout.count() - 1, button)
+        return button
+
+    def _on_message_button(self, button: QPushButton) -> None:
+        self._clicked_button = button
+        self.accept()
+
+    def clickedButton(self) -> QPushButton | None:
+        return self._clicked_button
+
+    def setDefaultButton(self, button_or_standard) -> None:
+        button = (
+            button_or_standard
+            if isinstance(button_or_standard, QPushButton)
+            else self._button_by_standard.get(int(button_or_standard))
+        )
+        if button is not None:
+            button.setDefault(True)
+            button.setAutoDefault(True)
+
+    @classmethod
+    def _show_standard(
+        cls, parent, title: str, text: str, icon, buttons=None,
+        default_button=None, button_texts: dict[int, str] | None = None,
+    ):
+        button_flags = int(
+            buttons if buttons is not None
+            else QtMessageBox.Ok
+        )
+        box = cls(parent)
+        box.setWindowTitle(str(title))
+        box.setIcon(icon)
+        box.setText(str(text))
+        for standard, label, role in cls._STANDARD_BUTTONS:
+            standard_value = int(standard)
+            if not button_flags & standard_value:
+                continue
+            button_label = (button_texts or {}).get(standard_value, label)
+            button = box.addButton(button_label, role)
+            box._standard_by_button[button] = standard
+            box._button_by_standard[standard_value] = button
+        if not box._buttons:
+            button = box.addButton("確定", QtMessageBox.AcceptRole)
+            box._standard_by_button[button] = QtMessageBox.Ok
+            box._button_by_standard[int(QtMessageBox.Ok)] = button
+        if default_button is None:
+            default_button = (
+                QtMessageBox.No
+                if button_flags & int(QtMessageBox.No)
+                else box._standard_by_button[box._buttons[0]]
+            )
+        box.setDefaultButton(default_button)
+        box.exec()
+        result = box._standard_by_button.get(box.clickedButton())
+        box.close()
+        return result if result is not None else QtMessageBox.No
+
+    @staticmethod
+    def question(
+        parent, title, text, buttons=None, defaultButton=None,
+        *, yes_text="是", no_text="否",
+    ):
+        return ThemedMessageBox._show_standard(
+            parent, title, text, QtMessageBox.Question, buttons, defaultButton,
+            {
+                int(QtMessageBox.Yes): yes_text,
+                int(QtMessageBox.No): no_text,
+            },
+        )
+
+    @staticmethod
+    def information(parent, title, text, buttons=None, defaultButton=None):
+        return ThemedMessageBox._show_standard(
+            parent, title, text, QtMessageBox.Information, buttons, defaultButton
+        )
+
+    @staticmethod
+    def warning(parent, title, text, buttons=None, defaultButton=None):
+        return ThemedMessageBox._show_standard(
+            parent, title, text, QtMessageBox.Warning, buttons, defaultButton
+        )
+
+    @staticmethod
+    def critical(parent, title, text, buttons=None, defaultButton=None):
+        return ThemedMessageBox._show_standard(
+            parent, title, text, QtMessageBox.Critical, buttons, defaultButton
+        )
+
+
+QMessageBox = ThemedMessageBox
+
+
+def themed_input_text(
+    parent: QWidget, title: str, label_text: str, text: str = "",
+) -> tuple[str, bool]:
+    """Single-line text prompt using the application's own window chrome."""
+    dialog = ThemedDialog(parent)
+    dialog.setWindowTitle(title)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 14, 18, 12)
+    layout.setSpacing(12)
+    label = QLabel(label_text, dialog)
+    layout.addWidget(label)
+    entry = QLineEdit(dialog)
+    entry.setText(text)
+    layout.addWidget(entry)
+    buttons = QHBoxLayout()
+    buttons.addStretch(1)
+    cancel = QPushButton("取消", dialog)
+    accept = QPushButton("確定", dialog)
+    accept.setDefault(True)
+    cancel.clicked.connect(dialog.reject)
+    accept.clicked.connect(dialog.accept)
+    buttons.addWidget(cancel)
+    buttons.addWidget(accept)
+    layout.addLayout(buttons)
+    dialog.resize(420, 190)
+    dialog.setStyleSheet(DIALOG_THEME)
+    dialog.install_chrome()
+    accepted = dialog.exec() == QDialog.Accepted
+    value = entry.text()
+    dialog.close()
+    return value, accepted
+
+
+def manual_capture_confirmation_rect(
+    x: int, y: int, control_rect: tuple[int, int, int, int] | None,
+) -> tuple[tuple[int, int, int, int] | None, str]:
+    """Return a real control frame; never invent a rectangle around a point."""
+    if control_rect:
+        left, top, right, bottom = map(int, control_rect)
+        width, height = right-left, bottom-top
+        if (left <= x < right and top <= y < bottom
+                and 6 <= width <= 600 and 6 <= height <= 160):
+            return (left, top, right, bottom), "UI 控制項外框"
+    return None, "無法取得完整控件外框"
+
 
 FIELD_LABELS = {
     "status": "狀態",
@@ -292,6 +586,34 @@ class ToolbarMenuButton(QToolButton):
         y = self.height() // 2
         painter.drawLine(x - 3, y - 1, x, y + 2)
         painter.drawLine(x, y + 2, x + 3, y - 1)
+        painter.end()
+
+
+class ExpectedSlWarningBadge(QLabel):
+    """Draw a tiny warning mark directly, avoiding font-baseline offsets."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self.setObjectName("expectedSlWarningBadge")
+        self.setFixedSize(12, 12)
+        self.setAccessibleName("預期止損提醒")
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#fa5362"))
+        painter.drawEllipse(0, 0, self.width() - 1, self.height() - 1)
+
+        center_x = (self.width() - 1) / 2
+        center_y = (self.height() - 1) / 2
+        pen = QPen(QColor("#ffffff"), 1.0)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(center_x, center_y - 2), QPointF(center_x, center_y))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(QRectF(center_x - 0.55, center_y + 0.9, 1.1, 1.1))
         painter.end()
 
 
@@ -440,6 +762,11 @@ class SheetNoteIndicator(QLabel):
 class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def __init__(self):
         super().__init__()
+        # Weekend symbol substitution is now armed only by the visible,
+        # per-session test menu. Old launcher environment flags must not
+        # silently bypass the instrument check while that menu is off.
+        os.environ.pop("TRADING_HELPER_TEST_SYMBOL_OVERRIDE", None)
+        os.environ.pop("TRADING_HELPER_TEST_SKIP_SYMBOL_CHECK", None)
         self.setWindowTitle("對沖小幫手")
         self.setObjectName("tradingHelperMain")
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -447,7 +774,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.setWindowIcon(QIcon(str(APP_ICON)))
         self.resize(1150, 630)
         self.setMinimumWidth(1020)
-        self.setMinimumHeight(630)
+        self.setMinimumHeight(660)
+        self.phase_timing_store = LocalPhaseTimingStore(
+            APP_DIR / "diagnostics" / "workflow_phase_timings.jsonl"
+        )
         self.store = ConfigStore()
         self.profiles = ProfileStore(self.store.data)
         self.store.data = self.profiles.load_profile()
@@ -523,7 +853,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         QTimer.singleShot(350, self.read_sheet)
 
     def _build_operation_hint(self) -> None:
-        self.operation_hint = QLabel("按 ESC 暫停操作")
+        self._operation_restore_geometry = None
+        self._operation_restore_maximized = False
+        self._operation_screen = None
+        self._calibration_dialog_active = False
+        self.operation_hint = QLabel("操作進行中｜按 ESC 或右鍵停止")
         self.operation_hint.setWindowFlags(
             Qt.Tool
             | Qt.FramelessWindowHint
@@ -531,20 +865,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             | Qt.WindowDoesNotAcceptFocus
         )
         self.operation_hint.setAlignment(Qt.AlignCenter)
+        self.operation_hint.setMinimumHeight(32)
         self.operation_hint.setStyleSheet(
             "QLabel {"
             "background: rgba(20, 20, 20, 210);"
             "color: white;"
-            "padding: 5px 14px;"
-            "border-radius: 4px;"
-            "font-size: 11px;"
+            "padding: 6px 18px;"
+            "border: 1px solid rgba(235, 232, 240, 90);"
+            "border-radius: 5px;"
+            "font-size: 12px;"
             "}"
         )
         self.operation_hint.adjustSize()
 
     def _hide_for_operation(self) -> None:
+        if not self.isHidden():
+            self._operation_restore_geometry = self.geometry()
+            self._operation_restore_maximized = self.isMaximized()
+        screen = self.screen()
+        self._operation_screen = screen
         self.hide()
-        screen = QApplication.primaryScreen()
         if screen is not None:
             area = screen.availableGeometry()
             self.operation_hint.adjustSize()
@@ -555,16 +895,42 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.operation_hint.show()
         self.operation_hint.raise_()
 
+    def set_operation_hint_text(self, text: str) -> None:
+        self.operation_hint.setText(text)
+        self.operation_hint.adjustSize()
+        screen = self._operation_screen or self.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.operation_hint.move(
+                area.x() + (area.width() - self.operation_hint.width()) // 2,
+                area.y() + 4,
+            )
+        if self.operation_hint.isVisible():
+            self.operation_hint.raise_()
+
     def _restore_after_operation(self) -> None:
         self.operation_hint.hide()
-        self.show()
-        self._dock_top()
+        if self._calibration_dialog_active:
+            self.hide()
+            self._operation_restore_geometry = None
+            self._operation_restore_maximized = False
+            self._operation_screen = None
+            return
+        if self._operation_restore_maximized:
+            self.showMaximized()
+        else:
+            self.showNormal()
+            if self._operation_restore_geometry is not None:
+                self.setGeometry(self._operation_restore_geometry)
+        self._operation_restore_geometry = None
+        self._operation_restore_maximized = False
+        self._operation_screen = None
         self.raise_()
         self.activateWindow()
 
     def _minimize_after_operation(self) -> None:
-        self.operation_hint.hide()
-        self.showMinimized()
+        # Completed operations must return the helper to the foreground.
+        self._restore_after_operation()
 
     def _build(self) -> None:
         # Three independent, directly accessible workspaces. Trade is a
@@ -661,8 +1027,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.auto_entry_on_fill_both = QCheckBox("兩邊自動進場")
         self.auto_entry_on_fill_both.setObjectName("auto_entry_on_fill_both")
         self.auto_entry_on_fill_both.setToolTip(
-            "僅在按「填入兩邊」時生效；先核對雙 Demo 帳戶與所有欄位，"
-            "確認唯一持倉識別後才允許嘗試送單；可能真的在 Demo 開倉。"
+            "僅在按「填入兩邊」時生效；進場前先核對兩個帳戶身分與所有欄位，"
+            "確認唯一持倉識別後才允許嘗試送單；Live 帳戶會建立真實倉位。"
             "任何結果不確定會停止，不會重送或自行平倉。"
         )
         # Restore the user's previously confirmed preference. This only
@@ -751,6 +1117,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.external_platform = ChevronCombo()
         self.external_platform.addItems(PLATFORMS)
         self.external_platform.setCurrentText(self.store.data["ui"]["external_platform"])
+        self.internal_platform.currentTextChanged.connect(
+            lambda _value: self._refresh_calibration_badges()
+        )
+        self.external_platform.currentTextChanged.connect(
+            lambda _value: self._refresh_calibration_badges()
+        )
         # Match the exact same two equal-width columns used by the trade data.
         # Unlike the previous four independent widgets, these headers cannot
         # drift out of alignment when the window is resized.
@@ -774,7 +1146,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # painted title is replaced by this explicit, compact toolbar.
         data_box = QGroupBox("")
         data_box.setObjectName("dataCard")
-        data_box.setFixedHeight(295)
+        data_box.setMinimumHeight(320)
+        data_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         data_shell = QVBoxLayout(data_box)
         data_shell.setContentsMargins(6, 3, 6, 5)
         data_shell.setSpacing(4)
@@ -795,8 +1168,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         sheet_values = QWidget(data_box)
         sheet_values.setObjectName("sheetDataValues")
         data_layout = QVBoxLayout(sheet_values)
-        data_layout.setContentsMargins(0, 8, 0, 3)
-        data_layout.setSpacing(6)
+        # Keep the final SL row comfortably clear of the account-progress
+        # section below, especially when the window is shown at compact size.
+        data_layout.setContentsMargins(0, 0, 0, 2)
+        data_layout.setSpacing(2)
         data_shell.addWidget(sheet_values, 1)
         self.data_labels: dict[str, QLabel] = {}
 
@@ -821,7 +1196,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # Platform selectors are the first content row, with wider inputs.
         # Keep exactly two matched columns for the detailed data below.
         data_layout.addWidget(platforms)
-        data_layout.addSpacing(5)
+        data_layout.addSpacing(0)
         # Three equally spaced, optically centered summary cells. Labels
         # and values share the same center; none are right-pinned anymore.
         summary_layout = QHBoxLayout()
@@ -868,6 +1243,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 side.addWidget(info_item(text, key))
             side_by_side.addLayout(side, 1)
         data_layout.addLayout(side_by_side)
+        data_box.setMinimumHeight(max(320, data_box.sizeHint().height() + 18))
         self.entry_price_input = QLineEdit()
         self.entry_price_input.returnPressed.connect(self.update_manual_entry_price)
         self.entry_price_value = QLabel("")
@@ -923,6 +1299,27 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             ("場內進場點位", "internal_entry_price"),
         ]
         positions = [(0, 1), (1, 0), (1, 1), (2, 0)]
+        self.expected_sl_warning_badge = ExpectedSlWarningBadge(parameter_box)
+        self.expected_sl_warning_badge.setCursor(Qt.PointingHandCursor)
+        self.expected_sl_warning_badge.setToolTip(
+            "預期止損距離比原始 SL 短，手數可能增加；請留意保證金限額。"
+        )
+        self.expected_sl_warning_badge.installEventFilter(self)
+        self.expected_sl_warning_badge.hide()
+        self.expected_sl_warning_container: QWidget | None = None
+
+        def parameter_cell(label_text: str, widget: QWidget) -> QWidget:
+            cell = QWidget()
+            layout = QHBoxLayout(cell)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+            label = QLabel(label_text)
+            label.setProperty("role", "caption")
+            label.setMinimumWidth(91)
+            layout.addWidget(label)
+            layout.addWidget(widget, 1)
+            return cell
+
         for (label, key), (row, column) in zip(parameter_fields, positions):
             entry = QLineEdit()
             entry.setFixedHeight(34)
@@ -937,8 +1334,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 )
             entry.returnPressed.connect(self._confirm_fill_text_inputs)
             entry.returnPressed.connect(self.update_all_trade_parameters)
+            field_widget: QWidget = entry
+            if key == "expected_sl_combined":
+                # Reserve a small clear area inside the edit so the corner
+                # badge never covers the last digit of a right-aligned value.
+                entry.setTextMargins(0, 0, 18, 0)
+                field_widget = QWidget(parameter_box)
+                field_widget.setObjectName("expectedSlField")
+                field_layout = QGridLayout(field_widget)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(0)
+                field_layout.addWidget(entry, 0, 0)
+                self.expected_sl_warning_container = field_widget
+                self.expected_sl_warning_badge.setParent(field_widget)
+                self.expected_sl_warning_badge.setFixedSize(12, 12)
+                field_widget.installEventFilter(self)
+                entry.textChanged.connect(self._refresh_expected_sl_warning)
             self.parameter_inputs[key] = entry
-            parameter_layout.addWidget(parameter_cell(label, entry), row, column)
+            parameter_layout.addWidget(
+                parameter_cell(label, field_widget), row, column
+            )
         # Place compact secondary actions DIRECTLY next to the entry-price
         # field, sharing that row's visual baseline. No separate button row.
         param_inline = QWidget(parameter_box)
@@ -948,16 +1363,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         inline_actions_layout.setSpacing(7)
         self.preview_sl_tp_button.setObjectName("paramPreviewAction")
         self.parameter_update_button.setObjectName("paramUpdateAction")
-        inline_actions_layout.addStretch(1)
         for action_button, width in (
             (self.preview_sl_tp_button, 114),
             (self.parameter_update_button, 72),
         ):
             action_button.setMinimumWidth(0)
-            action_button.setFixedWidth(width)
+            action_button.setMinimumWidth(width)
             action_button.setFixedHeight(31)
-            action_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            inline_actions_layout.addWidget(action_button)
+            action_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            inline_actions_layout.addWidget(action_button, 2 if width == 114 else 1)
         parameter_layout.addWidget(param_inline, 2, 1)
         parameter_layout.setColumnStretch(0, 1)
         parameter_layout.setColumnStretch(1, 1)
@@ -1027,7 +1441,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 # down to a minor glyph rather than a dashboard centerpiece.
                 button.setIcon(themed_icon(action_icons[text], "#f7f5ff", 13))
                 button.setIconSize(QSize(13, 13))
-                button.setToolTip("先填寫兩邊；只有明確勾選自動進場且雙 Demo 核對通過後才會嘗試送單。")
+                button.setToolTip(
+                    "依校準位置填寫場內與場外。若勾選「自動進場」，"
+                    "通過雙邊帳戶與表單核對後會嘗試送單；Live 帳戶會建立真實倉位；未勾選時只填欄位。"
+                )
             elif text not in {"填入場內", "填入場外"}:
                 button.setIcon(themed_icon(action_icons[text]))
                 button.setIconSize(QSize(16, 16))
@@ -1043,29 +1460,36 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_row.setObjectName("automationOptionRow")
         automation_layout = QHBoxLayout(automation_row)
         automation_layout.setContentsMargins(3, 0, 3, 2)
-        automation_layout.setSpacing(10)
-        automation_caption = QLabel("自動化")
-        automation_caption.setObjectName("automationCaption")
-        automation_layout.addWidget(automation_caption)
+        automation_layout.setSpacing(1)
         self.auto_entry_on_fill_both.setText("自動進場")
+        self.auto_entry_on_fill_both.setToolTip(
+            "填入兩邊後自動進場；先核對兩側帳戶與表單。Live 會建立真實倉位。"
+        )
         automation_layout.addWidget(self.auto_entry_on_fill_both)
         self.auto_fast_pair = QCheckBox("快速雙邊")
         self.auto_fast_pair.setObjectName("auto_fast_pair")
         self.auto_fast_pair.setToolTip(
-            "支援 cTrader + MT5 雙 Demo，場內場外可以互換。"
+            "支援 cTrader + MT5 已核對帳戶，場內場外可以互換。Live 會建立真實倉位。"
             "先檢查兩邊，再連續送出兩邊，之後核對成交。"
             "MT5 場內須在雙邊成交後依實際成交價修正 SL/TP。"
             "其中一邊未成交可能造成單邊曝險。"
         )
+        self.auto_fast_pair.setText("快速")
         self.auto_fast_pair.setChecked(
             bool(self.store.data["ui"].get("auto_fast_pair",False))
         )
         self.auto_fast_pair.toggled.connect(self._confirm_fast_pair_toggle)
-        automation_layout.addWidget(self.auto_fast_pair)
+        # Keep the saved speed preference active, but hide its control from
+        # the compact automation row as requested.
+        self.auto_fast_pair.setParent(self)
+        self.auto_fast_pair.hide()
         self.auto_sync_sl_tp_after_entry = QCheckBox("同步 SL/TP")
         self.auto_sync_sl_tp_after_entry.setObjectName("auto_sync_sl_tp_after_entry")
+        self.auto_sync_sl_tp_after_entry.setText("同步")
         self.auto_sync_sl_tp_after_entry.setChecked(
-            bool(self.store.data["ui"].get("auto_sync_sl_tp_after_entry",False))
+            bool(self.store.data["ui"].get(
+                "auto_sync_sl_tp_after_entry", True
+            ))
         )
         self.auto_sync_sl_tp_after_entry.toggled.connect(
             lambda enabled: self._confirm_future_auto_option(
@@ -1075,6 +1499,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.addWidget(self.auto_sync_sl_tp_after_entry)
         self.auto_draw_tv_after_entry = QCheckBox("繪製 TV")
         self.auto_draw_tv_after_entry.setObjectName("auto_draw_tv_after_entry")
+        self.auto_draw_tv_after_entry.setText("TV")
         self.auto_draw_tv_after_entry.setChecked(
             bool(self.store.data["ui"].get("auto_draw_tv_after_entry",False))
         )
@@ -1084,6 +1509,79 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
         )
         automation_layout.addWidget(self.auto_draw_tv_after_entry)
+        self.test_mode_checkbox = QCheckBox("測試")
+        self.test_mode_checkbox.setObjectName("test_mode_checkbox")
+        self.test_mode_checkbox.setToolTip(
+            "預設關閉。選好測試項目後按「填入兩邊」執行；"
+            "單邊重進／平倉會再次確認，且只操作唯一核對的持倉。"
+        )
+        self.test_asset_checkboxes: dict[str, QCheckBox] = {}
+        self.test_scenario_checkboxes: dict[str, QCheckBox] = {}
+        for symbol, label in (("BTCUSD", "BTC"), ("ETHUSD", "ETH")):
+            choice = QCheckBox(label)
+            choice.setObjectName(f"test_asset_{symbol.lower()}")
+            choice.setToolTip(
+                f"假日測試使用 {symbol}；不選就沿用試算表商品（例如 GOLD）。"
+                "BTC 與 ETH 一次選一個。"
+            )
+            choice.toggled.connect(
+                lambda checked, current=choice, group=self.test_asset_checkboxes:
+                    self._exclusive_optional_checkbox(group, current, checked)
+            )
+            self.test_asset_checkboxes[symbol] = choice
+        for action, label in (
+            ("reentry:internal", "內重"),
+            ("close:internal", "內平"),
+            ("reentry:external", "外重"),
+            ("close:external", "外平"),
+        ):
+            choice = QCheckBox(label)
+            choice.setObjectName("test_scenario_" + action.replace(":", "_"))
+            full_label = {
+                "reentry:internal": "場內重新進場",
+                "close:internal": "場內關單",
+                "reentry:external": "場外重新進場",
+                "close:external": "場外關單",
+            }[action]
+            choice.setToolTip(
+                f"{full_label}完整流程測試；四種情境一次只能選一種。"
+                "取消勾選則不注入故障。"
+            )
+            choice.toggled.connect(
+                lambda checked, current=choice, group=self.test_scenario_checkboxes:
+                    self._exclusive_optional_checkbox(group, current, checked)
+            )
+            self.test_scenario_checkboxes[action] = choice
+        for option in (
+            self.auto_entry_on_fill_both, self.auto_fast_pair,
+            self.auto_sync_sl_tp_after_entry,
+            self.auto_draw_tv_after_entry,
+            self.test_mode_checkbox, *self.test_asset_checkboxes.values(),
+            *self.test_scenario_checkboxes.values(),
+        ):
+            option.setStyleSheet("font-size: 10px; spacing: 3px;")
+            install_checkmark_only_indicator(option)
+        for option in (
+            *self.test_asset_checkboxes.values(),
+            *self.test_scenario_checkboxes.values(),
+        ):
+            option.setStyleSheet("font-size: 9px; spacing: 2px;")
+        self.test_mode_checkbox.setChecked(False)
+        for choice in (*self.test_asset_checkboxes.values(),
+                       *self.test_scenario_checkboxes.values()):
+            choice.setEnabled(False)
+        self.test_mode_checkbox.toggled.connect(self._toggle_test_mode)
+        automation_layout.addWidget(self.test_mode_checkbox)
+        asset_label = QLabel("商品")
+        asset_label.setObjectName("testAssetSeparator")
+        automation_layout.addWidget(asset_label)
+        for choice in self.test_asset_checkboxes.values():
+            automation_layout.addWidget(choice)
+        separator = QLabel("情境")
+        separator.setObjectName("testScenarioSeparator")
+        automation_layout.addWidget(separator)
+        for choice in self.test_scenario_checkboxes.values():
+            automation_layout.addWidget(choice)
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
@@ -1119,9 +1617,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         log_layout.setContentsMargins(13, 16, 13, 11)
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        # ~7 lines at the 11px Consolas font instead of only ~3.
-        self.log_text.setMinimumHeight(140)
-        self.log_text.setMaximumHeight(166)
+        self.log_text.setMinimumHeight(150)
+        self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.log_text.setStyleSheet("font-family: Consolas; font-size: 11px;")
         log_layout.addWidget(self.log_text)
         # Move existing controls, preserving their original clicked handlers,
@@ -1212,27 +1709,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.records_page = QWidget()
         self.records_page.setObjectName("recordsWorkspace")
         record_layout = QVBoxLayout(self.records_page)
-        record_layout.setContentsMargins(16, 12, 16, 12)
-        record_layout.setSpacing(9)
-        record_caption = QLabel("紀錄")
-        record_caption.setObjectName("workspaceCaption")
-        # Keep the history action next to the Records heading, not stretched
-        # into a full-width primary-looking operation button.
-        record_heading = QHBoxLayout()
-        record_heading.setSpacing(14)
-        record_heading.addWidget(record_caption, 0, Qt.AlignVCenter)
+        record_layout.setContentsMargins(16, 0, 16, 12)
+        record_layout.setSpacing(0)
         self.daily_pnl_history_button.setFixedWidth(138)
         self.daily_pnl_history_button.setFixedHeight(31)
-        record_heading.addWidget(self.daily_pnl_history_button, 0, Qt.AlignVCenter)
         # Deferred redesign: keep data/handler, hide obsolete entry point.
+        record_layout.addWidget(self.daily_pnl_history_button)
         self.daily_pnl_history_button.hide()
-        record_heading.addStretch(1)
-        record_layout.addLayout(record_heading)
-        log_box.setMaximumWidth(860)
-        log_box.setMaximumHeight(235)
+        log_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         record_layout.addWidget(log_box, 0, Qt.AlignTop)
-        record_layout.addStretch(1)
+        self.activity_log_box = log_box
         self.main_pages.addWidget(self.records_page)
+        self.records_page.installEventFilter(self)
+        QTimer.singleShot(0, self._update_activity_log_height)
 
         # Two-column trading view: references on the left, editable inputs
         # and actions on the right. All original callbacks are preserved.
@@ -1326,13 +1815,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         details = (
             (self.auto_entry_on_fill_both,
              "按「填入兩邊」會依已儲存位置填寫場內、場外欄位。"
-             "僅對已驗證的雙 Demo 帳戶執行自動進場，可能真的開啟 Demo 倉位。"
+             "對目前選取的兩個帳戶執行自動進場；Live 可能建立真實倉位。"
              "任何持倉資料不確定會停止，不會重複送單。"),
             (self.auto_sync_sl_tp_after_entry,
-             "在雙 Demo 自動進場核對完成後，先確認場內保護，"
-             "再以場內實際成交價同步場外 SL/TP，並再次讀回核對。"),
+             "在雙邊自動進場核對完成後，先確認場內保護，"
+             "再以場內實際成交價同步場外 SL/TP，並再次讀回核對。"
+             "Live 帳戶會修改真實持倉的止盈止損。"),
             (self.auto_draw_tv_after_entry,
-             "在雙 Demo 進場且 SL/TP 同步確認後，自動繪製 TradingView 部位；"
+             "在雙邊進場且 SL/TP 同步確認後，自動繪製 TradingView 部位；"
              "前置核對失敗就不繪製。"),
             (sync_sl_tp_button,
              "手動執行既有的「同步場外止盈止損」。"
@@ -1344,7 +1834,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
              "不受「繪製 TV」自動選項影響。"),
             (self.action_buttons["填入兩邊"],
              "根據目前方案與校準位置，依序填寫場內、場外欄位。"
-             "若已勾選自動進場，且雙 Demo 帳戶、表單與持倉核對全部通過，可能實際送出兩邊 Demo 訂單。"),
+             "若勾選「自動進場」，會在雙邊帳戶與表單核對通過後嘗試送單；"
+             "未勾選時只填欄位。"),
             (self.parameter_update_button,
              "使用目前輸入的交易參數更新試算表相關欄位。"
              "請先檢查所選方案與數值，這不是下單按鈕。"),
@@ -1363,30 +1854,31 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._setup_calibration_badges()
 
     def _setup_calibration_badges(self) -> None:
-        """Tiny noninteractive dots at top-right of Edit and broker buttons."""
+        """Show the same small red dot for incomplete setup actions."""
         self._calibration_badge_labels = {}
         targets = [
             self.page_nav["編輯"],
+            self.action_buttons["試算表設定"],
+            self.action_buttons["綁定場內視窗"],
+            self.action_buttons["綁定場外視窗"],
             self.action_buttons["校準 cTrader"],
             self.action_buttons["校準 MT5"],
             self.action_buttons["校準 TradingView"],
         ]
         for button in targets:
-            dot = QLabel("●", button)
+            dot = QLabel(button)
             dot.setObjectName("calibrationIncompleteDot")
-            dot.setFixedSize(10, 10)
-            dot.setStyleSheet(
-                "color:#fa5362;font-size:12px;background:transparent;"
-            )
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            dot.move(max(0, button.width()-11), 0)
+            dot.move(max(2, button.width()-9), 3)
             dot.hide()
             button.installEventFilter(self)
             self._calibration_badge_labels[button] = dot
         self._refresh_calibration_badges()
 
     def _refresh_calibration_badges(self) -> None:
-        """Only inspect in-memory saved coordinates; never scan a broker."""
+        """Inspect saved setup values only; never scan or contact a broker."""
         badges = getattr(self, "_calibration_badge_labels", None)
         if not badges:
             return
@@ -1403,17 +1895,60 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 f"已儲存校準：{done}/{total}；"
                 "僅代表位置已儲存，不代表實際交易欄位驗收。"
             )
+        sheet = self.store.data.get("sheet", {})
+        sheet_incomplete = (
+            not str(sheet.get("spreadsheet_url", "")).strip()
+            or sheet.get("mode") != "service_account"
+            or not _service_account_email(
+                str(sheet.get("service_account_file", "")).strip()
+            )
+        )
+        internal_platform = self.internal_platform.currentText()
+        external_platform = self.external_platform.currentText()
+        internal_incomplete = not self._window_role_is_bound(
+            internal_platform, "internal"
+        )
+        external_incomplete = not self._window_role_is_bound(
+            external_platform, "external"
+        )
         states = {
-            self.page_nav["編輯"]: any(incomplete.values()),
+            self.page_nav["編輯"]: (
+                any(incomplete.values()) or sheet_incomplete
+                or internal_incomplete or external_incomplete
+            ),
+            self.action_buttons["試算表設定"]: sheet_incomplete,
+            self.action_buttons["綁定場內視窗"]: internal_incomplete,
+            self.action_buttons["綁定場外視窗"]: external_incomplete,
             self.action_buttons["校準 cTrader"]: incomplete["cTrader"],
             self.action_buttons["校準 MT5"]: incomplete["MT5"],
             self.action_buttons["校準 TradingView"]: incomplete["TradingView"],
         }
         for button, dot in badges.items():
-            dot.move(max(0, button.width()-11), 0)
+            dot.move(max(2, button.width()-9), 3)
             dot.setVisible(enabled and states[button])
             if dot.isVisible():
                 dot.raise_()
+
+    def _window_role_is_bound(self, platform: str, role: str) -> bool:
+        profile = self.store.data.get("platforms", {}).get(platform, {})
+        explicit = profile.get("window_bound")
+        if isinstance(explicit, dict) and role in explicit:
+            return bool(explicit[role])
+        title = str(profile.get("window_title", {}).get(role, "")).strip()
+        if not title:
+            return False
+        default_title = str(
+            DEFAULT_CONFIG.get("platforms", {})
+            .get(platform, {})
+            .get("window_title", {})
+            .get(role, "")
+        ).strip()
+        if title != default_title:
+            return True
+        account = str(
+            profile.get("account_number", {}).get(role, "")
+        ).strip()
+        return bool(account)
 
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
@@ -1430,7 +1965,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         """Native-style titlebar maximize/restore; keep existing window state."""
         if self.isMaximized():
             self.showNormal()
+            restore_geometry = getattr(self, "_main_restore_geometry", None)
+            if restore_geometry is not None:
+                self.setGeometry(restore_geometry)
         else:
+            self._main_restore_geometry = self.geometry()
             self.showMaximized()
         self.chrome_maximize.update()
 
@@ -1501,6 +2040,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self._fill_waiting_for_sheet is not None:
             self._fill_waiting_for_sheet = None
             self.log("已取消待執行填寫：試算表更新失敗。")
+        if message.startswith(MISSING_SPREADSHEET_URL_MESSAGE):
+            QMessageBox.information(self, "請先完成方案設定", message)
+            return
         QMessageBox.critical(self, "對沖小幫手", message)
 
     def _show_duplicate_entry_decision(self, data: dict) -> None:
@@ -1513,48 +2055,42 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if not request:
             QMessageBox.warning(
                 self,"請人工確認持倉",
-                "交易紀錄缺少重試資訊，不能安全自動繼續。"
+                "缺少上次進場資料，無法繼續；本次未送單。"
             )
             return
         manual_needed=not bool(data.get("retryable"))
         if manual_needed and not data.get("manual_review_possible"):
             QMessageBox.warning(
-                self, "紀錄狀態不明，禁止重送",
-                "無法判定前次執行紀錄的類型。請人工核對後再處理，"
-                "本次不會送單。"
+                self, "上次結果不明",
+                "上次進場結果不明。請先核對兩邊持倉與交易紀錄；本次未送單。"
             )
             return
         dialog=QMessageBox(self)
-        dialog.setWindowTitle("是否調整數值再進場？")
+        dialog.setWindowTitle("發現上次進場紀錄")
         dialog.setIcon(QMessageBox.Question)
-        dialog.setText(
-            "這組方案之前已有自動進場紀錄。\n"
-            "要回主畫面調整數值，還是維持原有數值重新進場？"
-        )
+        dialog.setText("這個方案已有上次進場紀錄。")
+        entry = data.get("entry") or {}
+        record_time = str(entry.get("time") or "").strip()
+        record_prefix = f"上次時間：{record_time}\n" if record_time else ""
         if manual_needed:
             dialog.setInformativeText(
-                "上一次可能已在 cTrader 或 MT5 成交，但程式讀取失敗。"
-                "請先在兩個 Demo 平台自行核對「目前持倉、掛單與成交歷史」。"
-                "若兩邊都有與本方案完全對應的既有持倉，"
-                "只接續成交後的檢查／已勾選的同步，不會送新訂單。"
-                "若兩邊確認空倉，才可按既有安全流程重新進場；"
-                "只有一邊或讀值不明時會停止，不盲目補單。"
+                record_prefix
+                + "請先核對兩邊持倉與交易紀錄。兩邊都有單可核對／同步；"
+                "兩邊都空才可重新進場；只有一邊有單請返回人工處理。"
             )
         else:
             dialog.setInformativeText(
-                "選擇「仍要繼續進場」後，程式會再次確認雙 Demo "
-                "身分、空倉、校準及兩邊表單，通過才會下單。"
+                record_prefix
+                + "繼續後會重新檢查帳戶、持倉及表單，通過才會進場。"
             )
-        adjust=dialog.addButton("調整數值，返回主畫面",QMessageBox.RejectRole)
+        adjust=dialog.addButton("返回",QMessageBox.RejectRole)
         proceed=dialog.addButton(
-            "核對現有持倉／繼續" if manual_needed else "仍要繼續進場",
+            "已核對，繼續" if manual_needed else "重新核對並進場",
             QMessageBox.AcceptRole
         )
         if manual_needed:
             acknowledgement=QCheckBox(
-                "我已核對 cTrader、MT5 的持倉、掛單及成交歷史。"
-                "若現有雙邊持倉符合方案，就接續而不新增交易；"
-                "若兩邊空倉，才同意再試進場。"
+                "我已核對兩邊目前持倉與進出場紀錄，確認可以繼續。"
             )
             dialog.setCheckBox(acknowledgement)
             proceed.setEnabled(False)
@@ -1566,8 +2102,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if manual_needed and not acknowledgement.isChecked():
             QMessageBox.warning(
-                self, "尚未核對先前交易",
-                "必須先核對兩邊的持倉、掛單與成交歷史，才能重新進場。"
+                self, "還沒核對",
+                "請先核對兩邊持倉與交易紀錄。"
             )
             return
         current_url=str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
@@ -1579,7 +2115,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ):
             QMessageBox.warning(
                 self, "交易參數已改變",
-                "方案、平台或交易參數已改變，請重新填入核對後再進場。"
+                "方案、平台或數值已改變。請重新填入並核對。"
             )
             return
         approved=(
@@ -1597,17 +2133,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if manual_needed:
             options["manual_reconciliation_confirmed"]=True
             self.log(
-                "使用者已明確確認自行核對兩邊 Demo 持倉、掛單與歷史紀錄；"
+                "使用者已確認核對兩邊持倉與進場紀錄；"
                 "仍需重新檢查帳戶與空倉，才能進場。"
             )
-        self.log("使用者明確確認繼續；重新檢查兩邊 Demo 與訂單，確認後才進場。")
-        self._start(
-            "重新確認進場",
-            lambda: self._auto_entry_after_fill_both_pending(
+        self.log("使用者確認處理上次進場紀錄；先填入欄位，再重新檢查帳戶與持倉。")
+        if request.get("fields_filled"):
+            task=lambda: self._auto_entry_after_fill_both_pending(
                 request["internal_platform"],request["external_platform"],
                 request["item"],**options,
-            ),
-        )
+            )
+        else:
+            task=lambda: self._fill_both_task(
+                request["internal_platform"],request["external_platform"],
+                True, sync_sl_tp=options["sync_sl_tp"],
+                draw_tv=options["draw_tv"],
+                draw_internal=options["draw_internal"],
+                fast_pair=options["fast_pair"],
+                duplicate_confirmation=approved,
+                manual_reconciliation_confirmed=bool(
+                    options.get("manual_reconciliation_confirmed",False)
+                ),
+            )
+        self._start("重新確認進場",task)
 
     def _show_ctrader_decimal_suggestion(self, data: dict[str, str]) -> None:
         """GUI-thread-only user consent to switch THIS exact scheme."""
@@ -1625,17 +2172,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            "cTrader 止盈止損輸入方式",
-            f"目前方案「{name}」的{data['role_text']} cTrader "
-            f"{data['label']}，連續兩次填入小數後只保留整數。\n\n"
-            f"預期：{data['expected']}\n"
-            f"讀回：{data['actual']}\n\n"
-            "要將此方案的 cTrader 止盈／止損輸入方式改成"
-            "與 Gooey 一樣的「點數換算輸入」嗎？\n\n"
-            "只影響目前方案及目前試算表網址。"
-            "確認後請重新按「填入」測試，程式不會自行下單。",
+            "cTrader 點數輸入不一致",
+            f"輸入 {data['expected']}，讀回 {data['actual']}。"
+            "改用點數換算並重試？只改目前方案；本次不會下單。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
+            yes_text="改用點數換算",
+            no_text="維持原設定",
         )
         if answer == QMessageBox.Yes:
             set_ctrader_mode_for_profile(
@@ -1669,13 +2212,36 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         super().keyPressEvent(event)
 
+    def _update_activity_log_height(self) -> None:
+        page = getattr(self, "records_page", None)
+        box = getattr(self, "activity_log_box", None)
+        if page is None or box is None:
+            return
+        height = max(180, round(page.contentsRect().height() * 2 / 3))
+        box.setFixedHeight(height)
+
     def eventFilter(self, watched, event) -> bool:
         badges = getattr(self, "_calibration_badge_labels", {})
+        if watched is getattr(self, "records_page", None) and event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._update_activity_log_height)
+        if (
+            watched is getattr(self, "expected_sl_warning_badge", None)
+            and event.type() == QEvent.MouseButtonRelease
+            and event.button() == Qt.LeftButton
+        ):
+            self._show_expected_sl_warning()
+            event.accept()
+            return True
+        if (
+            watched is getattr(self, "expected_sl_warning_container", None)
+            and event.type() in (QEvent.Resize, QEvent.Show)
+        ):
+            self._position_expected_sl_warning()
         if watched in badges and event.type() in (
             QEvent.Resize, QEvent.Show,
         ):
             dot = badges[watched]
-            dot.move(max(0, watched.width()-13), 0)
+            dot.move(max(2, watched.width()-9), 3)
             dot.raise_()
         if (
             event.type() == QEvent.KeyPress
@@ -1696,103 +2262,346 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             450, lambda payload=dict(report): self._show_auto_entry_result(payload)
         )
 
+    @staticmethod
+    def _expected_sl_repeat_signature(
+        profile_name: str, sheet_url: str, instruction: TradeInstruction,
+    ) -> str:
+        identity = json.dumps(
+            [str(profile_name), str(sheet_url).strip(),
+             int(instruction.source_row), str(instruction.symbol).upper()],
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    def _maybe_adjust_repeated_expected_sl(
+        self, instruction: TradeInstruction, *, roles: tuple[str, ...],
+        dirty: tuple[str, ...] | list[str], test_action: str,
+    ) -> tuple[TradeInstruction, bool]:
+        """Ask before repeating an unchanged expected stop before filling."""
+        auto_entry = getattr(self, "auto_entry_on_fill_both", None)
+        if (
+            roles != ("internal", "external")
+            or "expected_sl_combined" in dirty
+            or (
+                not test_action
+                and (auto_entry is None or not auto_entry.isChecked())
+            )
+            or instruction.expected_sl_points is None
+            or instruction.original_sl_points is None
+        ):
+            return instruction, False
+
+        ui = self.store.data.setdefault("ui", {})
+        sheet_url = str(self.store.data["sheet"].get("spreadsheet_url", ""))
+        context = self._expected_sl_repeat_signature(
+            self.profiles.active_name, sheet_url, instruction
+        )
+        if ui.get("last_auto_entry_sl_context") != context:
+            return instruction, False
+        try:
+            previous = Decimal(str(ui.get("last_auto_entry_sl_points", "")))
+        except InvalidOperation:
+            return instruction, False
+        if previous != instruction.expected_sl_points:
+            return instruction, False
+
+        bounds = random_repeat_adjustment_range(
+            instruction.original_sl_points, previous
+        )
+        if bounds is None:
+            return instruction, False
+        proposed = choose_repeat_adjustment(
+            instruction.original_sl_points, previous
+        )
+        if proposed is None:
+            return instruction, False
+
+        answer = QMessageBox.question(
+            self,
+            "預期 SL 與上次相同",
+            f"上次與這次都是 {previous} 點。\n"
+            f"依規則，從原始 {instruction.original_sl_points} 點到上次數值減 1 點"
+            f"（{bounds[0]} 至 {bounds[1]}）隨機選 {proposed} 點。\n"
+            "調整可能增加手數與保證金占用，要調整並繼續嗎？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+            yes_text="調整並繼續",
+            no_text="維持原值",
+        )
+        if answer != QMessageBox.Yes:
+            return instruction, False
+        return replace(instruction, expected_sl_points=proposed), True
+
+    def _remember_successful_expected_sl(self, report: dict) -> None:
+        saved = report.get("_repeat_expected_sl")
+        if not report.get("success") or not isinstance(saved, dict):
+            return
+        item = getattr(self, "instruction", None)
+        if item is None:
+            return
+        current_context = self._expected_sl_repeat_signature(
+            self.profiles.active_name,
+            str(self.store.data["sheet"].get("spreadsheet_url", "")),
+            item,
+        )
+        if saved.get("context") != current_context:
+            return
+        ui = self.store.data.setdefault("ui", {})
+        ui["last_auto_entry_sl_context"] = current_context
+        ui["last_auto_entry_sl_points"] = str(saved.get("points", ""))
+        try:
+            self.save_config()
+        except Exception as exc:
+            self.log(f"未能記錄上次止損點數：{exc}")
+
     def _show_auto_entry_result(self, report: dict) -> None:
-        """Topmost read-only receipt, no new order and no broker focus/click."""
+        """Show a topmost entry result and any explicitly approved next action."""
+        self._remember_successful_expected_sl(report)
         earlier = getattr(self, "_auto_entry_receipt", None)
         if earlier is not None:
             earlier.close()
         # An independent window remains visible when the main LAB window
         # is automatically minimized after fill-both.
-        dialog = QDialog()
+        dialog = ThemedDialog()
         dialog.setObjectName("autoEntryResultDialog")
         dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
         dialog.setWindowTitle(str(report.get("title") or "開倉結果待確認"))
-        dialog.resize(520, 345)
+        dialog.resize(520, 285)
         layout = QVBoxLayout(dialog)
-        heading = QLabel(str(report.get("title") or "開倉結果待確認"), dialog)
-        heading.setObjectName("autoEntryResultHeading")
-        heading.setWordWrap(True)
-        layout.addWidget(heading)
         details = QTextBrowser(dialog)
         details.setObjectName("autoEntryResultBody")
         details.setReadOnly(True)
         details.setPlainText(str(report.get("message") or "尚無可用的核對結果。"))
         layout.addWidget(details)
         actions = QHBoxLayout()
-        button = QPushButton("確認", dialog)
+        reentry_request=report.get("reentry_request")
+        if isinstance(reentry_request,dict):
+            reenter=QPushButton("重新進場",dialog)
+            reenter.setObjectName("autoEntryReentryButton")
+            reenter.clicked.connect(
+                lambda checked=False, request=dict(reentry_request):
+                    self._start_user_approved_reentry(request)
+            )
+            actions.addWidget(reenter)
+            reminder=QLabel(
+                "請先確認考試商規則允許現在重新進場",dialog
+            )
+            reminder.setObjectName("autoEntryReentryReminder")
+            reminder.setWordWrap(True)
+            actions.addWidget(reminder,1)
+        actions.addStretch()
+        button = QPushButton(
+            "結束" if isinstance(reentry_request,dict) else "確認",dialog
+        )
         button.setObjectName("autoEntryResultConfirmButton")
         button.clicked.connect(dialog.accept)
         role = report.get("single_confirmed_role")
-        if role in ("internal","external"):
-            # These are explicitly HUMAN action paths. No broker clicks,
-            # API submission, close-position or fallback automatic order.
+        incident_request=report.get("incident_action_request")
+        if (role in ("internal","external")
+                and isinstance(incident_request,dict)):
             for option,title in (
-                ("close","核對後手動平掉已開倉側"),
-                ("hedge","核對後手動處理另一側"),
+                ("close","平掉已確認的一邊"),
+                ("reenter","補進缺少的一邊"),
             ):
                 choice=QPushButton(title,dialog)
                 choice.setObjectName(
                     "autoEntryIncidentCloseButton" if option=="close"
-                    else "autoEntryIncidentHedgeButton"
+                    else "autoEntryIncidentReentryButton"
                 )
                 choice.clicked.connect(
-                    lambda checked=False, action=option, info=dict(report):
-                        self._explain_manual_incident_action(action,info)
+                    lambda checked=False, action=option,
+                           info=dict(incident_request):
+                        self._start_user_approved_incident_action(action,info)
                 )
                 actions.addWidget(choice)
+            reminder=QLabel(
+                "按下後會先重查帳戶與持倉；補進前請確認考試商規則。",
+                dialog,
+            )
+            reminder.setObjectName("autoEntryIncidentActionReminder")
+            reminder.setWordWrap(True)
+            actions.addWidget(reminder,1)
+        elif role in ("internal","external"):
+            unavailable=QLabel(
+                "缺少可核對的帳戶或訂單資料，暫時不能安全執行平倉／補進。",
+                dialog,
+            )
+            unavailable.setWordWrap(True)
+            actions.addWidget(unavailable,1)
         actions.addStretch()
         actions.addWidget(button)
         layout.addLayout(actions)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         self._auto_entry_receipt = dialog
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
         QApplication.alert(dialog, 5000)
 
-    def _explain_manual_incident_action(
-        self, action: str, report: dict
+    def _start_user_approved_incident_action(
+        self, action: str, request: dict,
     ) -> None:
-        """Explain chosen manual path; NEVER actuate unknown-state trades."""
-        role=report.get("single_confirmed_role")
-        if role not in ("internal","external") or action not in ("close","hedge"):
+        """Run only the one-sided action the user explicitly selected."""
+        if action not in ("close","reenter"):
             return
-        side="場內" if role=="internal" else "場外"
-        other="場外" if role=="internal" else "場內"
-        platform=str(report.get(
-            "internal_platform" if role=="internal" else "external_platform",""
-        ))
-        opposite=str(report.get(
-            "external_platform" if role=="internal" else "internal_platform",""
-        ))
-        title=("人工平倉前核對" if action=="close" else "人工補倉前核對")
-        instruction=(
-            f"已確認的 {side}（{platform}）持倉可能仍存在。\\n"
-            f"請先在 {platform} 核對最新持倉編號與手數，再到"
-            f" {opposite} 核對當前持倉、掛單、交易歷史。\\n\\n"
-            + (
-                f"若確認必須解除單邊風險，請親自操作 {side} 的"
-                "正確持倉平倉，並驗證平倉回報。"
-                if action=="close" else
-                f"只有證實 {other}（{opposite}）沒有成交、"
-                "也沒有待成交訂單時，才親自在該平台重新開倉，"
-                "並重新核對方向、商品、手數、SL／TP。"
-            )
-            + "\\n\\n本按鈕只顯示操作說明，不會自動開倉或平倉。"
-            "另一側狀態不明時，這兩種選擇都可能有風險。"
+        item=request.get("item")
+        internal_platform=str(request.get("internal_platform") or "")
+        external_platform=str(request.get("external_platform") or "")
+        selected_symbol=TradingHelperApp._selected_test_symbol(
+            self,("internal","external")
         )
-        QMessageBox.warning(
-            getattr(self,"_auto_entry_receipt",None) or self,
-            title,instruction
+        if selected_symbol is None:
+            for test_action,option in getattr(
+                self,"test_scenario_checkboxes",{}
+            ).items():
+                if option.isChecked() and test_action.startswith("weekend:"):
+                    selected_symbol=test_action.split(":",1)[1]
+                    break
+        if selected_symbol is None and item is not None:
+            selected_symbol=item.symbol
+        account_ids=request.get("account_ids")
+        if (item is None or not internal_platform or not external_platform
+                or not isinstance(account_ids,dict)
+                or not account_ids.get("internal")
+                or not account_ids.get("external")
+                or self.profiles.active_name!=request.get("profile_name")
+                or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
+                    !=request.get("sheet_url")
+                or self.instruction is not item
+                or self.internal_platform.currentText()!=internal_platform
+                or self.external_platform.currentText()!=external_platform
+                or selected_symbol!=request.get("symbol")):
+            QMessageBox.warning(
+                self,"進場資料已改變",
+                "方案、試算表、商品或平台已改變。請重新核對後再操作，"
+                "本次沒有平倉或補進。"
+            )
+            return
+        receipt=getattr(self,"_auto_entry_receipt",None)
+        if receipt is not None:
+            receipt.close()
+        title="異常後平倉" if action=="close" else "異常後補進"
+        self._start(
+            title,
+            lambda:self._execute_user_approved_incident_action(
+                action,dict(request)
+            ),
+            restore_after=True,
+        )
+
+    def _execute_user_approved_incident_action(
+        self, action: str, request: dict,
+    ) -> None:
+        """Recheck current Demo state, then perform one explicitly selected action."""
+        if action not in ("close","reenter"):
+            raise RecoveryRequired("異常處理選項無效，未操作。")
+        item=request["item"]
+        internal_platform=request["internal_platform"]
+        external_platform=request["external_platform"]
+        journal=AutoEntryJournal(APP_DIR / "demo_auto_entry_journal.json")
+        port=DemoUiBrokerPort(
+            self.automation,self.log,
+            draw_internal=bool(request.get("draw_internal",False)),
+        )
+        flow=AutoEntryWorkflow(
+            port,journal,self.emergency.guard,self.log,
+            timing_store=getattr(self,"phase_timing_store",None),
+        )
+        with test_symbol_scope(request.get("symbol")):
+            if action=="close":
+                role=request["confirmed_role"]
+                closed=flow.run_single_leg_close_test(
+                    item,internal_platform,external_platform,
+                    request["profile_name"],request["sheet_url"],
+                    role=role,
+                    expected_ticket=request["confirmed_ticket"],
+                    expected_account_ids=request["account_ids"],
+                    require_other_empty=True,
+                    operation="user",
+                )
+                title="已平倉並確認兩邊皆無持倉"
+                message=(
+                    f"已確認關閉 {role} 的訂單 {closed.ticket}。"
+                    "兩邊帳戶目前都沒有該次配對持倉。"
+                )
+            else:
+                role=(
+                    "external" if request["confirmed_role"]=="internal"
+                    else "internal"
+                )
+                internal,external=flow.run_single_leg_test(
+                    item,internal_platform,external_platform,
+                    request["profile_name"],request["sheet_url"],
+                    role=role,sync_sl_tp=True,
+                    expected_other_ticket=request["confirmed_ticket"],
+                    expected_account_ids=request["account_ids"],
+                    draw_tv=bool(request.get("draw_tv",False)),
+                    draw_internal=bool(request.get("draw_internal",False)),
+                    operation="user",
+                )
+                title="缺少的一邊已補進並核對"
+                message=(
+                    f"場內訂單：{internal.ticket}\n"
+                    f"場外訂單：{external.ticket}\n"
+                    "兩邊持倉已重新讀回；場外 SL／TP 同步已核對。"
+                    + ("\nTradingView 繪圖已完成。"
+                       if request.get("draw_tv") else "")
+                )
+        signal=getattr(
+            getattr(self,"signals",None),"auto_entry_result",None
+        )
+        if signal is not None:
+            signal.emit({
+                "title":title,"message":message,"success":True,
+                "single_confirmed_role":None,
+                "internal_platform":internal_platform,
+                "external_platform":external_platform,
+            })
+        self.log(f"使用者選取的異常處理完成：{title}。")
+
+    def _start_user_approved_reentry(self, request: dict) -> None:
+        """Resume the ordinary dual-entry workflow after explicit user choice."""
+        item=request.get("item")
+        internal_platform=str(request.get("internal_platform") or "")
+        external_platform=str(request.get("external_platform") or "")
+        if (item is None or not internal_platform or not external_platform
+                or self.profiles.active_name!=request.get("profile_name")
+                or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
+                    !=request.get("sheet_url")
+                or self.instruction!=item
+                or self.internal_platform.currentText()!=internal_platform
+                or self.external_platform.currentText()!=external_platform):
+            QMessageBox.warning(
+                self,"進場資料已改變",
+                "方案、試算表、商品或平台已改變。請重新核對後再開始，"
+                "本次沒有重新進場。"
+            )
+            return
+        receipt=getattr(self,"_auto_entry_receipt",None)
+        if receipt is not None:
+            receipt.close()
+        self._start(
+            "重新進場",
+            lambda:self._fill_both_task(
+                internal_platform,external_platform,True,
+                sync_sl_tp=True,
+                draw_tv=bool(request.get("draw_tv",False)),
+                draw_internal=bool(request.get("draw_internal",False)),
+                fast_pair=False,
+                authorized_reentry_id=f"{time.time_ns()}",
+            ),
+            restore_after=False,
         )
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
-        dialog = QDialog(self)
+        dialog = ThemedDialog(self)
         dialog.setWindowTitle("場外止盈止損")
         layout = QGridLayout(dialog)
         lot_text = result.get("detected_lot") or "無法辨識"
         message = (
-            f"第一筆場外訂單手數不符合。預期 {result.get('expected_lot', '')}，"
-            f"讀到 {lot_text}。\n未開啟訂單，請手動確認後複製下列價格。"
+            f"場外手數不符：預期 {result.get('expected_lot', '')}，讀到 {lot_text}。\n"
+            "未開單。請核對下方價格後手動輸入。"
         )
         layout.addWidget(QLabel(message), 0, 0, 1, 3)
         rows = [
@@ -1813,6 +2622,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         close_button = QPushButton("關閉")
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, len(rows) + 1, 2)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         dialog.exec()
 
     def set_always_on_top(self, enabled: bool) -> None:
@@ -1841,7 +2652,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         hide_during: bool = True,
         restore_after: bool = True,
     ) -> None:
-        is_fill = name in ("填入場內", "填入場外", "填入兩邊", "重新確認進場")
+        is_fill = name in (
+            "填入場內", "填入場外", "填入兩邊", "重新確認進場",
+            "重新進場",
+            "異常後平倉", "異常後補進",
+            "測試場內重新進場", "測試場外重新進場",
+            "測試場內關單", "測試場外關單",
+        )
         if is_fill and not self._fill_task_lock.acquire(blocking=False):
             self.log("已有填寫任務執行中，已忽略重複操作。")
             return
@@ -1966,7 +2783,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         profile_name = self.profiles.active_name
         try:
             for tab_name, cells in SHEET_RULER_REFERENCES.items():
-                separate_tab = {**sheet_config, "worksheet": tab_name}
+                separate_tab = {
+                    **sheet_config,
+                    "worksheet": tab_name,
+                    "_worksheet_name_override": True,
+                }
                 ruler_values[tab_name] = self.reader.read_a1_values(
                     separate_tab, list(cells)
                 )
@@ -2015,6 +2836,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         }
         for key, value in parameter_values.items():
             self.parameter_inputs[key].setPlaceholderText("" if value is None else str(value))
+        self._refresh_expected_sl_warning()
         pending_price = self._primary_entry_price_pending
         if pending_price is not None and item.internal_entry_price == pending_price:
             self.manual_entry_price = pending_price
@@ -2149,6 +2971,58 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return None
         return str(points if points is not None else percent)
 
+    def _expected_sl_warning_values(self) -> tuple[Decimal, Decimal] | None:
+        """Return original and adjusted SL distances when the latter is tighter."""
+        if self.instruction is None or self.instruction.original_sl_points is None:
+            return None
+        original = self.instruction.original_sl_points
+        raw = self.parameter_inputs["expected_sl_combined"].text().strip()
+        try:
+            adjusted = (
+                self._parse_expected_sl_combined(raw)[0]
+                if raw
+                else self.instruction.expected_sl_points
+            )
+        except (AutomationError, InvalidOperation, ValueError):
+            return None
+        if adjusted is None or abs(adjusted) >= abs(original) or abs(original) == 0:
+            return None
+        return original, adjusted
+
+    def _refresh_expected_sl_warning(self, *_args: object) -> None:
+        values = self._expected_sl_warning_values()
+        self.expected_sl_warning_badge.setVisible(values is not None)
+        if values is not None:
+            self._position_expected_sl_warning()
+
+    def _position_expected_sl_warning(self) -> None:
+        container = self.expected_sl_warning_container
+        if container is None:
+            return
+        badge = self.expected_sl_warning_badge
+        # Match the small calibration markers: a red dot over the field's
+        # upper-right corner, with no separate slot in the parameter layout.
+        badge.move(max(0, container.width() - 14), 1)
+        badge.raise_()
+
+    def _show_expected_sl_warning(self) -> None:
+        values = self._expected_sl_warning_values()
+        if values is None:
+            self.expected_sl_warning_badge.hide()
+            return
+        original, adjusted = values
+        reduction = (Decimal("1") - abs(adjusted) / abs(original)) * Decimal("100")
+        detail = (
+            f"原始 SL：{original} 點\n"
+            f"預期 SL：{adjusted} 點\n"
+            f"止損距離縮短：約 {reduction:.1f}%\n\n"
+            "止損距離縮短時，若依固定風險重新計算，所需手數可能增加，"
+            "也可能碰到帳戶或平台的保證金限額。\n\n"
+            "目前程式沒有可靠的即時保證金資料，無法替你確認是否超限。"
+            "請在交易平台核對預計手數與可用保證金。"
+        )
+        QMessageBox.warning(self, "預期止損與保證金提醒", detail)
+
     def _confirm_fill_text_inputs(self) -> None:
         """An Enter confirms all visible parameter fields for fill previews.
 
@@ -2192,8 +3066,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 required.extend(("buy_button", "sell_button"))
             if platform in ("MT5", "BYBIT MT5", "原版MT5"):
                 required.append("new_order_button")
-                if item.estimated_price is None:
-                    required.append("ask_price")
+                quote_keys = ("bid_price_left", "ask_price_right")
+                has_quote_pair = all(
+                    isinstance(points.get(key), dict) and points[key]
+                    for key in quote_keys
+                )
+                has_partial_quote_pair = any(
+                    isinstance(points.get(key), dict) and points[key]
+                    for key in quote_keys
+                )
+                test_symbol = effective_test_symbol(item.symbol).strip().upper()
+                test_price_pair = test_symbol in {"BTCUSD", "ETHUSD"}
+                if test_price_pair or has_partial_quote_pair or item.estimated_price is None:
+                    required.extend(quote_keys)
                 # The MT5 order dialog can also be opened manually, so its
                 # launcher is not required by the CURRENT fill routine.
             labels = dict(CALIBRATION_TARGETS.get(platform, []))
@@ -2202,6 +3087,134 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     missing.append(f"{role_label} {platform}：{labels.get(key, key)}")
         return missing
 
+    def _selected_test_action(self, roles: tuple[str, ...]) -> str:
+        if roles != ("internal", "external"):
+            return ""
+        checkbox = getattr(self, "test_mode_checkbox", None)
+        if checkbox is None or not checkbox.isChecked():
+            return ""
+        for action, option in getattr(self, "test_scenario_checkboxes", {}).items():
+            if option.isChecked():
+                return action
+        symbol = TradingHelperApp._selected_test_symbol(self, roles)
+        return f"weekend:{symbol}" if symbol else ""
+
+    @staticmethod
+    def _selected_test_symbol(owner, roles: tuple[str, ...]) -> str | None:
+        if roles != ("internal", "external"):
+            return None
+        checkbox = getattr(owner, "test_mode_checkbox", None)
+        if checkbox is None or not checkbox.isChecked():
+            return None
+        for symbol, option in getattr(owner, "test_asset_checkboxes", {}).items():
+            if option.isChecked():
+                return symbol
+        return None
+
+    @staticmethod
+    def _exclusive_optional_checkbox(
+        group: dict[str, QCheckBox], current: QCheckBox, checked: bool,
+    ) -> None:
+        if not checked:
+            return
+        for option in group.values():
+            if option is not current and option.isChecked():
+                option.setChecked(False)
+
+    def _toggle_test_mode(self, enabled: bool) -> None:
+        choices = (
+            *getattr(self, "test_asset_checkboxes", {}).values(),
+            *getattr(self, "test_scenario_checkboxes", {}).values(),
+        )
+        for choice in choices:
+            choice.setEnabled(enabled)
+            if not enabled:
+                choice.setChecked(False)
+        if enabled:
+            self.log("已啟用本次測試選單；選好項目後按「填入兩邊」才會執行。")
+        else:
+            self.log("已關閉測試模式；恢復一般「填入兩邊」流程。")
+
+    @staticmethod
+    def _test_action_role(action: str) -> str:
+        if action.endswith(":internal"):
+            return "internal"
+        if action.endswith(":external"):
+            return "external"
+        return ""
+
+    def _test_action_missing(
+        self, action: str, platforms: dict[str,str], item: TradeInstruction,
+        test_symbol: str | None = None,
+    ) -> list[str]:
+        role=self._test_action_role(action)
+        if test_symbol is None and action.startswith("weekend:"):
+            test_symbol = action.split(":", 1)[1]
+        with test_symbol_scope(test_symbol):
+            # Every test starts with both order forms filled and then runs the
+            # ordinary dual-account checks for the selected test instrument.
+            missing=self._fill_calibration_missing(
+                ("internal","external"),platforms,item
+            )
+        modify_roles=["external"]
+        if "MT5" in platforms["internal"].upper():
+            modify_roles.append("internal")
+        required_modify=("position_order_row","position_sl_input",
+                         "position_tp_input","position_modify_confirm")
+        for modify_role in modify_roles:
+            points=self.store.data["platforms"].get(
+                platforms[modify_role],{}
+            ).get("points",{})
+            for key in required_modify:
+                if not isinstance(points.get(key),dict) or not points[key]:
+                    missing.append(
+                        f"{modify_role} {platforms[modify_role]}：{key}"
+                    )
+        close_roles=(
+            ("internal","external") if action=="close:internal"
+            else ("external",) if action=="close:external" else ()
+        )
+        for close_role in close_roles:
+            points=self.store.data["platforms"].get(
+                platforms[close_role],{}
+            ).get("points",{})
+            if not isinstance(points.get("position_close_button"),dict) or not points["position_close_button"]:
+                missing.append(
+                    f"{close_role} {platforms[close_role]}：position_close_button"
+                )
+        return missing
+
+    def _confirm_test_action(
+        self, action: str, item: TradeInstruction,
+        test_symbol: str | None = None,
+    ) -> bool:
+        if action.startswith("weekend:"):
+            symbol = test_symbol or action.split(":", 1)[1]
+            return QMessageBox.question(
+                self,"開始假日雙邊測試？",
+                f"目前連線的兩個帳戶會以 {symbol} 各進場一單並同步 SL／TP。開始？",
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
+                yes_text="開始測試", no_text="取消",
+            )==QMessageBox.Yes
+        role=self._test_action_role(action)
+        side="場內" if role=="internal" else "場外"
+        instrument = test_symbol or item.symbol
+        if action.startswith("reentry:"):
+            return QMessageBox.question(
+                self,"開始單邊重進測試？",
+                f"目前連線帳戶將用 {instrument} 測試{side}漏單後補進一次，會實際開倉；結果不明就停止。開始？",
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
+                yes_text="開始測試", no_text="取消",
+            )==QMessageBox.Yes
+        if action.startswith("close:"):
+            return QMessageBox.question(
+                self,"開始單邊平倉測試？",
+                f"目前連線帳戶將用 {instrument} 測試{side}快平，會實際開倉和平倉。開始？",
+                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
+                yes_text="開始測試", no_text="取消",
+            )==QMessageBox.Yes
+        return True
+
     def _launch_fill(self, roles: tuple[str, ...]) -> None:
         """Perform UI preflight before starting any broker-window clicks."""
         if self._fill_task_lock.locked():
@@ -2209,13 +3222,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if self._parameter_write_active or self._fill_waiting_for_sheet:
             QMessageBox.information(
-                self, "等待數值確認",
-                "交易參數正在寫回／核對試算表，完成後才可以填入。"
+                self, "正在更新數值",
+                "試算表更新完成後，再按一次「填入」。"
             )
             return
         if self.instruction is None:
             QMessageBox.warning(self, "填入前檢查", "請先讀取 Google 試算表。")
             return
+        test_action=self._selected_test_action(roles)
+        test_symbol = TradingHelperApp._selected_test_symbol(self, roles)
         platforms = {
             "internal": self.internal_platform.currentText(),
             "external": self.external_platform.currentText(),
@@ -2229,34 +3244,60 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             }
             names = "、".join(labels.get(key, key) for key in dirty)
             answer = QMessageBox.question(
-                self, "有尚未確認的數值",
-                f"以下數值尚未按 Enter 確認：\n{names}\n\n"
-                "是否先寫回試算表、重新核對，確認成功後再自動填入？",
+                self, "數值尚未寫回",
+                f"要先把「{names}」寫回試算表並核對，再繼續嗎？",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                yes_text="寫回並繼續", no_text="取消",
             )
             if answer != QMessageBox.Yes:
                 return
+
+        try:
+            candidate = (
+                self._instruction_with_parameter_overrides(self.instruction)
+                if dirty else self._require_instruction()
+            )
+        except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
+            QMessageBox.warning(self, "填入前檢查", str(exc))
+            return
+
+        random_adjustment = False
+        candidate, random_adjustment = self._maybe_adjust_repeated_expected_sl(
+            candidate, roles=roles, dirty=dirty, test_action=test_action,
+        )
+        if random_adjustment:
+            entry = self.parameter_inputs["expected_sl_combined"]
+            self._fill_confirmed_text.pop("expected_sl_combined", None)
+            entry.setText(format(candidate.expected_sl_points, "f"))
+            dirty = list(dict.fromkeys((*dirty, "expected_sl_combined")))
             try:
                 candidate = self._instruction_with_parameter_overrides(
                     self.instruction
                 )
             except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
-                QMessageBox.warning(self, "數值格式錯誤", str(exc))
+                QMessageBox.warning(self, "止損點數錯誤", str(exc))
                 return
-            # Always check targets BEFORE triggering a sheet update, so the
-            # user knows which button is missing without partial effects.
-            missing = self._fill_calibration_missing(roles, platforms, candidate)
+
+        if dirty:
+            # Check calibration before writing the approved value to Sheets.
+            if test_action:
+                missing=self._test_action_missing(
+                    test_action, platforms, candidate, test_symbol
+                )
+            else:
+                missing = self._fill_calibration_missing(roles, platforms, candidate)
             if missing:
                 QMessageBox.warning(
                     self, "請先校準必要按鈕",
-                    "本次填寫缺少下列校準位置：\n" + "\n".join(missing)
-                    + "\n\n請到「編輯 → 欄位校準」完成後再試。"
+                    "還沒校準：\n" + "\n".join(missing)
+                    + "\n請到「編輯 → 欄位校準」完成後再試。"
                 )
                 return
             self._fill_waiting_for_sheet = {
                 "roles": roles, "platforms": platforms,
                 "expected": candidate, "fields": tuple(dirty),
-                "sheet_ready": False,
+                "sheet_ready": False,"test_action":test_action,
+                "test_symbol": test_symbol,
             }
             self._confirm_fill_text_inputs()
             self.update_all_trade_parameters()
@@ -2268,20 +3309,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self._fill_waiting_for_sheet["sheet_ready"] = True
                 QTimer.singleShot(0, self._resume_fill_after_sheet_update)
             return
-        try:
-            candidate = self._require_instruction()
-        except (AutomationError, InvalidOperation, ValidationError, ValueError) as exc:
-            QMessageBox.warning(self, "填入前檢查", str(exc))
-            return
-        missing = self._fill_calibration_missing(roles, platforms, candidate)
+        if test_action:
+            missing=self._test_action_missing(
+                test_action, platforms, candidate, test_symbol
+            )
+        else:
+            missing = self._fill_calibration_missing(roles, platforms, candidate)
         if missing:
             QMessageBox.warning(
                 self, "請先校準必要按鈕",
-                "本次填寫缺少下列校準位置：\n" + "\n".join(missing)
-                + "\n\n請到「編輯 → 欄位校準」完成後再試。"
+                "還沒校準：\n" + "\n".join(missing)
+                + "\n請到「編輯 → 欄位校準」完成後再試。"
             )
             return
-        self._start_fill_worker(roles, platforms)
+        if test_action and not self._confirm_test_action(
+            test_action, candidate, test_symbol
+        ):
+            return
+        self._start_fill_worker(
+            roles, platforms, test_action=test_action, test_symbol=test_symbol
+        )
 
     def _resume_fill_after_sheet_update(self) -> None:
         pending = self._fill_waiting_for_sheet
@@ -2309,16 +3356,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
             return
         self._fill_waiting_for_sheet = None
-        self._start_fill_worker(pending["roles"], pending["platforms"])
+        test_action=str(pending.get("test_action", ""))
+        test_symbol=pending.get("test_symbol")
+        if test_action and not self._confirm_test_action(
+            test_action, expected, test_symbol
+        ):
+            return
+        self._start_fill_worker(
+            pending["roles"], pending["platforms"], test_action=test_action,
+            test_symbol=test_symbol,
+        )
 
     def _start_fill_worker(self, roles: tuple[str, ...],
-                           platforms: dict[str, str]) -> None:
+                           platforms: dict[str, str],
+                           *, test_action: str = "",
+                           test_symbol: str | None = None) -> None:
         auto_entry = self.auto_entry_on_fill_both.isChecked()
         fast_control = getattr(self,"auto_fast_pair",None)
         fast_pair = bool(fast_control is not None and fast_control.isChecked() and auto_entry)
+        sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
-            getattr(self, "auto_sync_sl_tp_after_entry", None)
-            and self.auto_sync_sl_tp_after_entry.isChecked()
+            auto_entry
+            and (sync_control is None or sync_control.isChecked())
         )
         auto_draw = bool(
             getattr(self, "auto_draw_tv_after_entry", None)
@@ -2328,6 +3387,32 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             getattr(self, "tv_draw_internal", None)
             and self.tv_draw_internal.isChecked()
         )
+        if test_action.startswith("weekend:"):
+            self._start(
+                "假日測試",
+                lambda: self._run_complete_test_scenario(
+                    test_action, platforms, symbol=test_symbol,
+                    draw_tv=auto_draw,draw_internal=draw_internal,
+                ),
+                restore_after=False,
+            )
+            return
+        if test_action.startswith(("reentry:","close:")):
+            title={
+                "reentry:internal":"測試場內重新進場",
+                "close:internal":"測試場內關單",
+                "reentry:external":"測試場外重新進場",
+                "close:external":"測試場外關單",
+            }[test_action]
+            self._start(
+                title,
+                lambda: self._run_complete_test_scenario(
+                    test_action, platforms, symbol=test_symbol,
+                    draw_tv=auto_draw,draw_internal=draw_internal,
+                ),
+                restore_after=False,
+            )
+            return
         # Read Qt options on GUI thread, not inside the worker.
         if roles == ("internal", "external"):
             self._start(
@@ -2351,24 +3436,93 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._start("填入場內" if role == "internal" else "填入場外",
                         task, restore_after=False)
 
+    def _run_complete_test_scenario(
+        self, action: str, platforms: dict[str,str],
+        *, symbol: str | None = None,
+        draw_tv: bool = False, draw_internal: bool = False,
+    ) -> None:
+        if symbol is None and action.startswith("weekend:"):
+            symbol = action.split(":", 1)[1]
+        with test_symbol_scope(symbol):
+            self._fill_both_task(
+                platforms["internal"],platforms["external"],True,
+                sync_sl_tp=True,draw_tv=draw_tv,
+                draw_internal=draw_internal,fast_pair=False,
+                test_scenario=action,
+            )
+
     def fill_role(self, role: str) -> None:
         self._launch_fill((role,))
 
     def fill_both(self) -> None:
         self._launch_fill(("internal", "external"))
 
+    def _preflight_duplicate_entry(
+        self, internal_platform: str, external_platform: str,
+        item: TradeInstruction, *, sync_sl_tp: bool, draw_tv: bool,
+        draw_internal: bool, fast_pair: bool,
+    ):
+        """Check exact journal repeats before touching either order form."""
+        self.emergency.guard()
+        journal=AutoEntryJournal(APP_DIR / "demo_auto_entry_journal.json")
+        port=DemoUiBrokerPort(self.automation,self.log,
+                              draw_internal=draw_internal)
+        flow=AutoEntryWorkflow(
+            port,journal,self.emergency.guard,self.log,
+            timing_store=getattr(self,"phase_timing_store",None),
+        )
+        profile_name=self.profiles.active_name
+        sheet_url=str(
+            self.store.data["sheet"].get("spreadsheet_url","")
+        ).strip()
+        try:
+            return flow.preflight_duplicate_entry(
+                item,internal_platform,external_platform,profile_name,sheet_url
+            )
+        except DuplicateEntryDecisionRequired as exc:
+            exc.request={
+                "item":item,"profile_name":profile_name,"sheet_url":sheet_url,
+                "internal_platform":internal_platform,
+                "external_platform":external_platform,
+                "sync_sl_tp":sync_sl_tp,"draw_tv":draw_tv,
+                "draw_internal":draw_internal,"fast_pair":fast_pair,
+                "fields_filled":False,
+            }
+            raise
+
+    @timed_operation("填入兩邊與自動進場")
     def _fill_both_task(
         self, internal_platform: str, external_platform: str,
         auto_entry_requested: bool = False,
         *, sync_sl_tp: bool = False, draw_tv: bool = False,
         draw_internal: bool = False, fast_pair: bool = False,
+        test_scenario: str = "",
+        authorized_reentry_id: str = "",
+        duplicate_confirmation: tuple[str,str,str,str] | None = None,
+        manual_reconciliation_confirmed: bool = False,
     ) -> None:
-        """Fill both sides first; start guarded demo entry ONLY after readback."""
+        """Fill both sides first; start guarded entry only after readback."""
         item = self._require_instruction()
+        duplicate_preflight=getattr(self,"_preflight_duplicate_entry",None)
+        prechecked_accounts=None
+        if (auto_entry_requested and not test_scenario
+            and duplicate_confirmation is None and not authorized_reentry_id
+            and callable(duplicate_preflight)):
+            prechecked_accounts=duplicate_preflight(
+                internal_platform,external_platform,item,
+                sync_sl_tp=sync_sl_tp,draw_tv=draw_tv,
+                draw_internal=draw_internal,fast_pair=fast_pair,
+            )
         fill_started=time.perf_counter()
-        self.automation.fill(internal_platform, "internal", item)
+        timed_call(
+            "填入場內",self.automation.fill,internal_platform,"internal",item,
+            platform=internal_platform,role="internal",
+        )
         after_internal=time.perf_counter()
-        self.automation.fill(external_platform, "external", item)
+        timed_call(
+            "填入場外",self.automation.fill,external_platform,"external",item,
+            platform=external_platform,role="external",
+        )
         after_external=time.perf_counter()
         emit_log=getattr(self,"log",None)
         if callable(emit_log):
@@ -2379,17 +3533,50 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 f"{(after_external-after_internal)*1000:.0f}ms。"
                 "若勾選自動進場，接著執行交易前核對。"
             )
+        if test_scenario:
+            self._auto_entry_after_fill_both_pending(
+                internal_platform,external_platform,item,
+                sync_sl_tp=True,draw_tv=draw_tv,
+                draw_internal=draw_internal,fast_pair=False,
+                test_scenario=test_scenario,
+            )
+            return
         if auto_entry_requested:
+            prechecked_options=(
+                {"prechecked_accounts":prechecked_accounts}
+                if prechecked_accounts is not None else {}
+            )
+            confirmation_options={}
+            if duplicate_confirmation is not None:
+                confirmation_options["duplicate_confirmation"]=duplicate_confirmation
+            if manual_reconciliation_confirmed:
+                confirmation_options["manual_reconciliation_confirmed"]=True
             if sync_sl_tp or draw_tv or draw_internal or fast_pair:
+                options={
+                    "sync_sl_tp":sync_sl_tp,"draw_tv":draw_tv,
+                    "draw_internal":draw_internal,"fast_pair":fast_pair,
+                }
+                if authorized_reentry_id:
+                    options["authorized_reentry_id"]=authorized_reentry_id
+                options.update(confirmation_options)
                 self._auto_entry_after_fill_both_pending(
-                    internal_platform, external_platform, item,
-                    sync_sl_tp=sync_sl_tp, draw_tv=draw_tv,
-                    draw_internal=draw_internal, fast_pair=fast_pair,
+                    internal_platform,external_platform,item,**options,
+                    **prechecked_options,
                 )
             else:
-                self._auto_entry_after_fill_both_pending(
-                    internal_platform, external_platform, item
-                )
+                if authorized_reentry_id:
+                    self._auto_entry_after_fill_both_pending(
+                        internal_platform,external_platform,item,
+                        **confirmation_options,
+                        authorized_reentry_id=authorized_reentry_id,
+                        **prechecked_options,
+                    )
+                else:
+                    self._auto_entry_after_fill_both_pending(
+                        internal_platform,external_platform,item,
+                        **confirmation_options,
+                        **prechecked_options,
+                    )
 
     def _auto_entry_after_fill_both_pending(
         self, internal_platform: str, external_platform: str,
@@ -2398,10 +3585,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         duplicate_confirmation: tuple[str,str,str,str] | None = None,
         manual_reconciliation_confirmed: bool = False,
         fast_pair: bool = False,
+        test_scenario: str = "",
+        authorized_reentry_id: str = "",
+        prechecked_accounts=None,
     ) -> None:
         """State machine is implemented; unverified broker UI fails closed.
 
-        Native broker demo identity, unique ticket readback and verified
+        Native broker account identity, unique ticket readback and verified
         modification controls are required before *any* order click.
         """
         self.emergency.guard()
@@ -2409,7 +3599,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         port=DemoUiBrokerPort(self.automation,self.log,
                               draw_internal=draw_internal)
         flow=AutoEntryWorkflow(
-            port,journal,self.emergency.guard,self.log
+            port,journal,self.emergency.guard,self.log,
+            timing_store=getattr(self,"phase_timing_store",None),
         )
         profile_name=self.profiles.active_name
         sheet_url=str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
@@ -2433,6 +3624,40 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 internal_platform=internal_platform,
                 external_platform=external_platform,
             )
+            if (
+                success and not test_scenario
+                and item.expected_sl_points is not None
+            ):
+                report["_repeat_expected_sl"] = {
+                    "context": self._expected_sl_repeat_signature(
+                        profile_name, sheet_url, item
+                    ),
+                    "points": str(item.expected_sl_points),
+                }
+            role=report.get("single_confirmed_role")
+            confirmed=(
+                entry.get("confirmed_legs",{})
+                if isinstance(entry,dict) else {}
+            )
+            if (role in ("internal","external")
+                    and isinstance(confirmed,dict)
+                    and confirmed.get(role)
+                    and isinstance(getattr(flow,"last_account_ids",None),dict)
+                    and flow.last_account_ids.get("internal")
+                    and flow.last_account_ids.get("external")):
+                report["incident_action_request"]={
+                    "item":item,
+                    "profile_name":profile_name,
+                    "sheet_url":sheet_url,
+                    "internal_platform":internal_platform,
+                    "external_platform":external_platform,
+                    "confirmed_role":role,
+                    "confirmed_ticket":str(confirmed[role]),
+                    "account_ids":dict(flow.last_account_ids),
+                    "symbol":flow._effective_test_symbol(item.symbol),
+                    "draw_tv":bool(draw_tv),
+                    "draw_internal":bool(draw_internal),
+                }
             signal.emit(report)
             return True
         extra=(
@@ -2443,11 +3668,100 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if duplicate_confirmation is not None else {}
         )
         try:
+            if test_scenario:
+                result=flow.run_test_scenario(
+                    item,internal_platform,external_platform,
+                    profile_name,sheet_url,scenario=test_scenario,
+                    test_run_id=str(time.time_ns()),draw_tv=draw_tv,
+                    draw_internal=draw_internal,
+                )
+                scenario=result["scenario"]
+                initial=result.get("initial_positions")
+                positions=result.get("positions",())
+                def ticket_pair(pair):
+                    if isinstance(pair,dict):
+                        return (
+                            f"場內 {pair['internal'].ticket}／"
+                            f"場外 {pair['external'].ticket}"
+                        )
+                    if isinstance(pair,(tuple,list)) and len(pair)==2:
+                        return (
+                            f"場內 {pair[0].ticket}／場外 {pair[1].ticket}"
+                        )
+                    return ""
+                initial_text=ticket_pair(initial)
+                final_text=ticket_pair(positions)
+                if result["outcome"]=="weekend_pair_confirmed":
+                    title="假日雙邊測試完成"
+                    symbol=scenario.split(":",1)[1]
+                    message=(
+                        f"{symbol} 兩邊進場已核對：{final_text}\n"
+                        "場內保護與場外 SL／TP 已完成；測試商品設定已還原。"
+                    )
+                    followup=False
+                elif result["outcome"]=="reentry_confirmed":
+                    title="單邊漏送測試完成"
+                    message=(
+                        f"已測試{'場內' if scenario.endswith(':internal') else '場外'}漏送並補進一次。\n"
+                        f"兩邊進場已核對：{final_text}\n"
+                        "場內保護與場外 SL／TP 已完成。"
+                    )
+                    if draw_tv:
+                        message+="\nTradingView 後續步驟已依設定執行。"
+                    followup=False
+                elif result["outcome"]=="both_closed_waiting_user":
+                    title="場內快平測試已處理，等你確認下一步"
+                    message=(
+                        f"兩邊進場已核對：{initial_text}；之後兩邊皆已確認平倉。\n"
+                        "可選擇重新進場；請先確認考試商規則。"
+                    )
+                    followup=True
+                else:
+                    title="場外快平並補進測試完成"
+                    message=(
+                        "場外快平後已於 15 秒內補進並重新同步 SL／TP。\n"
+                        f"兩邊進場已核對：{final_text}"
+                    )
+                    followup=False
+                signal=getattr(
+                    getattr(self,"signals",None),"auto_entry_result",None
+                )
+                if signal is not None:
+                    report={
+                        "title":title,"message":message,"success":True,
+                        "single_confirmed_role":None,
+                        "internal_platform":internal_platform,
+                        "external_platform":external_platform,
+                        "test_followup":followup,
+                        "reentry_request":({
+                            "item":item,
+                            "profile_name":profile_name,
+                            "sheet_url":sheet_url,
+                            "internal_platform":internal_platform,
+                            "external_platform":external_platform,
+                            "draw_tv":draw_tv,
+                            "draw_internal":draw_internal,
+                        } if result["outcome"]=="both_closed_waiting_user" else None),
+                    }
+                    if (
+                        item.expected_sl_points is not None
+                    ):
+                        report["_repeat_expected_sl"]={
+                            "context":self._expected_sl_repeat_signature(
+                                profile_name,sheet_url,item
+                            ),
+                            "points":str(item.expected_sl_points),
+                        }
+                    signal.emit(report)
+                self.log(f"完整測試完成：{title}。")
+                return
             result=flow.run(
                 item,internal_platform,external_platform,
                 profile_name,sheet_url,
                 sync_sl_tp=sync_sl_tp,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=fast_pair,**extra,
+                draw_internal=draw_internal,fast_pair=fast_pair,
+                authorized_reentry_id=authorized_reentry_id,
+                prechecked_accounts=prechecked_accounts,**extra,
             )
         except DuplicateEntryDecisionRequired as exc:
             exc.request={
@@ -2459,15 +3773,43 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "draw_tv":draw_tv,
                 "draw_internal":draw_internal,
                 "fast_pair":fast_pair,
+                "fields_filled":True,
             }
             raise
         except Exception as exc:
-            if emit_receipt(success=False, reason=str(exc)):
+            initial=getattr(exc,"test_initial_positions",None)
+            if test_scenario and isinstance(initial,dict):
+                closed=getattr(exc,"test_closed_roles",())
+                closed_text=(
+                    "、".join("場內" if r=="internal" else "場外"
+                             for r in closed) or "無"
+                )
+                report={
+                    "title":"測試中斷，請核對持倉",
+                    "message":(
+                        "自動操作已停止，不會重送或自行平倉。\n"
+                        f"測試單號：場內 {initial['internal'].ticket}；"
+                        f"場外 {initial['external'].ticket}\n"
+                        f"已確認平倉：{closed_text}\n"
+                        "請核對兩邊目前持倉。\n"
+                        + "原因：" + summarize_interruption_reason(str(exc))
+                    ),
+                    "success":False,"single_confirmed_role":None,
+                    "internal_platform":internal_platform,
+                    "external_platform":external_platform,
+                }
+                signal=getattr(
+                    getattr(self,"signals",None),"auto_entry_result",None
+                )
+                if signal is not None:
+                    signal.emit(report)
+                    setattr(exc,"_auto_entry_result_emitted",True)
+            elif emit_receipt(success=False, reason=str(exc)):
                 setattr(exc, "_auto_entry_result_emitted", True)
             raise
         emit_receipt(success=True)
         self.log(
-            f"Demo 兩邊成交並核對成功："
+            f"雙邊成交並核對成功："
             f"{result[0].ticket} / {result[1].ticket}"
         )
 
@@ -2501,20 +3843,33 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         self._start("繪製 TradingView", task, restore_after=False)
 
+    @timed_operation("手動同步場外 SL/TP")
+    def _execute_manual_external_sl_tp(
+        self, item: TradeInstruction, internal_platform: str,
+        external_platform: str,
+        entry_price_override: Decimal | None,
+        *, sync_sl_tp: bool = True,
+    ) -> None:
+        """Run the complete manual sync in the worker's timing report."""
+        result = self.automation.sync_external_sl_tp(
+            item,
+            internal_platform=internal_platform,
+            external_platform=external_platform,
+            entry_price_override=entry_price_override,
+        )
+        if result:
+            self.signals.external_price_result.emit(result)
+
     def sync_external_sl_tp(self) -> None:
         internal_platform = self.internal_platform.currentText()
         external_platform = self.external_platform.currentText()
 
         def task() -> None:
             item = self._require_instruction()
-            result = self.automation.sync_external_sl_tp(
-                item,
-                internal_platform=internal_platform,
-                external_platform=external_platform,
-                entry_price_override=self.manual_entry_price,
+            self._execute_manual_external_sl_tp(
+                item, internal_platform, external_platform,
+                self.manual_entry_price,
             )
-            if result:
-                self.signals.external_price_result.emit(result)
 
         self._start("同步場外止盈止損", task, restore_after=False)
 
@@ -2524,14 +3879,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         def task() -> None:
             item = self._require_instruction()
-            result = self.automation.sync_external_sl_tp(
-                item,
-                internal_platform=internal_platform,
-                external_platform=external_platform,
-                entry_price_override=entry_price,
+            self._execute_manual_external_sl_tp(
+                item, internal_platform, external_platform, entry_price,
             )
-            if result:
-                self.signals.external_price_result.emit(result)
 
         self._start("同步到場外", task, restore_after=False)
 
@@ -2776,7 +4126,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def show_daily_pnl_history(self) -> None:
         history = self.store.data.get("ui", {}).get("daily_pnl_history", [])
-        dialog = QDialog(self)
+        dialog = ThemedDialog(self)
         dialog.setWindowTitle("每日獲利/虧損紀錄")
         dialog.resize(520, 360)
         layout = QVBoxLayout(dialog)
@@ -2799,6 +4149,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         dialog.exec()
 
     def _clear_parameter_inputs(self, fields: object) -> None:
@@ -2849,7 +4201,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.warning(self, "查看場內外止盈止損", str(exc))
             return
 
-        dialog = QDialog(self)
+        dialog = ThemedDialog(self)
         dialog.setWindowTitle("場內外止盈止損")
         dialog.resize(560, 220)
         layout = QGridLayout(dialog)
@@ -2885,6 +4237,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         layout.addWidget(draw_button, len(rows) + 1, 1)
         layout.addWidget(sync_button, len(rows) + 1, 2)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         dialog.exec()
 
     def _queue_internal_entry_price_write(self, entry_price: Decimal) -> None:
@@ -3039,13 +4393,23 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
-        self.showMinimized()
+        was_maximized = self.isMaximized()
+        restore_geometry = self.geometry()
+        self._calibration_dialog_active = True
+        self.hide()
         try:
             CalibrationDialog(self, platform).exec()
         finally:
+            self._calibration_dialog_active = False
+            if was_minimized:
+                self.showMinimized()
+            elif was_maximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
+                self.setGeometry(restore_geometry)
             self._refresh_calibration_badges()
             if not was_minimized:
-                self.showNormal()
                 self.raise_()
                 self.activateWindow()
 
@@ -3063,7 +4427,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         previous = getattr(self, "_window_binding_dialog", None)
         if previous is not None:
             previous.close()
-        dialog = QDialog(self)
+        dialog = ThemedDialog(self)
         dialog.setObjectName("singleWindowBindingDialog")
         dialog.setWindowTitle(f"{role_text}視窗綁定｜{platform}")
         dialog.setMinimumWidth(450)
@@ -3072,6 +4436,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             f"平台：{platform}｜{role_text}\n"
             f"目前綁定：{current or '尚未綁定'}", dialog
         )
+        current_label.setObjectName("windowBindingCurrentLabel")
         current_label.setWordWrap(True)
         current_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(current_label)
@@ -3096,6 +4461,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.setProperty("boundRole",role)
         dialog.setProperty("boundPlatform",platform)
         dialog.setProperty("boundPattern",current)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         self._window_binding_dialog = dialog
 
         def begin() -> None:
@@ -3160,7 +4527,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     account_number = None
                     if platform == "cTrader" and point:
                         account_number = self.windows.read_account_number(target,point)
-                        account_message = f"；Demo 帳號已核對：{account_number}"
+                        account_message = f"；帳號已核對：{account_number}"
                     elif platform == "cTrader":
                         account_message = "；帳號位置未校準"
                     self._save_bound_window(platform,role,pattern)
@@ -3213,7 +4580,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             dialog.setProperty("boundPattern",result["new"])
             platform=result["platform"]
             role=result["role"]
-            current_label = dialog.layout().itemAt(0).widget()
+            current_label = dialog.findChild(QLabel,"windowBindingCurrentLabel")
             current_label.setText(
                 f"平台：{platform}｜{'場內' if role=='internal' else '場外'}\n"
                 f"目前綁定：{result['new']}"
@@ -3241,11 +4608,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         QApplication.alert(dialog, 4000)
+        if result.get("ok"):
+            self._refresh_calibration_badges()
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.Accepted:
             self.automation.config = self.store.data
+            self._refresh_calibration_badges()
             self.log("設定已儲存。")
 
     def open_sheet_url(self) -> None:
@@ -3257,7 +4627,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.log("已開啟表格網址。")
 
     def open_help(self) -> None:
-        dialog = QDialog(self)
+        dialog = ThemedDialog(self)
         dialog.setWindowTitle("Help")
         dialog.resize(690, 490)
         layout = QVBoxLayout(dialog)
@@ -3282,6 +4652,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
               MT5 第二階段請先自行開啟新訂單視窗。</li>
               <li>「讀取試算表」核對方向、手數及止盈止損，再按「填入場內／場外／兩邊」。</li>
             </ol>
+            <h2>建立方案與試算表權限</h2>
+            <p>新方案會清空試算表網址與場內／場外視窗綁定；欄位校準保留，
+            自動進場選項會關閉。看到紅點時，按該按鈕完成設定。</p>
+            <p>目前使用 Google 服務帳戶，可讀取並更新試算表。選好 JSON 後，
+            把程式顯示的服務帳戶電子郵件加入該試算表的「共用」清單，權限設為「編輯者」，
+            再貼上新試算表網址。網址中的 GID 會自動讀取。CSV 是公開匯出方式，只能讀取，
+            本程式不使用它來更新資料。</p>
+            <p><a href="https://developers.google.com/workspace/guides/create-credentials">
+            Google Workspace：建立憑證與服務帳戶</a>　
+            <a href="https://docs.cloud.google.com/iam/docs/service-accounts-create">
+            Google Cloud：建立服務帳戶</a></p>
             <h2>校準前建立模擬帳戶</h2>
             <p>若還沒有方便測試的持倉，可前往
             <b>IC Markets 官方網站</b>申請模擬帳戶，分別選擇
@@ -3294,7 +4675,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             不是交易安全驗收。紅點可在「顯示設定」關閉。</p>
             <h2>填入與進場</h2>
             <p>未勾選「自動進場」時，填入只會寫入交易欄位；
-            勾選後雙 Demo 自動進場功能可能真的送出模擬訂單。
+            勾選後會在帳戶與表單核對通過時自動進場；若使用 Live 帳戶，會送出真實訂單。
             缺校準點會列出清單；數值未按 Enter 則會先詢問確認。
             按 ESC 可中止後續動作。</p>
             <h2>交易參數與工具</h2>
@@ -3314,6 +4695,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
         dialog.exec()
 
     def _handle_help_link(
@@ -3321,6 +4704,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     ) -> None:
         if link.startswith("#"):
             browser.scrollToAnchor(link[1:])
+            return
+        if link.startswith(("https://", "http://")):
+            webbrowser.open(link)
             return
         if not link.startswith("action:"):
             return
@@ -3359,7 +4745,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.profiles.save_profile(self.profiles.active_name, self.store.data)
 
     def _save_bound_window(self, platform: str, role: str, pattern: str) -> None:
-        self.store.data["platforms"][platform]["window_title"][role] = pattern
+        platform_config = self.store.data["platforms"][platform]
+        platform_config["window_title"][role] = pattern
+        platform_config.setdefault("window_bound", {})[role] = True
         self.store.save()
         self.profiles.save_profile(self.profiles.active_name, self.store.data)
         persisted = self.profiles.load_profile(self.profiles.active_name)
@@ -3389,7 +4777,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self.auto_fast_pair.isChecked()
                     if hasattr(self,"auto_fast_pair") else False
                 ),
-                "auto_sync_sl_tp_after_entry": self.auto_sync_sl_tp_after_entry.isChecked(),
+                "auto_sync_sl_tp_after_entry": (
+                    self.auto_sync_sl_tp_after_entry.isChecked()
+                    if hasattr(self, "auto_sync_sl_tp_after_entry")
+                    else bool(self.store.data["ui"].get(
+                        "auto_sync_sl_tp_after_entry", True
+                    ))
+                ),
                 "auto_draw_tv_after_entry": self.auto_draw_tv_after_entry.isChecked(),
             }
         )
@@ -3402,39 +4796,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         the confirmation handlers recursively.
         """
         first = getattr(self, "auto_entry_on_fill_both", None)
-        second = getattr(self, "auto_sync_sl_tp_after_entry", None)
+        sync = getattr(self, "auto_sync_sl_tp_after_entry", None)
         third = getattr(self, "auto_draw_tv_after_entry", None)
         fast = getattr(self, "auto_fast_pair", None)
-        if first is None or second is None or third is None:
+        if first is None or third is None:
             return
         first_checked = first.isChecked()
         if fast is not None:
-            if not first_checked and fast.isChecked():
-                prev=fast.blockSignals(True)
-                fast.setChecked(False)
-                fast.blockSignals(prev)
             fast.setEnabled(first_checked)
-        if not first_checked and second.isChecked():
-            was_blocked = second.blockSignals(True)
-            second.setChecked(False)
-            second.blockSignals(was_blocked)
-        second.setEnabled(first_checked)
-        second.setToolTip(
-            "必須先勾選「自動進場」，才能啟用成交後 SL/TP 同步。"
-            if not first_checked else
-            "雙 Demo 成交和場內保護核對成功後，會嘗試同步場外 SL/TP 並重新讀回。"
+        sync_checked = bool(sync is not None and sync.isChecked())
+        third.setToolTip(
+            "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
+            if first_checked and sync_checked else
+            "請先勾選「自動進場」與「同步」。"
         )
-        second_checked = first_checked and second.isChecked()
-        if not second_checked and third.isChecked():
+        if (not first_checked or not sync_checked) and third.isChecked():
             was_blocked = third.blockSignals(True)
             third.setChecked(False)
             third.blockSignals(was_blocked)
-        third.setEnabled(second_checked)
-        third.setToolTip(
-            "必須先勾選「同步 SL/TP」，才能啟用成交後 TradingView 繪圖。"
-            if not second_checked else
-            "雙 Demo 成交且場外 SL/TP 同步讀回成功後，才會嘗試自動繪製 TradingView。"
-        )
+        third.setEnabled(first_checked and sync_checked)
 
     def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
         if not enabled:
@@ -3446,18 +4826,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             accepted=QMessageBox.No
         else:
             accepted=QMessageBox.question(
-                self,"確認快速雙邊進場（僅 Demo）",
-                "快速雙邊：兩邊表單先通過完整核對，之後"
-                "連續點擊 cTrader 與 MT5 各一次，才讀取兩邊實際成交。\n\n"
-                "危險：如果第一邊被拒單，第二邊仍可能成交，"
-                "也可能短暫沒有確認任何一邊的止損。"
-                "本模式不保證同時成交，不會自動重試、平倉或補單。\n"
-                "支援 cTrader / MT5 場內場外互換、雙 Demo。\n"
-                "MT5 當場內時，會在兩邊送單後依實際成交價修正"
-                "場內 SL/TP；修正完成前仍可能有單邊／"
-                "保護價格偏差風險。\n\n"
-                "確認仍要為本次測試啟用快速進場？",
+                self,"啟用快速雙邊？",
+                "核對通過後會連續送出兩筆訂單。Live 會建立真實倉位；"
+                "單邊結果不明就停止，不補單或平倉。啟用？",
                 QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
+                yes_text="啟用", no_text="取消",
             )
         if accepted!=QMessageBox.Yes:
             was=self.auto_fast_pair.blockSignals(True)
@@ -3466,7 +4839,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if hasattr(self,"save_ui_state"):
             self.save_ui_state()
-        self.log("已明確啟用快速雙邊 Demo 偏好；送單仍須按填入兩邊並通過核對。")
+        self.log("已啟用快速雙邊偏好；送單仍須按填入兩邊並通過核對。")
 
     def _confirm_auto_entry_toggle(self, enabled: bool) -> None:
         """Explicit opt-in; switching off takes effect immediately."""
@@ -3477,15 +4850,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         accepted = QMessageBox.question(
             self,
-            "確認啟用自動進場選項",
-            "要開啟「填入兩邊時自動進場」嗎？\n"
-            "此選項只會作用於「填入兩邊」，不影響單獨填入場內／場外。\n\n"
-            "注意：此選項僅允許經過確認的兩個 Demo 帳戶進場。\n"
-            "兩邊填寫、方向、手數和 SL/TP 核對成功後才會嘗試送單；"
-            "成交與修改持倉都必須再次讀回確認。\n"
-            "如果任何資料不明，會停止而不會重複送單或自行平倉。",
+            "啟用自動進場？",
+            "按下「填入兩邊」後自動進場"
+            + (
+                "並同步場外 SL／TP。"
+                if getattr(
+                    self, "auto_sync_sl_tp_after_entry", None
+                ) is None or self.auto_sync_sl_tp_after_entry.isChecked()
+                else "；不會自動同步場外 SL／TP。"
+            )
+            + "Live 會建立真實倉位；結果不明時停止，不補單或平倉。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
+            yes_text="啟用", no_text="取消",
         )
         if accepted != QMessageBox.Yes:
             self.auto_entry_on_fill_both.blockSignals(True)
@@ -3495,14 +4872,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         TradingHelperApp._refresh_auto_option_dependencies(self)
         self.save_ui_state()
-        self.log("已開啟 Demo 自動進場；只有雙 Demo、持倉辨識與表單均可靠確認後才允許送單。")
+        self.log("已開啟自動進場；只有雙邊帳戶、持倉辨識與表單均核對通過才送單。")
 
     def _confirm_future_auto_option(
         self, checkbox: QCheckBox, enabled: bool, label: str
     ) -> None:
-        """Store follow-up opt-in; toggling alone never sends orders or draws TV."""
+        """Store future opt-in only; never run broker/TV workflows."""
         if enabled:
-            if (checkbox is self.auto_sync_sl_tp_after_entry
+            if (checkbox is self.auto_draw_tv_after_entry
                     and not self.auto_entry_on_fill_both.isChecked()):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(False)
@@ -3520,15 +4897,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             TradingHelperApp._refresh_auto_option_dependencies(self)
             self.save_ui_state()
             return
+        if checkbox is self.auto_sync_sl_tp_after_entry:
+            title = "啟用自動同步？"
+            message = (
+                "雙邊進場核對後會同步場外 SL／TP。"
+                "Live 會修改真實持倉的止盈止損。啟用？"
+            )
+        else:
+            title = f"啟用「{label}」？"
+            message = (
+                "雙邊進場與 SL／TP 完成後會在 TradingView 繪圖。"
+                "Live 自動進場會建立真實倉位。啟用？"
+            )
         accepted = QMessageBox.question(
             self,
-            "確認自動化後續選項",
-            f"要記住「{label}」為勾選狀態嗎？\n\n"
-            "此選項會在雙 Demo 自動進場並核對持倉後依順序執行。\n"
-            "必須唯一辨識正確持倉、再次確認修改結果；"
-            "若失敗將立即停止，不會補送單。",
+            title,
+            message,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
+            yes_text="啟用", no_text="取消",
         )
         if accepted != QMessageBox.Yes:
             checkbox.blockSignals(True)
@@ -3538,7 +4925,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         TradingHelperApp._refresh_auto_option_dependencies(self)
         self.save_ui_state()
-        self.log(f"已啟用 Demo 自動化後續步驟：「{label}」；未通過安全核對會停止。")
+        self.log(f"已啟用自動化後續步驟：「{label}」；未通過安全核對會停止。")
 
     def _save_bound_account(self, platform: str, role: str, account_number: str) -> None:
         platform_config = self.store.data["platforms"][platform]
@@ -3566,9 +4953,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.critical(self, "方案", str(exc))
 
     def create_profile(self) -> None:
-        name, accepted = QInputDialog.getText(
-            self, "建立方案", "方案名稱："
-        )
+        name, accepted = themed_input_text(self, "建立方案", "方案名稱：")
         name = name.strip()
         if not accepted:
             return
@@ -3595,7 +4980,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def rename_profile(self) -> None:
         old_name = self.profiles.active_name
-        name, accepted = QInputDialog.getText(
+        name, accepted = themed_input_text(
             self, "重新命名方案", "新名稱：", text=old_name
         )
         name = name.strip()
@@ -3620,9 +5005,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         answer = QMessageBox.question(
             self,
             "刪除方案",
-            f"確定刪除「{name}」？",
+            f"刪除方案「{name}」及其設定？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
+            yes_text="刪除", no_text="取消",
         )
         if answer != QMessageBox.Yes:
             return
@@ -3664,7 +5050,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             bool(ui.get("auto_entry_on_fill_both",False))
         )
         self.auto_sync_sl_tp_after_entry.setChecked(
-            bool(ui.get("auto_sync_sl_tp_after_entry",False))
+            bool(ui.get("auto_sync_sl_tp_after_entry", True))
         )
         self.auto_draw_tv_after_entry.setChecked(
             bool(ui.get("auto_draw_tv_after_entry",False))
@@ -3740,35 +5126,55 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         event.accept()
 
 
-class CalibrationDialog(QDialog):
-    capture_finished = Signal(str)
+class CalibrationDialog(ThemedDialog):
+    capture_finished = Signal(object)
     inspection_finished = Signal(object)
     hover_finished = Signal(object)
     inventory_finished = Signal(object)
+    preview_progress = Signal(int)
+    preview_guard_ready = Signal(object)
+    preview_finished = Signal(object)
 
     def __init__(self, app: TradingHelperApp, platform: str):
         super().__init__(app)
         self.app = app
         self.platform = platform
+        self.setProperty("calibrationPopup", True)
         self.setWindowTitle(f"校準 {platform}")
         self.resize(850, 550)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         layout = QVBoxLayout(self)
+        # Let the custom titlebar use the full dialog width, like the main
+        # window. Keep the previous inset for the calibration body itself.
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        content = QWidget(self)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(9, 9, 9, 9)
+        content_layout.setSpacing(6)
+        layout.addWidget(content)
+        self._calibration_content = content
+        self._calibration_content_layout = content_layout
         descriptions = {
             "cTrader": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
             "MT5": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
-            "TradingView": "此平台目前使用手動位置校準；選擇繪圖控制項後按「擷取所選位置」。",
+            "TradingView": "此平台使用手動校準；請按各欄位右側的「手動擷取」。",
         }
-        layout.addWidget(QLabel(descriptions.get(platform, "選擇項目後校準；舊設定會保留到你主動變更。")))
+        content_layout.addWidget(QLabel(descriptions.get(platform, "選擇項目後校準；舊設定會保留到你主動變更。")))
         self.radios: dict[str, QRadioButton] = {}
         self._calibration_radio_group = QButtonGroup(self)
         self._calibration_tabs = QTabWidget(self)
+        self._calibration_tabs.setObjectName("calibrationTabs")
         # Long tab captions produce tiny arrow controls at the right edge.
         # Use short descriptive titles; instructions remain inside each page.
         self._calibration_tabs.tabBar().setUsesScrollButtons(False)
         self._stage_keys: list[tuple[str, ...]] = []
         self._stage_titles: list[str] = []
         self._stage_dots: list[QLabel] = []
+        self._field_capture_buttons: dict[str, QPushButton] = {}
+        self._field_capture_dots: dict[str, QLabel] = {}
+        self._capture_buttons: list[QPushButton] = []
+        self._capture_running = False
         keys_all = tuple(key for key, _ in CALIBRATION_TARGETS[platform])
         if platform == "cTrader":
             after_keys = set(POSITION_GRID_KEYS+POSITION_EDIT_KEYS)
@@ -3786,7 +5192,8 @@ class CalibrationDialog(QDialog):
             # inventory makes one of them appear "not found" every time.
             launcher = ("new_order_button", "trade_tab")
             order_fields = (
-                "lot_input", "ask_price", "sl_input", "tp_input",
+                "lot_input", "bid_price_left", "ask_price_right",
+                "sl_input", "tp_input",
                 "order_submit_buy", "order_submit_sell",
             )
             grid = tuple(key for key in keys_all if key in POSITION_GRID_KEYS)
@@ -3802,53 +5209,156 @@ class CalibrationDialog(QDialog):
         for stage_index, (title, stage_keys) in enumerate(stages):
             page = QWidget(self._calibration_tabs)
             page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(0)
+            page_layout.setAlignment(Qt.AlignTop)
+            card = QFrame(page)
+            card.setObjectName("calibrationStageCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 6)
+            card_layout.setSpacing(5)
+            page_layout.addWidget(card, 0, Qt.AlignTop)
             selected_keys = set(stage_keys)
             for key, label in CALIBRATION_TARGETS[platform]:
                 if key not in selected_keys:
                     continue
-                radio = QRadioButton(label, page)
+                shown_label = (
+                    "已進場持倉的平倉按鈕"
+                    if key == "position_close_button" else label
+                )
+                radio = QRadioButton(shown_label, page)
                 if stage_index == 0 and key == stage_keys[0]:
                     radio.setChecked(True)
                 self.radios[key] = radio
+                radio.toggled.connect(
+                    lambda _checked=False: self._refresh_clear_calibration_button()
+                )
                 self._calibration_radio_group.addButton(radio)
-                page_layout.addWidget(radio)
+                if key == "position_close_button":
+                    target_row = QWidget(page)
+                    target_layout = QHBoxLayout(target_row)
+                    target_layout.setContentsMargins(0, 1, 2, 1)
+                    target_layout.setSpacing(8)
+                    target_layout.addWidget(radio, 1)
+                    capture = QPushButton("手動擷取欄位", target_row)
+                    capture.setObjectName("capturePositionCloseButton")
+                    capture.setToolTip(
+                        "自動尋找不到時使用。倒數期間把游標停在持倉列最右側的平倉按鈕中央；"
+                        "只記錄位置，不會點擊或平倉。"
+                    )
+                    capture.clicked.connect(
+                        lambda checked=False, close_radio=radio:
+                            (close_radio.setChecked(True), self.capture())
+                    )
+                    self._capture_buttons.append(capture)
+                    badge_host = QWidget(target_row)
+                    badge_grid = QGridLayout(badge_host)
+                    badge_grid.setContentsMargins(0, 0, 0, 0)
+                    badge_grid.setSpacing(0)
+                    badge_grid.addWidget(capture, 0, 0)
+                    missing_dot = QLabel(badge_host)
+                    missing_dot.setObjectName("positionCloseCalibrationMissingDot")
+                    missing_dot.setFixedSize(6, 6)
+                    missing_dot.setStyleSheet(
+                        "background-color:#fa5362;border-radius:3px;"
+                    )
+                    missing_dot.setAttribute(Qt.WA_TransparentForMouseEvents)
+                    badge_grid.addWidget(
+                        missing_dot, 0, 0, Qt.AlignRight | Qt.AlignTop
+                    )
+                    target_layout.addWidget(badge_host)
+                    card_layout.addWidget(target_row)
+                    self.position_close_capture_button = capture
+                    self.position_close_missing_dot = missing_dot
+                elif platform == "TradingView":
+                    target_row = QWidget(page)
+                    target_layout = QHBoxLayout(target_row)
+                    target_layout.setContentsMargins(0, 1, 2, 1)
+                    target_layout.setSpacing(8)
+                    target_layout.addWidget(radio, 1)
+                    capture = QPushButton("手動擷取", target_row)
+                    capture.setObjectName(f"captureCalibration_{key}")
+                    capture.setToolTip("將滑鼠停在此欄位上，倒數結束後儲存座標")
+                    capture.clicked.connect(
+                        lambda checked=False, field_key=key, field_radio=radio:
+                            (field_radio.setChecked(True), self.capture())
+                    )
+                    self._capture_buttons.append(capture)
+                    badge_host = QWidget(target_row)
+                    badge_grid = QGridLayout(badge_host)
+                    badge_grid.setContentsMargins(0, 0, 0, 0)
+                    badge_grid.setSpacing(0)
+                    badge_grid.addWidget(capture, 0, 0)
+                    missing_dot = QLabel(badge_host)
+                    missing_dot.setObjectName(f"calibrationMissingDot_{key}")
+                    missing_dot.setFixedSize(6, 6)
+                    missing_dot.setStyleSheet(
+                        "background-color:#fa5362;border-radius:3px;"
+                    )
+                    missing_dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                    badge_grid.addWidget(
+                        missing_dot, 0, 0, Qt.AlignRight | Qt.AlignTop
+                    )
+                    target_layout.addWidget(badge_host)
+                    card_layout.addWidget(target_row)
+                    self._field_capture_buttons[key] = capture
+                    self._field_capture_dots[key] = missing_dot
+                else:
+                    card_layout.addWidget(radio)
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 0:
-                page_layout.addWidget(QLabel("第 1 步：校準主視窗的「新訂單」按鈕。"))
+                card_layout.addWidget(QLabel("第 1 步：校準主視窗的「新訂單」按鈕。"))
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 1:
-                page_layout.addWidget(QLabel(
+                card_layout.addWidget(QLabel(
                     "請先開啟 MT5「新訂單」視窗，再按自動尋找。"
                 ))
+                card_layout.addWidget(QLabel(
+                    "BTCUSD／ETHUSD 測試必須分別校準左側 Bid 與右側 Ask；"
+                    "請讓黃色框只框住各自的完整報價數字。"
+                ))
+            if platform == "cTrader" and stage_index == 0:
+                ctrader_hint = QLabel(
+                    "請先展開止盈／止損欄並保持展開，再找或擷取下單按鈕。"
+                    "收起時按鈕位置可能改變。"
+                )
+                ctrader_hint.setWordWrap(True)
+                ctrader_hint.setObjectName("ctraderOrderPanelCalibrationHint")
+                card_layout.addWidget(ctrader_hint)
             if set(stage_keys)==set(POSITION_GRID_KEYS):
                 row_name="TP" if platform=="cTrader" else "SL"
-                page_layout.addWidget(QLabel(
-                    "先在平台顯示 Positions／交易列表，先校準進場價、手數及訂單列；"
-                    f"訂單列以 {row_name} 欄為雙擊候選，這裡不會實際雙擊。"
+                card_layout.addWidget(QLabel(
+                    "先顯示 Positions／交易列表，再校準進場價、手數與訂單列；"
+                    f"雙擊訂單列的 {row_name} 欄可開啟修改視窗。"
                 ))
+                close_help = QLabel(
+                    "自動尋找不到時，手動擷取持倉列最右側的平倉按鈕；"
+                    "擷取後以黃框核對，不會點擊或平倉。"
+                )
+                close_help.setWordWrap(True)
+                close_help.setObjectName("positionCloseCalibrationHelp")
+                close_help.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                card_layout.addWidget(close_help)
             elif set(stage_keys)==set(POSITION_EDIT_KEYS):
-                page_layout.addWidget(QLabel(
+                card_layout.addWidget(QLabel(
                     "你必須先自行雙擊持倉列開啟修改視窗，再掃止損、止盈、確認按鈕。"
                     "本功能不會點擊 Protect／Modify。"
                 ))
             if platform != "TradingView":
-                scan = QPushButton("自動尋找此階段欄位（唯讀）", page)
+                scan = QPushButton("自動尋找欄位", page)
                 scan.setToolTip("只找目前開啟畫面的候選位置；不儲存、不填值、不操作交易平台")
                 scan.clicked.connect(self.scan_all_calibration)
-                page_layout.addWidget(scan)
+                card_layout.addWidget(scan)
             else:
-                page_layout.addWidget(QLabel(
+                card_layout.addWidget(QLabel(
                     "TradingView 尚無可靠的一鍵 UIA 掃描。"
                     "先以手動校準，不會假裝已自動找到位置。"
                 ))
-            page_layout.addStretch()
             self._stage_keys.append(tuple(stage_keys))
             self._stage_titles.append(title)
             tab_idx = self._calibration_tabs.addTab(page, title)
-            dot = QLabel("●")
+            dot = QLabel()
             dot.setObjectName("stageCalibrationIncompleteDot")
-            dot.setFixedSize(10, 13)
-            dot.setStyleSheet(
-                "color:#fa5362;font-size:12px;background:transparent;"
-            )
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self._calibration_tabs.tabBar().setTabButton(
                 tab_idx, QTabBar.RightSide, dot
@@ -3856,58 +5366,146 @@ class CalibrationDialog(QDialog):
             self._stage_dots.append(dot)
         self._refresh_stage_progress()
         self._calibration_tabs.currentChanged.connect(self._select_stage_radio)
-        layout.addWidget(self._calibration_tabs)
+        content_layout.addWidget(self._calibration_tabs)
         # Detailed calibration precautions live in Help and tooltips.
         # The top instruction is the only permanent explanatory sentence.
-        self.result = QLabel("")
+        self.result = QLabel("", self._calibration_tabs)
+        self.result.setObjectName("calibrationStatus")
+        self.result.setFixedHeight(max(16, self.result.sizeHint().height()))
+        self.result.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.result.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.result.setStyleSheet("color: #176b35;")
-        layout.addWidget(self.result)
-        layout.addStretch()
         buttons = QHBoxLayout()
-        # Keep diagnostic hover/UIA methods in source for developers, but
-        # do not expose two redundant test buttons to everyday users.
-        capture = QPushButton("手動擷取所選欄位")
-        capture.setToolTip("需要由你把滑鼠移到欄位上；此操作會覆寫該項已儲存的位置")
-        capture.clicked.connect(self.capture)
-        show_position = QPushButton("查看已校準位置")
-        show_position.clicked.connect(self.show_position)
+        view_position = ChevronCombo()
+        view_position.setObjectName("calibratedPositionViewer")
+        view_position.addItem("查看此欄位", "selected")
+        view_position.addItem("顯示本階段全部欄位", "stage")
+        view_position.setCurrentIndex(-1)
+        view_position.setPlaceholderText("查看已校準位置")
+        view_position.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        view_position.setMinimumWidth(188)
+        view_position.currentIndexChanged.connect(
+            self._calibrated_view_selection_changed
+        )
+        clear_calibration = ChevronCombo()
+        clear_calibration.setObjectName("clearSelectedCalibration")
+        clear_calibration.addItem("清除目前欄位", "selected")
+        clear_calibration.addItem("清除此階段全部欄位", "stage_all")
+        clear_calibration.setCurrentIndex(-1)
+        clear_calibration.setPlaceholderText("清除欄位")
+        clear_calibration.setMinimumWidth(176)
+        clear_calibration.currentIndexChanged.connect(
+            self._clear_calibration_selection_changed
+        )
         close = QPushButton("關閉")
         close.clicked.connect(self.accept)
-        # Manual capture is still available, but hidden by default while
-        # auto UIA inventory is the main path. TradingView has no safe auto
-        # inventory yet, so manual tools remain visible there.
-        self.manual_capture_button = capture
-        self.manual_position_button = show_position
-        self.manual_tools_toggle = QPushButton("顯示手動校準 ▾")
-        self.manual_tools_toggle.setCheckable(True)
-        show_by_default = platform == "TradingView"
-        self.manual_tools_toggle.setChecked(show_by_default)
-        def set_manual_visible(show: bool) -> None:
-            capture.setVisible(show)
-            show_position.setVisible(show)
-            self.manual_tools_toggle.setText(
-                "收起手動校準 ▴" if show else "顯示手動校準 ▾"
-            )
-        self.manual_tools_toggle.toggled.connect(set_manual_visible)
-        buttons.addWidget(self.manual_tools_toggle)
-        buttons.addWidget(capture)
-        buttons.addWidget(show_position)
+        self.manual_position_button = view_position
+        self.calibrated_position_viewer = view_position
+        self.clear_calibration_button = clear_calibration
+        buttons.addWidget(view_position)
+        buttons.addWidget(clear_calibration)
         buttons.addStretch()
         buttons.addWidget(close)
-        set_manual_visible(show_by_default)
-        layout.addLayout(buttons)
+        content_layout.addLayout(buttons)
         self.capture_finished.connect(self._finish_capture)
         self.inspection_finished.connect(self._finish_inspection)
         self._inspection_running = False
         self._hover_running = False
         self._inventory_running = False
         self._candidate_preview_running = False
-        self._inventory_overlays: list[CandidateOutline] = []
+        self._calibration_abort = None
+        self._inventory_overlays: list[QWidget] = []
         self._inventory_scan_context: dict[str, Any] | None = None
         self._inventory_save_preview: dict[str, Any] | None = None
         self._hover_outline = CandidateOutline()
         self.hover_finished.connect(self._finish_hover)
         self.inventory_finished.connect(self._finish_inventory)
+        self.preview_progress.connect(self._update_calibration_preview_countdown)
+        self.preview_guard_ready.connect(self._show_inventory_preview_outlines)
+        self.preview_finished.connect(self._finish_saved_preview)
+        self.setStyleSheet(DIALOG_THEME)
+        self.install_chrome(show_minimize=False, show_maximize=False)
+        self._refresh_position_close_badge()
+        self._refresh_field_capture_badges()
+        self._refresh_clear_calibration_button()
+        self._calibration_escape = QShortcut(QKeySequence("Esc"), self)
+        self._calibration_escape.setContext(Qt.ApplicationShortcut)
+        self._calibration_escape.activated.connect(self.cancel_calibration_operation)
+        self._calibration_tabs.currentChanged.connect(
+            lambda _index: QTimer.singleShot(
+                0, self._fit_calibration_dialog_to_current_stage
+            )
+        )
+        QTimer.singleShot(0, self._fit_calibration_dialog_to_current_stage)
+
+    def _fit_calibration_dialog_to_current_stage(self) -> None:
+        index = self._calibration_tabs.currentIndex()
+        page = self._calibration_tabs.widget(index) if index >= 0 else None
+        if page is None:
+            return
+        page_layout = page.layout()
+        if page_layout is not None:
+            page_layout.activate()
+        page_size = page_layout.sizeHint() if page_layout is not None else page.sizeHint()
+        # Keep the outside calibration work area the same height while the
+        # user switches stages.  The stage contents themselves stay unchanged;
+        # shorter stages simply leave the dialog-colored background below.
+        page_heights = []
+        for page_index in range(self._calibration_tabs.count()):
+            stage_page = self._calibration_tabs.widget(page_index)
+            if stage_page is None:
+                continue
+            stage_layout = stage_page.layout()
+            if stage_layout is not None:
+                stage_layout.activate()
+                page_heights.append(stage_layout.sizeHint().height())
+            else:
+                page_heights.append(stage_page.sizeHint().height())
+        content_height = max(page_heights, default=page_size.height())
+        screen = self.screen()
+        area = screen.availableGeometry() if screen is not None else QRectF(0, 0, 1280, 800).toRect()
+        outer = self.layout()
+        footer_transfer = self.result.height() + max(
+            0, self._calibration_content_layout.spacing()
+        )
+        tab_height = (
+            content_height
+            + self._calibration_tabs.tabBar().sizeHint().height()
+            + 12
+            + footer_transfer
+        )
+        self._calibration_tabs.setFixedHeight(tab_height)
+        if outer is not None:
+            outer.activate()
+        wanted_height = outer.sizeHint().height() + 2 if outer is not None else tab_height + 150
+        wanted_width = max(640, page_size.width() + 40)
+        width = min(area.width() - 32, wanted_width)
+        height = min(area.height() - 32, max(340, wanted_height))
+        self.resize(max(560, width), max(340, height))
+        self._position_calibration_status()
+
+    def _position_calibration_status(self) -> None:
+        tabs = getattr(self, "_calibration_tabs", None)
+        status = getattr(self, "result", None)
+        if tabs is None or status is None:
+            return
+        margins = 12
+        status_height = status.height()
+        status.setGeometry(
+            margins,
+            max(
+                tabs.tabBar().height() + 4,
+                tabs.height() - status_height - 6,
+            ),
+            max(0, tabs.width() - margins * 2),
+            status_height,
+        )
+        status.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "result"):
+            QTimer.singleShot(0, self._position_calibration_status)
 
     def _refresh_stage_progress(self) -> None:
         # Also support lightweight, read-only calibration previews whose
@@ -3926,6 +5524,9 @@ class CalibrationDialog(QDialog):
             self._stage_dots[idx].setVisible(
                 show_dots and done < total
             )
+        self._refresh_position_close_badge()
+        self._refresh_field_capture_badges()
+        self._refresh_clear_calibration_button()
         if hasattr(self.app, "_refresh_calibration_badges"):
             self.app._refresh_calibration_badges()
 
@@ -3937,6 +5538,411 @@ class CalibrationDialog(QDialog):
         if keys and not any(self.radios[key].isChecked() for key in keys):
             self.radios[keys[0]].setChecked(True)
         self.result.setText("")
+
+    def _refresh_position_close_badge(self) -> None:
+        dot = getattr(self, "position_close_missing_dot", None)
+        if dot is None:
+            return
+        data = getattr(getattr(self.app, "store", None), "data", {}) or {}
+        profile = data.get("platforms", {}).get(self.platform, {})
+        point = profile.get("points", {}).get("position_close_button")
+        show_dots = bool(data.get("ui", {}).get("show_calibration_badges", True))
+        dot.setVisible(show_dots and not (isinstance(point, dict) and point))
+
+    def _refresh_field_capture_badges(self) -> None:
+        data = getattr(getattr(self.app, "store", None), "data", {}) or {}
+        points = data.get("platforms", {}).get(self.platform, {}).get("points", {})
+        show_dots = bool(data.get("ui", {}).get("show_calibration_badges", True))
+        for key, dot in self._field_capture_dots.items():
+            point = points.get(key)
+            dot.setVisible(show_dots and not (isinstance(point, dict) and point))
+
+    def _refresh_clear_calibration_button(self) -> None:
+        button = getattr(self, "clear_calibration_button", None)
+        if button is None:
+            return
+        key = next(
+            (key for key, radio in self.radios.items() if radio.isChecked()), None
+        )
+        data = getattr(getattr(self.app, "store", None), "data", {}) or {}
+        points = data.get("platforms", {}).get(self.platform, {}).get("points", {})
+        point = points.get(key) if key else None
+        platform_aliases = (
+            ("cTrader", "GooeyTrade")
+            if self.platform in {"cTrader", "GooeyTrade"}
+            else ("MT5", "BYBIT MT5", "原版MT5")
+            if self.platform in {"MT5", "BYBIT MT5", "原版MT5"}
+            else (self.platform,)
+        )
+        profile_store = getattr(self.app, "profiles", None)
+        profiles = getattr(profile_store, "data", {}).get("profiles", {})
+        stage_index = self._calibration_tabs.currentIndex()
+        stage_keys = (
+            self._stage_keys[stage_index]
+            if 0 <= stage_index < len(self._stage_keys) else ()
+        )
+        has_any = any(
+            any(
+                key in profile.get("platforms", {}).get(alias, {}).get("points", {})
+                for key in stage_keys
+            )
+            for profile in profiles.values()
+            for alias in platform_aliases
+        )
+        if not profiles:
+            has_any = any(key in points for key in stage_keys)
+        model = button.model()
+        selected_item = model.item(0) if hasattr(model, "item") else None
+        all_item = model.item(1) if hasattr(model, "item") else None
+        if selected_item is not None:
+            selected_item.setEnabled(isinstance(point, dict) and bool(point))
+        if all_item is not None:
+            all_item.setEnabled(bool(has_any))
+        button.setEnabled(bool(has_any))
+
+    def _calibrated_view_selection_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        mode = self.calibrated_position_viewer.itemData(index)
+        if mode is None:
+            return
+        QTimer.singleShot(0, self._reset_calibrated_viewer)
+        self.show_position(show_all=mode == "stage")
+
+    def _reset_calibrated_viewer(self) -> None:
+        self.calibrated_position_viewer.setCurrentIndex(-1)
+
+    def _clear_calibration_selection_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        mode = self.clear_calibration_button.itemData(index)
+        if mode is None:
+            return
+        QTimer.singleShot(0, lambda: self.clear_calibration_button.setCurrentIndex(-1))
+        if mode == "selected":
+            self.clear_selected_calibration()
+        elif mode == "stage_all":
+            self._clear_all_calibrations()
+
+    def _clear_all_calibrations(self) -> None:
+        platform_label = "cTrader" if self.platform in {"cTrader", "GooeyTrade"} else self.platform
+        stage_index = self._calibration_tabs.currentIndex()
+        keys = (
+            self._stage_keys[stage_index]
+            if 0 <= stage_index < len(self._stage_keys) else ()
+        )
+        if not keys:
+            return
+        stage_label = self._stage_titles[stage_index]
+        answer = QMessageBox.question(
+            self,
+            "清除此階段全部欄位？",
+            f"清除 {platform_label}「{stage_label}」在所有方案中的校準？\n"
+            "其他階段保留。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+            yes_text="清除", no_text="取消",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        cleared = self.app.profiles.clear_calibration_stage(self.platform, keys)
+        self.app.store.data = self.app.profiles.load_profile()
+        self.app.store.save()
+        self.app.automation.config = self.app.store.data
+        self._refresh_stage_progress()
+        self.result.setText(
+            f"已清除 {platform_label}「{stage_label}」所有方案的校準位置"
+            f"（{len(cleared)} 個欄位）。"
+        )
+
+    def clear_selected_calibration(self) -> None:
+        key = next(
+            (key for key, radio in self.radios.items() if radio.isChecked()), None
+        )
+        if not key:
+            return
+        label = dict(CALIBRATION_TARGETS[self.platform]).get(key, key)
+        answer = QMessageBox.question(
+            self,
+            "清除此欄位校準？",
+            f"清除「{label}」的校準位置？會同步到同平台所有方案。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+            yes_text="清除", no_text="取消",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.app.profiles.clear_calibration_point(self.platform, key)
+        self.app.store.data = self.app.profiles.load_profile()
+        self.app.store.save()
+        self.app.automation.config = self.app.store.data
+        self._refresh_stage_progress()
+        self.result.setText(f"已清除「{label}」校準位置；紅點已顯示。")
+
+    def _begin_calibration_operation(self, hint: str) -> None:
+        self._calibration_abort = _CalibrationAbort()
+        if not self.isHidden():
+            self._calibration_dialog_restore_geometry = self.geometry()
+            self._calibration_dialog_restore_maximized = self.isMaximized()
+            self._calibration_dialog_restore_opacity = self.windowOpacity()
+        self._active_preview_hint = hint.split("｜", 1)[0].split("；", 1)[0]
+        set_hint = getattr(self.app, "set_operation_hint_text", None)
+        if callable(set_hint):
+            set_hint(hint)
+        else:
+            operation_hint = getattr(self.app, "operation_hint", None)
+            if operation_hint is not None:
+                operation_hint.setText(hint)
+        hide = getattr(self.app, "_hide_for_operation", None)
+        if callable(hide):
+            hide()
+        else:
+            hide_app = getattr(self.app, "hide", None)
+            if callable(hide_app):
+                hide_app()
+
+    def _update_calibration_preview_countdown(self, seconds: int) -> None:
+        if seconds <= 0:
+            return
+        abort = self._calibration_abort
+        if abort is None:
+            return
+        hint = getattr(self.app, "set_operation_hint_text", None)
+        prefix = getattr(self, "_active_preview_hint", "正在預覽校準位置")
+        text = f"{prefix}｜{seconds} 秒後返回；按 ESC 或右鍵停止"
+        if callable(hint):
+            hint(text)
+        else:
+            label = getattr(self.app, "operation_hint", None)
+            if label is not None:
+                label.setText(text)
+                label.adjustSize()
+
+    def cancel_calibration_operation(self) -> None:
+        abort = self._calibration_abort
+        if abort is not None and not abort.event.is_set():
+            abort.stop()
+            self.result.setText("正在停止；不會儲存本次校準……")
+
+    def _restore_calibration_operation(self) -> None:
+        if self._calibration_abort is None:
+            return
+        self._calibration_abort = None
+        restore = getattr(self.app, "_restore_after_operation", None)
+        if callable(restore):
+            restore()
+        else:
+            show_app = getattr(self.app, "showNormal", None)
+            if callable(show_app):
+                show_app()
+        opacity = getattr(self, "_calibration_dialog_restore_opacity", 1.0)
+        self.setWindowOpacity(opacity)
+        if getattr(self, "_calibration_dialog_restore_maximized", False):
+            self.showMaximized()
+        else:
+            self.showNormal()
+            geometry = getattr(self, "_calibration_dialog_restore_geometry", None)
+            if geometry is not None:
+                self.setGeometry(geometry)
+        self._calibration_dialog_restore_geometry = None
+        self._calibration_dialog_restore_maximized = False
+        self._calibration_dialog_restore_opacity = 1.0
+        self.raise_()
+        self.activateWindow()
+
+    def _display_window_for_saved_point(self, key: str, point: dict) -> WindowInfo:
+        profile = self.app.store.data["platforms"][self.platform]
+        role = self._display_role(key)
+        binding = str(profile.get("window_title", {}).get(role, "")).strip()
+        main_keys = set(POSITION_GRID_KEYS) | {
+            "new_order_button", "trade_tab", "positions_entry_price",
+        }
+        if self.platform == "cTrader":
+            main_keys.update(
+                field for field, _label in CALIBRATION_TARGETS[self.platform]
+                if field not in POSITION_EDIT_KEYS
+            )
+        pattern = str(
+            (binding if key in main_keys else "")
+            or point.get("calibration_window_title")
+            or point.get("window_title")
+            or binding
+        ).strip()
+        if not pattern:
+            raise AutomationError("尚未設定此平台的視窗標題")
+        matches = self.app.windows.find_all(pattern)
+        if key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}:
+            main = select_broker_main_window(
+                matches, self.app.windows.list_windows(),
+                "cTrader" if self.platform == "cTrader" else "MT5",
+                process_id_for_window, binding_pattern=binding or pattern,
+            )
+            if main is None:
+                raise AutomationError("找不到唯一的平台主視窗；沒有顯示框線")
+            return main
+        if len(matches) > 1:
+            width = int(point.get("window_width", 0))
+            height = int(point.get("window_height", 0))
+            matches = [
+                window for window in matches
+                if window.width == width and window.height == height
+            ]
+        if len(matches) != 1:
+            raise AutomationError(
+                f"「{key}」對應到 {len(matches)} 個視窗；請先確認平台視窗，沒有猜測位置。"
+            )
+        return matches[0]
+
+    def _saved_point_rectangles(
+        self, keys: tuple[str, ...],
+    ) -> tuple[list, list[tuple[int, int]], list[str]]:
+        profile = self.app.store.data["platforms"][self.platform]
+        points = profile.get("points", {})
+        rectangles: list[tuple[int, int, int, int]] = []
+        markers: list[tuple[int, int]] = []
+        unavailable: list[str] = []
+        labels = dict(CALIBRATION_TARGETS[self.platform])
+        for key in keys:
+            point = points.get(key)
+            if not isinstance(point, dict) or not point:
+                unavailable.append(labels.get(key, key) + "（未校準）")
+                continue
+            try:
+                window = self._display_window_for_saved_point(key, point)
+                x, y = self.app.windows.screen_point_for_display(window, point)
+                width = max(8, int(point.get("bounds_width", 32)))
+                height = max(8, int(point.get("bounds_height", 32)))
+                bounds_source = str(point.get("bounds_source", ""))
+                if (
+                    bounds_source == "point_only"
+                    or (not bounds_source and width == 32 and height == 32)
+                ):
+                    markers.append((x, y))
+                    continue
+                old_width = int(point.get("window_width", 0))
+                old_height = int(point.get("window_height", 0))
+                if old_width > 0 and old_height > 0:
+                    width = max(8, round(width * window.width / old_width))
+                    height = max(8, round(height * window.height / old_height))
+                rect = (
+                    x - width // 2, y - height // 2,
+                    x + (width + 1) // 2, y + (height + 1) // 2,
+                )
+                rectangles.append(rect)
+            except Exception as exc:
+                unavailable.append(labels.get(key, key) + f"（無法定位：{exc}）")
+        return rectangles, markers, unavailable
+
+    def _preview_saved_calibration(
+        self, rectangles: list, markers: list[tuple[int, int]] | None = None,
+    ) -> None:
+        if self._candidate_preview_running or self._calibration_abort is not None:
+            return
+        self._candidate_preview_running = True
+        self._candidate_preview_error = ""
+        self._active_preview_hint = "正在顯示校準位置"
+        self._begin_calibration_operation(
+            "正在顯示校準位置｜按 ESC 或右鍵停止"
+        )
+        self.setWindowOpacity(0.0)
+        try:
+            for rect in rectangles:
+                overlay = CandidateOutline()
+                self._inventory_overlays.append(overlay)
+                overlay.display(rect, 5400)
+            for point in markers or ():
+                marker = CandidatePointMarker()
+                self._inventory_overlays.append(marker)
+                marker.display(point, 5400)
+        except Exception as exc:
+            self._candidate_preview_error = str(exc)
+            self.preview_finished.emit({"error": self._candidate_preview_error})
+            return
+
+        self._start_preview_countdown(5)
+
+    def _finish_saved_preview(self, result: object) -> None:
+        inventory_details = (
+            result.get("inventory_details")
+            if isinstance(result, dict) else None
+        )
+        if isinstance(inventory_details, QDialog):
+            self._restore_inventory_preview(
+                inventory_details, operation_result=result
+            )
+            return
+        manual_preview = isinstance(result, dict) and result.get("manual")
+        for overlay in self._inventory_overlays:
+            overlay.hide()
+            overlay.close()
+        self._inventory_overlays.clear()
+        self._hover_outline.hide()
+        self._candidate_preview_running = False
+        self._restore_calibration_operation()
+        if manual_preview:
+            self._finish_manual_capture_preview(result)
+            return
+        if isinstance(result, dict) and result.get("error"):
+            self.result.setText(f"黃色框預覽失敗：{result['error']}")
+        elif isinstance(result, dict) and result.get("cancelled"):
+            self.result.setText("已停止顯示校準位置。")
+        else:
+            self.result.setText("校準位置顯示完成。")
+
+    def _finish_manual_capture_preview(self, result: object) -> None:
+        self._hover_outline.hide()
+        self._restore_calibration_operation()
+        if isinstance(result, dict) and result.get("error"):
+            self.result.setText(f"校準已儲存，但黃色框預覽失敗：{result['error']}")
+        elif isinstance(result, dict) and result.get("cancelled"):
+            self.result.setText("黃色框預覽已停止；剛才的校準仍已儲存。")
+        elif getattr(self, "_manual_capture_preview_source", "") == "手動擷取點":
+            self.result.setText(
+                "黃色小框標示擷取點；目前沒有取得按鈕外框，請確認游標停在按鈕中央。"
+            )
+        elif getattr(self, "_manual_capture_preview_source", "") == "只有座標":
+            self.result.setText(
+                "已顯示黃色校準點；它只代表座標，不代表完整欄位外框。"
+            )
+        else:
+            self.result.setText("已取得黃色控制項外框；校準位置已儲存。")
+
+    def _start_preview_countdown(
+        self, seconds: int, *, manual: bool = False,
+        inventory_details: QDialog | None = None,
+        inventory_rectangles: tuple[tuple[int, int, int, int], ...] | None = None,
+    ) -> None:
+        abort = self._calibration_abort
+
+        def result_payload(*, cancelled: bool = False, error: str = "") -> dict:
+            payload = {"cancelled": cancelled, "manual": manual}
+            if error:
+                payload["error"] = error
+            if inventory_details is not None:
+                payload["inventory_details"] = inventory_details
+            return payload
+
+        def countdown() -> None:
+            try:
+                from .mouse_guard import PhysicalMouseGuard
+                with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    if inventory_rectangles is not None:
+                        self.preview_guard_ready.emit({
+                            "rectangles": inventory_rectangles,
+                        })
+                    for count in range(seconds, 0, -1):
+                        if abort.event.is_set():
+                            self.preview_finished.emit(result_payload(cancelled=True))
+                            return
+                        self.preview_progress.emit(count)
+                        if abort.event.wait(1):
+                            self.preview_finished.emit(result_payload(cancelled=True))
+                            return
+                    self.preview_finished.emit(result_payload())
+            except Exception as exc:
+                self.preview_finished.emit(result_payload(error=str(exc)))
+
+        threading.Thread(target=countdown, daemon=True).start()
 
     def open_post_entry_wizard(self) -> None:
         """Open a separate read-only stage-two calibration session."""
@@ -4008,8 +6014,7 @@ class CalibrationDialog(QDialog):
                 QMessageBox.warning(
                     self, "MT5 新訂單視窗尚未找到",
                     "請先在 MT5 主視窗點「新訂單」，保持下單視窗開啟，"
-                    "再回到第二階段掃描。\n"
-                    "若已開啟但仍找不到，請改用「顯示手動校準」或告訴我該視窗的標題。"
+                    "再回到第二階段重新尋找。"
                 )
                 return
             target = order_dialogs[0]
@@ -4028,45 +6033,62 @@ class CalibrationDialog(QDialog):
             (key, label) for key, label in CALIBRATION_TARGETS[self.platform]
             if key in stage
         )
+        self._begin_calibration_operation(
+            "正在自動尋找欄位；按 ESC 或右鍵取消"
+        )
+        self.setWindowOpacity(0.0)
+        abort = self._calibration_abort
 
         def task() -> None:
             try:
-                if is_position_grid:
-                    report=scan_position_grid(handle,self.platform,targets)
-                elif is_position_modify:
-                    report=scan_open_modify_dialog(handle,self.platform,targets)
-                else:
-                    report=inspect_all_targets(handle,self.platform,targets)
+                from .mouse_guard import PhysicalMouseGuard
+                with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    if abort.event.is_set():
+                        self.inventory_finished.emit({"cancelled": True})
+                        return
+                    if is_position_grid:
+                        report=scan_position_grid(handle,self.platform,targets)
+                    elif is_position_modify:
+                        report=scan_open_modify_dialog(handle,self.platform,targets)
+                    else:
+                        report=inspect_all_targets(handle,self.platform,targets)
+                    if abort.event.is_set():
+                        self.inventory_finished.emit({"cancelled": True})
+                        return
             except Exception as exc:
                 report = ScanReport(self.platform, targets, warnings=(f"掃描失敗：{exc}",))
             self.inventory_finished.emit(report)
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _finish_inventory(self, report: ScanReport) -> None:
+    def _finish_inventory(self, report: object) -> None:
         self._inventory_running = False
+        self._restore_calibration_operation()
+        if isinstance(report, dict) and report.get("cancelled"):
+            self.result.setText("已取消尋找；沒有儲存或更改校準位置。")
+            return
+        if not isinstance(report, ScanReport):
+            self.result.setText("尋找失敗；沒有更改校準位置。")
+            return
         self.result.setText(
             f"掃描完成：{len(report.candidates)}/{len(report.targets)} 個單一候選，均未套用或儲存"
         )
-        details = QDialog(self)
+        details = ThemedDialog(self)
         details.setWindowTitle(f"{self.platform}｜校準結果：預覽後人工確認儲存")
         details.resize(760, 580)
         panel = QVBoxLayout(details)
-        heading = QLabel("先預覽黃色框，再勾選正確項目並儲存。")
+        heading = QLabel(
+            "先一次預覽全部黃色框，再選擇全選並儲存或關閉不儲存。"
+        )
         panel.addWidget(heading)
         output = QPlainTextEdit(details)
         output.setReadOnly(True)
         output.setPlainText(report.as_text())
         panel.addWidget(output)
         details.resize(780, 700)
-        # Explicitly checked suggestions are the ONLY values eligible for saving.
-        # Everything begins unchecked and cannot be selected until a successful
-        # full yellow-outline preview of this same report has finished.
-        status = QLabel(
-            "預覽 → 勾選 → 儲存。未勾選項目保持原樣。"
-        )
+        status = QLabel("尚未預覽；預覽成功後才能儲存。")
         panel.addWidget(status)
-        checkboxes: dict[str, QCheckBox] = {}
+        preview_all_button = None
         if report.candidates:
             preview_all_button = QPushButton("① 一次預覽全部黃色框（1.5 秒）", details)
             preview_all_button.setToolTip("僅顯示外框，不點擊、不儲存交易平台任何資料")
@@ -4074,49 +6096,12 @@ class CalibrationDialog(QDialog):
                 lambda: self.preview_all_inventory_candidates(details, report)
             )
             panel.addWidget(preview_all_button)
-            panel.addWidget(QLabel("② 勾選正確位置"))
-            checklist_area = QScrollArea(details)
-            checklist_area.setWidgetResizable(True)
-            checklist_area.setMaximumHeight(210)
-            checklist = QWidget(checklist_area)
-            checklist_layout = QVBoxLayout(checklist)
-            for key,label in report.targets:
-                candidate = report.candidates.get(key)
-                if candidate is None:
-                    continue
-                low = "低信度／請特別核對" if "低信度" in candidate.evidence else "候選／尚待確認"
-                cb = QCheckBox(f"{label}（{low}）", checklist)
-                cb.setObjectName("confirm_" + key)
-                cb.setChecked(False)
-                cb.setEnabled(False)
-                cb.setToolTip(candidate.evidence)
-                checkboxes[key] = cb
-                checklist_layout.addWidget(cb)
-            checklist_area.setWidget(checklist)
-            panel.addWidget(checklist_area)
-            bulk_row = QHBoxLayout()
-            select_all_button = QPushButton("全選", details)
-            select_all_button.setToolTip("包含低信度候選，請先看過黃框")
-            clear_button = QPushButton("清除勾選", details)
-            select_all_button.setEnabled(False)
-            clear_button.setEnabled(False)
-            select_all_button.clicked.connect(
-                lambda: [cb.setChecked(True) for cb in checkboxes.values()]
-            )
-            clear_button.clicked.connect(
-                lambda: [cb.setChecked(False) for cb in checkboxes.values()]
-            )
-            bulk_row.addWidget(select_all_button)
-            bulk_row.addWidget(clear_button)
-            panel.addLayout(bulk_row)
         else:
-            select_all_button = None
-            clear_button = None
             panel.addWidget(QLabel(
                 "目前沒有可預覽或儲存的候選。請顯示目標欄位後重新掃描。"
             ))
         commands = QHBoxLayout()
-        save_button = QPushButton("③ 儲存我已勾選的項目", details)
+        save_button = QPushButton("② 全選並儲存", details)
         save_button.setEnabled(False)
         commands.addWidget(save_button)
         close_button = QPushButton("關閉結果（不儲存）", details)
@@ -4124,19 +6109,21 @@ class CalibrationDialog(QDialog):
         commands.addWidget(close_button)
         panel.addLayout(commands)
         state = {
-            "dialog":details, "report":report, "checkboxes":checkboxes,
+            "dialog":details, "report":report,
+            "selected_keys":tuple(
+                key for key, _label in report.targets
+                if key in report.candidates
+            ),
             "save_button":save_button, "status":status,
-            "select_all_button":select_all_button, "clear_button":clear_button,
             "context":dict(self._inventory_scan_context)
                 if self._inventory_scan_context is not None else None,
             "previewed":False, "saved":False,
         }
         self._inventory_save_preview = state
-        for checkbox in checkboxes.values():
-            checkbox.toggled.connect(
-                lambda _checked, s=state: self._update_inventory_save_button(s)
-            )
         save_button.clicked.connect(lambda: self._save_inventory_selection(state))
+        details.setStyleSheet(DIALOG_THEME)
+        if isinstance(details, ThemedDialog):
+            details.install_chrome()
         try:
             details.exec()
         finally:
@@ -4155,12 +6142,12 @@ class CalibrationDialog(QDialog):
             and not state["saved"]
             and state["context"] is not None
             and not state["report"].warnings
-            and any(cb.isChecked() and cb.isEnabled() for cb in state["checkboxes"].values())
+            and bool(state["selected_keys"])
         )
         state["save_button"].setEnabled(enabled)
 
     def _save_inventory_selection(self, state: dict[str, Any]) -> None:
-        """Double opt-in: successful preview, individual ticks, then Yes."""
+        """Save all scanned candidates after preview and an exact fresh recheck."""
         details = state["dialog"]
         if (
             self._inventory_save_preview is not state
@@ -4170,20 +6157,8 @@ class CalibrationDialog(QDialog):
         ):
             QMessageBox.warning(details, "無法儲存", "請先完成這次候選的黃色框預覽。")
             return
-        selected = tuple(
-            key for key, cb in state["checkboxes"].items()
-            if cb.isChecked() and cb.isEnabled()
-        )
+        selected = tuple(state["selected_keys"])
         if not selected:
-            return
-        confirmation = QMessageBox.question(
-            details, "確認儲存校準",
-            f"要儲存你勾選的 {len(selected)} 個位置嗎？\n"
-            "只更新已勾選項目；其他原有校準維持不變。\n"
-            "這不會對交易平台點擊或送出任何訂單。",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if confirmation != QMessageBox.Yes:
             return
         state["save_button"].setEnabled(False)
         state["status"].setText("正在重新確認視窗及候選位置；尚未寫入設定……")
@@ -4229,13 +6204,8 @@ class CalibrationDialog(QDialog):
             save_confirmed_points(self.app, self.platform, points)
             self._refresh_stage_progress()
             state["saved"] = True
-            for cb in state["checkboxes"].values():
-                cb.setEnabled(False)
-            for button_name in ("select_all_button", "clear_button"):
-                if state[button_name] is not None:
-                    state[button_name].setEnabled(False)
             state["status"].setText(
-                f"已儲存 {len(points)} 個你勾選的項目，其他位置保持原樣。"
+                f"已儲存本次掃描的 {len(points)} 個欄位。"
             )
             self.result.setText(f"已儲存 {len(points)} 個人工確認的校準位置")
             self.app.log(
@@ -4263,18 +6233,32 @@ class CalibrationDialog(QDialog):
             return
         self._candidate_preview_running = True
         self._candidate_preview_error = ""
-        # Minimize, never hide, while modal QDialog.exec() remains alive.
-        details.showMinimized()
-        self.showMinimized()
-        self.app.showMinimized()
-        QTimer.singleShot(
-            150, lambda: self._show_inventory_outline(candidate.rect)
+        self._begin_calibration_operation(
+            "正在預覽候選欄位｜按 ESC 或右鍵取消"
         )
-        QTimer.singleShot(1850, lambda: self._restore_inventory_preview(details))
+        # Keep both modal event loops alive but make their windows transparent.
+        # Minimizing frameless Qt windows can leave a tiny stale fragment on
+        # screen; hiding a dialog also ends QDialog.exec() on some platforms.
+        details.setWindowOpacity(0.0)
+        self.setWindowOpacity(0.0)
+        self._start_preview_countdown(
+            2,
+            inventory_details=details,
+            inventory_rectangles=(candidate.rect,),
+        )
 
-    def _show_inventory_outline(self, rect: tuple[int, int, int, int]) -> None:
+    def _show_inventory_preview_outlines(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        abort = self._calibration_abort
+        if abort is not None and abort.event.is_set():
+            return
+        rectangles = tuple(payload.get("rectangles", ()))
         try:
-            self._hover_outline.display(rect, 1500)
+            for rect in rectangles:
+                overlay = CandidateOutline()
+                self._inventory_overlays.append(overlay)
+                overlay.display(rect, 1500)
         except Exception as exc:
             self._candidate_preview_error = str(exc)
 
@@ -4290,54 +6274,60 @@ class CalibrationDialog(QDialog):
             return
         self._candidate_preview_running = True
         self._candidate_preview_error = ""
-        details.showMinimized()
-        self.showMinimized()
-        self.app.showMinimized()
-        QTimer.singleShot(
-            150, lambda: self._show_all_inventory_outlines(rectangles)
+        self._begin_calibration_operation(
+            "正在預覽全部候選欄位｜按 ESC 或右鍵取消"
         )
-        QTimer.singleShot(1850, lambda: self._restore_inventory_preview(details))
+        details.setWindowOpacity(0.0)
+        self.setWindowOpacity(0.0)
+        self._start_preview_countdown(
+            2,
+            inventory_details=details,
+            inventory_rectangles=rectangles,
+        )
 
-    def _show_all_inventory_outlines(
-        self, rectangles: tuple[tuple[int, int, int, int], ...]
+    def _restore_inventory_preview(
+        self, details: QDialog, *, operation_result: dict | None = None,
     ) -> None:
-        try:
-            for rect in rectangles:
-                overlay = CandidateOutline()
-                self._inventory_overlays.append(overlay)
-                overlay.display(rect, 1500)
-        except Exception as exc:
-            self._candidate_preview_error = str(exc)
-            for overlay in self._inventory_overlays:
-                overlay.hide()
-                overlay.close()
-            self._inventory_overlays.clear()
-
-    def _restore_inventory_preview(self, details: QDialog) -> None:
         self._hover_outline.hide()
         for overlay in self._inventory_overlays:
             overlay.hide()
             overlay.close()
         self._inventory_overlays.clear()
         self._candidate_preview_running = False
-        self.app.showNormal()
-        self.showNormal()
+        self.setWindowOpacity(1.0)
+        details.setWindowOpacity(1.0)
+        if self._calibration_abort is not None:
+            self._restore_calibration_operation()
+        else:
+            if getattr(self.app, "_calibration_dialog_active", False):
+                self.app.hide()
+            else:
+                self.app.showNormal()
+            self.showNormal()
         details.showNormal()
         details.raise_()
         details.activateWindow()
         state = self._inventory_save_preview
+        cancelled = bool(
+            isinstance(operation_result, dict)
+            and operation_result.get("cancelled")
+        )
+        failed = bool(
+            isinstance(operation_result, dict)
+            and operation_result.get("error")
+        )
         if state is not None and state["dialog"] is details and not state["saved"]:
-            if (not self._candidate_preview_error and state["context"] is not None and not state["report"].warnings):
+            if (
+                not cancelled and not failed and not self._candidate_preview_error
+                and state["context"] is not None and not state["report"].warnings
+            ):
                 state["previewed"] = True
-                for cb in state["checkboxes"].values():
-                    cb.setEnabled(True)
-                for button_name in ("select_all_button", "clear_button"):
-                    if state[button_name] is not None:
-                        state[button_name].setEnabled(True)
                 state["status"].setText(
-                    "黃色框預覽完成。請只勾選你親眼確認正確的項目；"
-                    "尤其要核對 SL／TP 點數與真正送單按鈕。"
+                    "黃色框預覽完成。可全選並儲存本次候選，或關閉而不儲存。"
                 )
+            elif cancelled:
+                state["previewed"] = False
+                state["status"].setText("已停止黃色框預覽；尚未儲存。")
             else:
                 state["previewed"] = False
                 state["status"].setText(
@@ -4365,9 +6355,10 @@ class CalibrationDialog(QDialog):
             return
         self._hover_running = True
         self.result.setText("倒數 4 秒；請把滑鼠移到交易平台的目標欄位內並停住。")
-        # hide() makes modal QDialog.exec() return immediately and destroys its callbacks.
-        self.showMinimized()
-        self.app.showMinimized()
+        # Keep the modal event loop alive while making this window transparent;
+        # minimizing can leave a tiny stale frameless-window fragment behind.
+        self.setWindowOpacity(0.0)
+        self.app.hide()
         QTimer.singleShot(4000, lambda: self._sample_hover(target_pid))
 
     def _sample_hover(self, target_pid: int) -> None:
@@ -4403,7 +6394,11 @@ class CalibrationDialog(QDialog):
     def _restore_hover_ui(self) -> None:
         self._hover_outline.hide()
         self._hover_running = False
-        self.app.showNormal()
+        self.setWindowOpacity(1.0)
+        if getattr(self.app, "_calibration_dialog_active", False):
+            self.app.hide()
+        else:
+            self.app.showNormal()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -4457,80 +6452,150 @@ class CalibrationDialog(QDialog):
         QMessageBox.information(self, "UIA 欄位檢測（不執行下單）", "\n".join(lines))
 
     def capture(self) -> None:
+        if (
+            self._capture_running
+            or self._calibration_abort is not None
+            or self._candidate_preview_running
+            or self._inventory_running
+        ):
+            return
         key = next(key for key, radio in self.radios.items() if radio.isChecked())
-        self.showMinimized()
+        guided_close_capture = key == "position_close_button"
+        hint = (
+            "正在擷取平倉按鈕；移到目標後等待倒數，按 ESC 或右鍵取消"
+            if guided_close_capture else
+            "正在擷取欄位；移到目標後等待倒數，按 ESC 或右鍵取消"
+        )
+        self._capture_running = True
+        for button in self._capture_buttons:
+            button.setEnabled(False)
+        self._begin_calibration_operation(hint)
+        self.setWindowOpacity(0.0)
+        abort = self._calibration_abort
 
         def task() -> None:
             try:
-                for count in (3, 2, 1):
-                    self.app.log(f"正在校準 {self.platform}「{key}」：{count}")
-                    time.sleep(1)
-                active = self.app.windows.window_at_cursor()
-                x, y = self.app.windows.cursor_position()
-                point = self.app.windows.relative_point(active, x, y)
-                point["window_title"] = re.escape(active.title)
-                point["calibration_window_title"] = re.escape(active.title)
-                profile = self.app.store.data["platforms"][self.platform]
-                if self.platform == "TradingView":
-                    stable_title = r"/\s*常用$"
-                    point["window_title"] = stable_title
-                    profile["window_title"]["internal"] = stable_title
-                    profile["window_title"]["external"] = stable_title
-                profile["points"][key] = point
-                if (
-                    self.platform != "TradingView"
-                    and not profile["window_title"]["internal"]
-                ):
-                    profile["window_title"]["internal"] = re.escape(active.title)
-                    profile["window_title"]["external"] = re.escape(active.title)
-                self.app.save_config()
-                self.app.profiles.sync_calibration_point(
-                    self.platform, key, point
-                )
-                self.app.store.data = self.app.profiles.load_profile()
-                self.app.store.save()
-                self.app.automation.config = self.app.store.data
-                self.app.log(
-                    f"已儲存 {self.platform}「{key}」的相對位置："
-                    f"({point['x']:.3f}, {point['y']:.3f})，"
-                    f"精確像素 ({point['x_px']}, {point['y_px']})，"
-                    f"螢幕座標 ({x}, {y})。"
-                )
-                if self.platform in {"GooeyTrade", "cTrader"}:
-                    sync_target = "cTrader 與所有方案"
-                elif self.platform in {"MT5", "BYBIT MT5", "原版MT5"}:
-                    sync_target = "MT5 與所有方案"
-                else:
-                    sync_target = f"{self.platform} 與所有方案"
-                self.app.log(f"已同步「{key}」到 {sync_target}。")
-                self.capture_finished.emit(key)
+                from .mouse_guard import PhysicalMouseGuard
+                countdown = (5, 4, 3, 2, 1) if guided_close_capture else (3, 2, 1)
+                with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    for count in countdown:
+                        self.preview_progress.emit(count)
+                        if abort.event.wait(1):
+                            self.capture_finished.emit({"cancelled": True})
+                            return
+                        self.app.log(f"正在校準 {self.platform}「{key}」：{count}")
+                    if abort.event.is_set():
+                        self.capture_finished.emit({"cancelled": True})
+                        return
+                    active = self.app.windows.window_at_cursor()
+                    x, y = self.app.windows.cursor_position()
+                    point = self.app.windows.relative_point(active, x, y)
+                    point["window_title"] = re.escape(active.title)
+                    point["calibration_window_title"] = re.escape(active.title)
+                    preview_rect = None
+                    preview_source = ""
+                    snapshot = None
+                    try:
+                        snapshot = hover_snapshot(
+                            process_id_for_window(active.handle)
+                        )
+                        detected_rect = snapshot.rectangle
+                    except Exception:
+                        detected_rect = None
+                    preview_rect, preview_source = manual_capture_confirmation_rect(
+                        x, y, detected_rect
+                    )
+                    if preview_rect is not None:
+                        point["bounds_width"] = preview_rect[2] - preview_rect[0]
+                        point["bounds_height"] = preview_rect[3] - preview_rect[1]
+                        point["bounds_source"] = "manual_uia"
+                    else:
+                        point["bounds_source"] = "point_only"
+                        preview_source = "只有座標"
+                    profile = self.app.store.data["platforms"][self.platform]
+                    if self.platform == "TradingView":
+                        stable_title = r"/\s*常用$"
+                        point["window_title"] = stable_title
+                        profile["window_title"]["internal"] = stable_title
+                        profile["window_title"]["external"] = stable_title
+                    profile["points"][key] = point
+                    if (
+                        self.platform != "TradingView"
+                        and not profile["window_title"]["internal"]
+                    ):
+                        profile["window_title"]["internal"] = re.escape(active.title)
+                        profile["window_title"]["external"] = re.escape(active.title)
+                    self.app.save_config()
+                    self.app.profiles.sync_calibration_point(
+                        self.platform, key, point
+                    )
+                    self.app.store.data = self.app.profiles.load_profile()
+                    self.app.store.save()
+                    self.app.automation.config = self.app.store.data
+                    self.app.log(
+                        f"已儲存 {self.platform}「{key}」的相對位置："
+                        f"({point['x']:.3f}, {point['y']:.3f})，"
+                        f"精確像素 ({point['x_px']}, {point['y_px']})，"
+                        f"螢幕座標 ({x}, {y})。"
+                    )
+                    if self.platform in {"GooeyTrade", "cTrader"}:
+                        sync_target = "cTrader 與所有方案"
+                    elif self.platform in {"MT5", "BYBIT MT5", "原版MT5"}:
+                        sync_target = "MT5 與所有方案"
+                    else:
+                        sync_target = f"{self.platform} 與所有方案"
+                    self.app.log(f"已同步「{key}」到 {sync_target}。")
+                    self.capture_finished.emit({
+                        "key": key,
+                        "preview_rect": preview_rect,
+                        "preview_source": preview_source,
+                        "preview_point": (x, y),
+                    })
             except Exception as exc:
-                self.app.signals.error.emit(str(exc))
-                self.capture_finished.emit("")
+                self.capture_finished.emit({"key": "", "error": str(exc)})
 
         threading.Thread(target=task, daemon=True).start()
 
-    def show_position(self) -> None:
-        self.app.showMinimized()
-        key = next(key for key, radio in self.radios.items() if radio.isChecked())
-        profile = self.app.store.data["platforms"][self.platform]
-        point = profile.get("points", {}).get(key)
-        if not point:
-            QMessageBox.warning(self, "顯示位置", "這個項目尚未校準。")
+    def show_position(self, *, show_all: bool = False) -> None:
+        """Preview saved calibration centers without invoking automation guards."""
+        if show_all:
+            stage_index = self._calibration_tabs.currentIndex()
+            keys = self._stage_keys[stage_index] if stage_index >= 0 else ()
+        else:
+            stage_index = self._calibration_tabs.currentIndex()
+            keys = (next(
+                key for key, radio in self.radios.items() if radio.isChecked()
+            ),)
+        rectangles, markers, unavailable = self._saved_point_rectangles(keys)
+        if not rectangles and not markers:
+            detail = "\n".join(unavailable) if unavailable else "尚無已保存的位置。"
+            QMessageBox.warning(self, "查看已校準位置", detail)
             return
-        try:
-            role = self._display_role(key)
-            target_window = self.app.automation._window_for_point(
-                profile, role, point
+        shown = self._stage_titles[stage_index] if show_all else dict(
+            CALIBRATION_TARGETS[self.platform]
+        ).get(keys[0], keys[0])
+        suffix = f"；另有 {len(unavailable)} 個目前無法定位" if unavailable else ""
+        summary_parts = []
+        if rectangles:
+            summary_parts.append(f"{len(rectangles)} 個黃色位置框")
+        if markers:
+            summary_parts.append(
+                f"{len(markers)} 個黃色校準點（只有座標，並非完整欄位框）"
             )
-            x, y = self.app.windows.screen_point_for_display(
-                target_window, point
+        self.result.setText(f"正在顯示「{shown}」：{'、'.join(summary_parts)}{suffix}。")
+        tooltip = (
+            "黃色框表示實際取得的欄位外框；黃色點只表示已保存的座標，"
+            "不代表完整欄位範圍。"
+        )
+        if unavailable:
+            tooltip += "\n未能定位：" + "；".join(unavailable)
+        self.result.setToolTip(tooltip)
+        if unavailable:
+            self.app.log(
+                "部分校準位置目前未顯示（未校準或對應視窗未開啟）："
+                + "；".join(unavailable)
             )
-        except Exception as exc:
-            QMessageBox.critical(self, "顯示位置", str(exc))
-            return
-        self.app.windows.show_marker(x, y, duration_ms=5000)
-        self.result.setText(f"正在顯示：{key}")
+        self._preview_saved_calibration(rectangles, markers)
 
     def _display_role(self, key: str) -> str:
         if key.startswith("position_") or key == "positions_entry_price":
@@ -4544,15 +6609,84 @@ class CalibrationDialog(QDialog):
             return "internal"
         return "external"
 
-    def _finish_capture(self, key: str) -> None:
+    def _finish_capture(self, result: object) -> None:
+        self._capture_running = False
+        for button in self._capture_buttons:
+            button.setEnabled(True)
+        self._restore_calibration_operation()
+        if isinstance(result, dict) and result.get("cancelled"):
+            self.result.setText("已取消擷取；原本的校準位置沒有變更。")
+            return
+        if isinstance(result, dict):
+            key = str(result.get("key", ""))
+            preview_rect = result.get("preview_rect")
+            preview_source = str(result.get("preview_source", ""))
+            preview_point = result.get("preview_point")
+        else:
+            key = str(result or "")
+            preview_rect = None
+            preview_source = ""
+            preview_point = None
         self._refresh_stage_progress()
+        self._refresh_clear_calibration_button()
+        if isinstance(result, dict) and result.get("error"):
+            self.result.setText(f"擷取失敗：{result['error']}")
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            return
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
+        if key and preview_rect:
+            self._show_manual_capture_preview(
+                tuple(preview_rect), preview_source, point=preview_point
+            )
+            return
+        if key and preview_source == "只有座標":
+            self._show_manual_capture_preview(
+                None, preview_source, point=preview_point
+            )
+            return
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
+    def _show_manual_capture_preview(
+        self, rect: tuple[int, int, int, int] | None, source: str,
+        *, point: tuple[int, int] | None = None,
+    ) -> None:
+        self._manual_capture_preview_source = source
+        if source == "UI 控制項外框":
+            self.result.setText(f"已儲存「{source}」；請確認黃色框框住正確欄位。")
+        elif point is not None:
+            self.result.setText(
+                "已儲存校準點；黃點只標示座標，沒有代表完整欄位外框。"
+            )
+        else:
+            self.result.setText("已儲存座標；請用「查看已校準位置」核對標記。")
+        self._active_preview_hint = "正在預覽剛擷取的位置"
+        self._begin_calibration_operation(
+            "正在預覽剛擷取的位置｜按 ESC 或右鍵停止"
+        )
+        self.setWindowOpacity(0.0)
+        try:
+            if rect is not None:
+                self._hover_outline.display(rect, 3400)
+            elif point is not None:
+                marker = CandidatePointMarker()
+                self._inventory_overlays.append(marker)
+                marker.display(point, 3400)
+            else:
+                raise ValueError("缺少校準外框或座標")
+        except Exception as exc:
+            self.preview_finished.emit({"error": str(exc), "manual": True})
+            return
+        self._start_preview_countdown(3, manual=True)
 
-class PostEntryCalibrationDialog(QDialog):
+    def _restore_manual_capture_preview(self) -> None:
+        self._finish_manual_capture_preview({"cancelled": False})
+
+
+class PostEntryCalibrationDialog(ThemedDialog):
     """Stage two: user-armed observation of an existing cTrader position only."""
 
     scan_finished = Signal(object)
@@ -4608,6 +6742,8 @@ class PostEntryCalibrationDialog(QDialog):
         body.addLayout(commands)
         self.scan_finished.connect(self._finish_scan)
         self.finished.connect(self._finish_session)
+        self.setStyleSheet(DIALOG_THEME)
+        self.install_chrome()
 
     def _finish_session(self, _result: int) -> None:
         self.watch_timer.stop()
@@ -4710,88 +6846,152 @@ class PostEntryCalibrationDialog(QDialog):
         event.accept()
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(ThemedDialog):
     def __init__(self, app: TradingHelperApp):
         super().__init__(app)
         self.app = app
         self.draft = copy.deepcopy(app.store.data)
-        self.setWindowTitle("試算表與視窗設定")
-        self.resize(720, 760)
+        self.setWindowTitle("試算表設定")
+        self.resize(760, 700)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
+        tabs.setObjectName("settingsTabs")
         layout.addWidget(tabs)
         self.sheet_fields: dict[str, QLineEdit] = {}
         self.column_fields: dict[str, QLineEdit] = {}
         self.title_fields: dict[tuple[str, str], QLineEdit] = {}
         self.open_panel_checks: dict[str, QCheckBox] = {}
         self.ctrader_mode_combo = QComboBox()
+        self.credential_email = QLineEdit()
+        self.credential_email.setObjectName("serviceAccountEmail")
+        self.credential_email.setReadOnly(True)
+        self.gid_preview = QLabel()
+        self.gid_preview.setObjectName("spreadsheetGidPreview")
         tabs.addTab(self._sheet_tab(), "Google 試算表")
-        tabs.addTab(self._columns_tab(), "欄位對應")
-        tabs.addTab(self._windows_tab(), "視窗標題")
-        tabs.addTab(self._ctrader_tab(), "cTrader SL/TP")
+        tabs.addTab(self._defaults_tab(), "預設設定")
+        self.settings_tabs = tabs
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("儲存")
         buttons.button(QDialogButtonBox.Cancel).setText("取消")
-        minimize_button = buttons.addButton(
-            "縮小設定", QDialogButtonBox.ActionRole
-        )
-        minimize_button.clicked.connect(self.showMinimized)
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.setStyleSheet(DIALOG_THEME)
+        self.install_chrome()
+        self.sheet_fields["spreadsheet_url"].textChanged.connect(
+            self._update_gid_preview
+        )
+        self.sheet_fields["service_account_file"].textChanged.connect(
+            self._update_credential_email
+        )
+        self.sheet_fields["spreadsheet_url"].textChanged.connect(
+            self._refresh_sheet_tab_badge
+        )
+        self._update_gid_preview()
+        self._update_credential_email()
+        self._setup_sheet_tab_badge()
 
     def _sheet_tab(self) -> QWidget:
         tab = QWidget()
-        form = QFormLayout(tab)
-        fields = [
-            ("mode", "讀取模式（csv 或 service_account）"),
-            ("data_layout", "資料位置模式（row 或 cells）"),
-            ("spreadsheet_url", "試算表網址"),
-            ("worksheet", "工作表名稱"),
-            ("gid", "工作表 GID"),
-            ("service_account_file", "服務帳戶 JSON 檔案"),
-            ("row_number", "備用資料列"),
-            ("status_value", "要選取的狀態值"),
-        ]
-        for key, label in fields:
-            entry = QLineEdit(str(self.draft["sheet"].get(key, "")))
-            self.sheet_fields[key] = entry
-            form.addRow(label, entry)
-        note = QLabel(
-            "CSV 模式需要開啟連結存取權限。服務帳戶模式需要把試算表\n"
-            "分享給服務帳戶的電子郵件地址。\n"
-            "row 依資料列讀取；cells 可讓每個欄位直接指定 B5、D8 等儲存格。"
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(14)
+
+        sheet_group = QGroupBox("目前方案的 Google 試算表")
+        sheet_form = QFormLayout(sheet_group)
+        url = ClearButtonLineEdit(
+            str(self.draft["sheet"].get("spreadsheet_url", ""))
         )
-        note.setStyleSheet("color: #555555;")
-        form.addRow(note)
+        url.setObjectName("spreadsheetUrl")
+        url.setPlaceholderText("貼上 Google 試算表網址")
+        self.sheet_fields["spreadsheet_url"] = url
+        sheet_form.addRow("試算表網址", url)
+        sheet_form.addRow("工作表", self.gid_preview)
+        layout.addWidget(sheet_group)
+
+        account_group = QGroupBox("Google 服務帳戶（讀取與更新資料）")
+        account_layout = QVBoxLayout(account_group)
+        account_path_row = QHBoxLayout()
+        credential = QLineEdit(
+            str(self.draft["sheet"].get("service_account_file", ""))
+        )
+        credential.setObjectName("serviceAccountJsonPath")
+        credential.setPlaceholderText("選擇服務帳戶 JSON 檔案")
+        self.sheet_fields["service_account_file"] = credential
+        account_path_row.addWidget(credential, 1)
+        browse = QPushButton("選擇檔案")
+        browse.setObjectName("browseServiceAccountJson")
+        browse.clicked.connect(self._browse_service_account_file)
+        account_path_row.addWidget(browse)
+        account_layout.addLayout(account_path_row)
+        email_form = QFormLayout()
+        email_form.addRow("要分享給試算表的帳戶", self.credential_email)
+        account_layout.addLayout(email_form)
+        account_note = QLabel(
+            "此模式可以讀取並更新試算表。請把每個方案使用的試算表，"
+            "分享給上方顯示的服務帳戶電子郵件，權限設為「編輯者」。"
+        )
+        account_note.setWordWrap(True)
+        account_note.setObjectName("serviceAccountHelpText")
+        account_layout.addWidget(account_note)
+        help_row = QHBoxLayout()
+        help_row.addStretch(1)
+        help_button = QPushButton("如何設定服務帳戶")
+        help_button.setObjectName("serviceAccountHelpButton")
+        help_button.clicked.connect(self._show_service_account_help)
+        help_row.addWidget(help_button)
+        account_layout.addLayout(help_row)
+        layout.addWidget(account_group)
+        layout.addStretch(1)
         return tab
 
-    def _columns_tab(self) -> QWidget:
+    def _defaults_tab(self) -> QWidget:
         scroll = QScrollArea()
+        scroll.setObjectName("settingsDefaultsScroll")
         scroll.setWidgetResizable(True)
         content = QWidget()
-        form = QFormLayout(content)
+        layout = QVBoxLayout(content)
+        layout.setSpacing(13)
+
+        columns_group = QGroupBox("欄位對應")
+        columns_group.setObjectName("sheetColumnsDefaults")
+        form = QFormLayout(columns_group)
         for key, value in self.draft["sheet"]["columns"].items():
             if key == "expected_sl_percent":
                 continue
             entry = QLineEdit(str(value))
             self.column_fields[key] = entry
             form.addRow(FIELD_LABELS.get(key, key), entry)
-        note = QLabel(
-            "row 模式：輸入完整標題、欄位字母或欄位編號。\n"
-            "cells 模式：數值欄位填儲存格位置，例如 B5、D8；\n"
-            "商品、方向、每點價格及小數位數也可直接填固定值。"
+        layout_name = str(self.draft["sheet"].get("data_layout", "cells"))
+        note_text = (
+            "目前方案使用固定儲存格位置；這些通常不需要修改。"
+            if layout_name == "cells" else
+            "目前方案保留舊式資料列讀取設定；欄位對應通常不需要修改。"
         )
-        note.setStyleSheet("color: #555555;")
+        note = QLabel(note_text)
+        note.setObjectName("defaultsHelpText")
+        note.setWordWrap(True)
         form.addRow(note)
+        layout.addWidget(columns_group)
+
+        windows_group = QGroupBox("視窗標題與下單面板")
+        windows_group.setObjectName("windowDefaults")
+        windows_form = QFormLayout(windows_group)
+        self._add_window_defaults(windows_form)
+        layout.addWidget(windows_group)
+
+        ctrader_group = QGroupBox("cTrader SL/TP")
+        ctrader_group.setObjectName("ctraderSlTpDefaults")
+        ctrader_layout = QVBoxLayout(ctrader_group)
+        ctrader_form = QFormLayout()
+        self._add_ctrader_defaults(ctrader_form)
+        ctrader_layout.addLayout(ctrader_form)
+        layout.addWidget(ctrader_group)
+        layout.addStretch(1)
         scroll.setWidget(content)
         return scroll
 
-    def _windows_tab(self) -> QWidget:
-        tab = QWidget()
-        form = QFormLayout(tab)
+    def _add_window_defaults(self, form: QFormLayout) -> None:
         for platform in (
             "cTrader",
             "MT5",
@@ -4813,16 +7013,11 @@ class SettingsDialog(QDialog):
             )
             self.open_panel_checks[platform] = checkbox
             form.addRow("下單面板", checkbox)
-        note = QLabel(
-            "如果同一平台開啟兩個帳戶視窗，請設定不同的視窗標題規則。"
-        )
-        note.setStyleSheet("color: #555555;")
+        note = QLabel("一般只需設定一次；不同帳戶視窗請使用不同標題規則。")
+        note.setObjectName("defaultsHelpText")
         form.addRow(note)
-        return tab
 
-    def _ctrader_tab(self) -> QWidget:
-        tab = QWidget()
-        form = QFormLayout(tab)
+    def _add_ctrader_defaults(self, form: QFormLayout) -> None:
         self.ctrader_mode_combo.addItem(
             "cTrader 原本輸入方式（每個新方案預設）", "native"
         )
@@ -4843,7 +7038,114 @@ class SettingsDialog(QDialog):
         )
         help_label.setWordWrap(True)
         form.addRow(help_label)
-        return tab
+
+    def _update_gid_preview(self) -> None:
+        url = self.sheet_fields.get("spreadsheet_url")
+        gid = spreadsheet_gid_from_url(url.text() if url else "")
+        self.gid_preview.setText(
+            f"網址指定工作表（GID {gid}）" if gid
+            else "網址沒有指定工作表，使用第一個工作表"
+        )
+
+    def _create_service_account_file_dialog(
+        self,
+    ) -> tuple[ThemedDialog, QFileDialog]:
+        dialog = ThemedDialog(self)
+        dialog.setWindowTitle("選擇服務帳戶 JSON")
+        dialog.resize(820, 560)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 6, 8, 8)
+        layout.setSpacing(4)
+        picker = QFileDialog()
+        picker.setOption(QFileDialog.DontUseNativeDialog, True)
+        picker.setFileMode(QFileDialog.ExistingFile)
+        picker.setNameFilters(["JSON 檔案 (*.json)", "所有檔案 (*.*)"])
+        picker.setParent(dialog, Qt.Widget)
+        picker.accepted.connect(dialog.accept)
+        picker.rejected.connect(dialog.reject)
+        layout.addWidget(picker)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
+        return dialog, picker
+
+    def _browse_service_account_file(self) -> None:
+        dialog, picker = self._create_service_account_file_dialog()
+        if dialog.exec() == QDialog.Accepted:
+            paths = picker.selectedFiles()
+            if paths:
+                self.sheet_fields["service_account_file"].setText(paths[0])
+        dialog.deleteLater()
+
+    def _update_credential_email(self) -> None:
+        path_text = self.sheet_fields.get("service_account_file")
+        email = _service_account_email(
+            path_text.text().strip() if path_text else ""
+        )
+        self.credential_email.setText(email or "尚未選擇有效的 JSON 檔案")
+
+    def _setup_sheet_tab_badge(self) -> None:
+        """Mark the Google Sheets tab with the same quiet dot as other setup items."""
+        self.sheet_tab_badge = QLabel()
+        self.sheet_tab_badge.setObjectName("sheetSetupIncompleteDot")
+        self.sheet_tab_badge.setFixedSize(6, 6)
+        self.sheet_tab_badge.setStyleSheet(
+            "background-color:#fa5362;border-radius:3px;"
+        )
+        self.sheet_tab_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.sheet_tab_badge.setAccessibleName("目前方案尚未填入 Google 試算表網址")
+        self.settings_tabs.tabBar().setTabButton(
+            0, QTabBar.RightSide, self.sheet_tab_badge
+        )
+        self._refresh_sheet_tab_badge()
+
+    def _refresh_sheet_tab_badge(self) -> None:
+        url = self.sheet_fields.get("spreadsheet_url")
+        missing_url = not url or not url.text().strip()
+        if url is not None:
+            url.set_missing_indicator(
+                missing_url,
+                "目前方案尚未填入 Google 試算表網址。"
+                if missing_url else "",
+            )
+        self.sheet_tab_badge.setVisible(bool(missing_url))
+        self.settings_tabs.setTabToolTip(
+            0,
+            "目前方案的 Google 試算表尚未填入網址。"
+            if missing_url else "目前方案使用的 Google 試算表。",
+        )
+
+    def _show_service_account_help(self) -> None:
+        dialog = ThemedDialog(self)
+        dialog.setWindowTitle("試算表設定說明")
+        dialog.resize(620, 420)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(True)
+        browser.setHtml(
+            "<h3>設定新方案</h3>"
+            "<ol>"
+            "<li>先在 Google Cloud 建立服務帳戶並下載 JSON 金鑰。</li>"
+            "<li>選擇這個 JSON 檔；程式會顯示服務帳戶電子郵件。</li>"
+            "<li>在每一份試算表按「共用」，把這個電子郵件加入為「編輯者」。</li>"
+            "<li>貼上試算表網址並儲存。工作表 GID 會從網址自動讀取。</li>"
+            "</ol>"
+            "<p><b>CSV 是公開匯出格式，只能讀取。</b>目前方案使用服務帳戶，"
+            "可讀取並更新試算表。請保管 JSON 金鑰，不要傳給別人。</p>"
+            '<p><a href="https://developers.google.com/workspace/guides/create-credentials">'
+            "Google Workspace：建立憑證與服務帳戶</a></p>"
+            '<p><a href="https://docs.cloud.google.com/iam/docs/service-accounts-create">'
+            "Google Cloud：建立服務帳戶</a></p>"
+        )
+        layout.addWidget(browser)
+        close = QPushButton("關閉")
+        close.clicked.connect(dialog.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        layout.addLayout(row)
+        dialog.setStyleSheet(DIALOG_THEME)
+        dialog.install_chrome()
+        dialog.exec()
 
     def save(self) -> None:
         try:
@@ -4851,10 +7153,13 @@ class SettingsDialog(QDialog):
                 self.app.store.data["sheet"].get("spreadsheet_url", "")
             ).strip()
             for key, entry in self.sheet_fields.items():
-                value: Any = entry.text().strip()
-                if key == "row_number":
-                    value = int(value or "2")
-                self.draft["sheet"][key] = value
+                if key == "spreadsheet_url":
+                    value: Any = entry.text().strip()
+                    self.draft["sheet"][key] = value
+                    self.draft["sheet"]["gid"] = spreadsheet_gid_from_url(value)
+                elif key == "service_account_file":
+                    self.draft["sheet"][key] = entry.text().strip()
+            self.draft["sheet"]["mode"] = "service_account"
             for key, entry in self.column_fields.items():
                 self.draft["sheet"]["columns"][key] = entry.text().strip()
             for (platform, role), entry in self.title_fields.items():
@@ -4880,5 +7185,3 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as exc:
             QMessageBox.critical(self, "設定", str(exc))
-
-

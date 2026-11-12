@@ -87,6 +87,8 @@ def candidate_calibration_points(
             "x":round((x-win.left)/win.width,6),
             "y":round((y-win.top)/win.height,6),
             "x_px":x-win.left,"y_px":y-win.top,
+            "bounds_width":r-l,"bounds_height":b-t,
+            "bounds_source":"auto_scan",
             "window_width":win.width,"window_height":win.height,
             "window_title":re.escape(win.title),
             "calibration_window_title":re.escape(win.title),
