@@ -1,6 +1,6 @@
-# LAB development snapshot (2026-10-16)
+# LAB development snapshot
 
-This branch contains the experimental **Demo-only** cTrader/MT5 UI automation and tests. The original repository `main` branch is not replaced. Do not use this snapshot for Live trading. Order submission requires user-enabled options and validated Demo identity; unconfirmed fills are not auto-retried.
+This branch contains the LAB cTrader/MT5 UI automation and tests. Program changes are reviewed through PRs into the safe LAB branch; the repository `main` branch is separate. Account type is not used as an authorization gate. Order submission requires user-enabled options; an unconfirmed fill is not treated as proof of rejection.
 
 For native **read-only** MT5 position verification on Windows, install `MetaTrader5` into the LAB's `vendor/mt5_readonly` directory using pip; vendor binaries and personal account settings are intentionally excluded from the repository.
 
@@ -10,7 +10,7 @@ For native **read-only** MT5 position verification on Windows, install `MetaTrad
 
 Windows desktop helper for reading a user-owned Google Sheet and assisting with cTrader, MT5, and TradingView workflows.
 
-This tool does not decide market direction or place Live orders. By default it fills calibrated broker fields from your sheet. Its experimental LAB-only, explicitly enabled **Demo auto-entry** can click once in each verified Demo broker, then attempt independently checked SL/TP sync and optional TradingView drawing. Do not mistake an offline test passing for approval to run Live trading.
+This tool reads your sheet and fills calibrated broker fields. When enabled by the user, it can submit orders, verify positions, synchronize SL/TP and draw in TradingView. Offline tests do not replace platform workflow acceptance.
 
 ## What Is Included
 
@@ -35,7 +35,13 @@ The default settings already include non-private cell mappings and platform defa
 
 ## Download And Run
 
-For non-technical users, use the packaged Windows exe from GitHub Releases if one is provided.
+一般使用者：到 [GitHub 版本下載區](https://github.com/xunnnn0417/AUTO-TRADING/releases)，下載附件中名稱以 `AUTO-TRADING-Windows-x64` 開頭的 ZIP，完整解壓縮後雙擊「啟動對沖小幫手.vbs」。包內已包含 Python 與所需套件，不用另外安裝。
+
+第一次會顯示「預設方案」，需設定自己的試算表、服務帳戶、交易視窗及校準；未完成項目以紅點提醒。請保留 `AUTO-TRADING-lab-unified` 資料夾名稱，讓程式能直接更新。一般更新沿用包內 Python；執行環境有變更時會自動下載對應版本的完整包、核對後安裝獨立環境，啟動失敗時還原。原有捷徑、設定及交易紀錄保留。
+
+此下載包會在安全 LAB 分支每次有程式修改合併後自動產生：**測試通過 → 準備／沿用執行環境 → 打包並檢查 → 發布下載附件**。只改 Markdown 文件時略過。尚未看到 ZIP 附件時，可到 Actions 查看該次打包是否仍在執行或失敗；原始碼的「Source code」ZIP 不含 Python。
+
+打包在 GitHub 背景執行，不需要每次由 AI 手動操作。執行環境依 Python 版本、套件需求及打包程式快取；內容有變才重新準備。下載包不會包含開發電腦上的試算表金鑰、帳戶、設定、校準或交易紀錄。
 
 For Python users:
 

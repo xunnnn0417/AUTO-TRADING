@@ -221,11 +221,14 @@ class FillVerificationTests(unittest.TestCase):
             self.fake.read_number=MagicMock(side_effect=[
                 D("420.86"),D("423.80"),D("2420.86"),D("2423.80")
             ])
+            self.fake.read_number_candidates=MagicMock()
             self.assertEqual(
                 self.automation._read_mt5_quote_pair(
                     self.window,{}, {},instruction,"BUY","場內"
                 ),D("2423.80")
             )
+            self.fake.read_number_candidates.assert_not_called()
+            del self.fake.read_number_candidates
             self.fake.read_number=MagicMock(
                 side_effect=[D("420.86"),D("423.80")]*3
             )
@@ -241,7 +244,7 @@ class FillVerificationTests(unittest.TestCase):
             "TRADING_HELPER_TEST_SKIP_SYMBOL_CHECK":"1",
         }, clear=True):
             self.fake.read_number=MagicMock(
-                side_effect=[D("422.25"),D("2425.79")]
+                side_effect=[D("422.25"),D("2425.79")]*2
             )
             self.fake.read_number_candidates=MagicMock(side_effect=[
                 [D("422.25"),D("2422.25"),D("2422.25")],

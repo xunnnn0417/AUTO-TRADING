@@ -642,7 +642,10 @@ class PlatformAutomation:
                 candidate_reader = getattr(
                     self.windows, "read_number_candidates", None
                 )
-                if attempt == 0 and callable(candidate_reader):
+                # Try a second fresh, cheap read before the multi-crop OCR.
+                # A transient quote frame must not force six seconds of
+                # candidate scans when the next normal frame is readable.
+                if attempt == 1 and callable(candidate_reader):
                     try:
                         with timed_phase(
                             "MT5 Bid 完整候選 OCR",platform="MT5",role=role,
@@ -700,7 +703,7 @@ class PlatformAutomation:
                         last_error = AutomationError(
                             f"完整 OCR 候選讀取失敗：{candidate_exc}"
                         )
-                if attempt < 2:
+                if attempt == 0:
                     time.sleep(0.05)
         else:
             raise AutomationError(
@@ -1462,6 +1465,32 @@ class PlatformAutomation:
             f"正在依場內平台選擇讀取視窗：{internal_platform}，"
             f"視窗：{entry_window.title}"
         )
+        if isinstance(self.windows, WindowController):
+            # Both platforms already have a read-only native position adapter.
+            # Prefer its unique, matched row over waiting for an OCR tooltip.
+            from .demo_broker_port import DemoUiBrokerPort
+            from .auto_entry import AutoEntryWorkflow, DemoAccount
+            try:
+                positions=timed_call(
+                    "原生讀取場內持倉",DemoUiBrokerPort(self,self.log).snapshot_positions,
+                    internal_platform,"internal",_window=entry_window,
+                    platform=internal_platform,role="internal",
+                )
+            except AutomationError as exc:
+                self.log(f"場內原生讀取未完成，改用已校準位置：{exc}")
+            else:
+                if len(positions)!=1:
+                    raise AutomationError("場內不是唯一一筆持倉，未同步；請先核對持倉。")
+                position=positions[0]
+                expected=str(internal_profile.get("account_number",{}).get("internal","")).strip()
+                AutoEntryWorkflow._validate_position(
+                    position,internal_platform,instruction.internal_direction,
+                    instruction.internal.lot,
+                    DemoAccount(internal_platform,expected or position.account_id,"",None,True),
+                    effective_test_symbol(instruction.symbol),
+                )
+                self.log("已從唯一匹配的場內持倉讀取成交價，略過懸浮辨識等待。")
+                return position.entry_price
         if _is_ctrader(internal_platform):
             self._verify_ctrader_account(
                 internal_platform, internal_profile, "internal", entry_window

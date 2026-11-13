@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 
 UPDATE_BRANCH = "lab/2026-10-16-safe-defaults-preflight"
+DOWNLOAD_PAGE_URL = "https://github.com/xunnnn0417/AUTO-TRADING/releases"
 UPDATE_PAGE_URL = (
     "https://github.com/xunnnn0417/AUTO-TRADING/tree/"
     "lab/2026-10-16-safe-defaults-preflight"

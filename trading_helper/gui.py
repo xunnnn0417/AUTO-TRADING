@@ -801,6 +801,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._parameter_write_pending = False
         # Only one fill operation may control broker windows at any time.
         self._fill_task_lock = threading.Lock()
+        self._update_lock = threading.Lock()
+        self._active_tasks = 0
+        self._update_in_progress = False
+        self._allow_update_exit = False
         self._fill_confirmed_text: dict[str, str] = {}
         self._fill_waiting_for_sheet: dict | None = None
         self._parameter_write_active_signature: tuple[tuple[str, str], ...] | None = None
@@ -1136,7 +1140,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             header_label = QLabel(title)
             header_label.setProperty("role", "caption")
             header_layout.addWidget(header_label)
-            combo.setMinimumWidth(115)
+            combo.setMinimumWidth(151)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             header_layout.addWidget(combo, 1)
             platform_layout.addWidget(header_cell, 1)
@@ -1552,23 +1556,33 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self._exclusive_optional_checkbox(group, current, checked)
             )
             self.test_scenario_checkboxes[action] = choice
+        self.test_delay_checkbox = QCheckBox("15 秒延遲")
+        self.test_delay_checkbox.setObjectName("test_recovery_delay")
+        self.test_delay_checkbox.setToolTip(
+            "僅情境測試使用：發現單邊缺單後等待超過 15 秒，"
+            "驗證逾時處理。等待期間仍可按 Esc 或右鍵停止。"
+            "場內快平仍會立即處理場外，不延遲保護動作。"
+        )
         for option in (
             self.auto_entry_on_fill_both, self.auto_fast_pair,
             self.auto_sync_sl_tp_after_entry,
             self.auto_draw_tv_after_entry,
             self.test_mode_checkbox, *self.test_asset_checkboxes.values(),
             *self.test_scenario_checkboxes.values(),
+            self.test_delay_checkbox,
         ):
             option.setStyleSheet("font-size: 10px; spacing: 3px;")
             install_checkmark_only_indicator(option)
         for option in (
             *self.test_asset_checkboxes.values(),
             *self.test_scenario_checkboxes.values(),
+            self.test_delay_checkbox,
         ):
             option.setStyleSheet("font-size: 9px; spacing: 2px;")
         self.test_mode_checkbox.setChecked(False)
         for choice in (*self.test_asset_checkboxes.values(),
-                       *self.test_scenario_checkboxes.values()):
+                       *self.test_scenario_checkboxes.values(),
+                       self.test_delay_checkbox):
             choice.setEnabled(False)
         self.test_mode_checkbox.toggled.connect(self._toggle_test_mode)
         automation_layout.addWidget(self.test_mode_checkbox)
@@ -1582,6 +1596,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.addWidget(separator)
         for choice in self.test_scenario_checkboxes.values():
             automation_layout.addWidget(choice)
+        automation_layout.addWidget(self.test_delay_checkbox)
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
@@ -2644,6 +2659,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.status.emit("已停止")
         self.log("緊急停止：已取消所有待執行的滑鼠與鍵盤操作。")
 
+    def can_update(self) -> bool:
+        with self._update_lock:
+            return (not self._update_in_progress and self._active_tasks == 0
+                    and self._fill_waiting_for_sheet is None
+                    and not self._parameter_write_active and not self._parameter_write_pending)
+
+    def begin_update(self) -> bool:
+        with self._update_lock:
+            if (self._update_in_progress or self._active_tasks
+                    or self._fill_waiting_for_sheet is not None
+                    or self._parameter_write_active or self._parameter_write_pending):
+                return False
+            self._update_in_progress = True
+            return True
+
+    def end_update(self) -> None:
+        with self._update_lock:
+            self._update_in_progress = False
+
     def _start(
         self,
         name: str,
@@ -2662,6 +2696,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if is_fill and not self._fill_task_lock.acquire(blocking=False):
             self.log("已有填寫任務執行中，已忽略重複操作。")
             return
+        with self._update_lock:
+            if self._update_in_progress:
+                if is_fill:
+                    self._fill_task_lock.release()
+                return
+            self._active_tasks += 1
         task_profile_name = self.profiles.active_name
         task_sheet_url = str(
             self.store.data["sheet"].get("spreadsheet_url", "")
@@ -2729,6 +2769,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if not getattr(exc, "_auto_entry_result_emitted", False):
                     self.signals.error.emit(str(exc))
             finally:
+                with self._update_lock:
+                    self._active_tasks -= 1
                 if is_fill:
                     self._fill_task_lock.release()
                 if hide_during:
@@ -3125,6 +3167,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         choices = (
             *getattr(self, "test_asset_checkboxes", {}).values(),
             *getattr(self, "test_scenario_checkboxes", {}).values(),
+            *([self.test_delay_checkbox] if hasattr(self,"test_delay_checkbox") else []),
         )
         for choice in choices:
             choice.setEnabled(enabled)
@@ -3387,12 +3430,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             getattr(self, "tv_draw_internal", None)
             and self.tv_draw_internal.isChecked()
         )
+        delay_option = getattr(self, "test_delay_checkbox", None)
+        test_delay = bool(test_action and delay_option is not None
+                          and delay_option.isChecked())
         if test_action.startswith("weekend:"):
             self._start(
                 "假日測試",
                 lambda: self._run_complete_test_scenario(
                     test_action, platforms, symbol=test_symbol,
                     draw_tv=auto_draw,draw_internal=draw_internal,
+                    test_delay=test_delay,
                 ),
                 restore_after=False,
             )
@@ -3409,6 +3456,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 lambda: self._run_complete_test_scenario(
                     test_action, platforms, symbol=test_symbol,
                     draw_tv=auto_draw,draw_internal=draw_internal,
+                    test_delay=test_delay,
                 ),
                 restore_after=False,
             )
@@ -3440,6 +3488,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self, action: str, platforms: dict[str,str],
         *, symbol: str | None = None,
         draw_tv: bool = False, draw_internal: bool = False,
+        test_delay: bool = False,
     ) -> None:
         if symbol is None and action.startswith("weekend:"):
             symbol = action.split(":", 1)[1]
@@ -3449,6 +3498,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 sync_sl_tp=True,draw_tv=draw_tv,
                 draw_internal=draw_internal,fast_pair=False,
                 test_scenario=action,
+                test_delay=test_delay,
             )
 
     def fill_role(self, role: str) -> None:
@@ -3497,6 +3547,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         *, sync_sl_tp: bool = False, draw_tv: bool = False,
         draw_internal: bool = False, fast_pair: bool = False,
         test_scenario: str = "",
+        test_delay: bool = False,
         authorized_reentry_id: str = "",
         duplicate_confirmation: tuple[str,str,str,str] | None = None,
         manual_reconciliation_confirmed: bool = False,
@@ -3539,6 +3590,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 sync_sl_tp=True,draw_tv=draw_tv,
                 draw_internal=draw_internal,fast_pair=False,
                 test_scenario=test_scenario,
+                test_delay=test_delay,
             )
             return
         if auto_entry_requested:
@@ -3586,6 +3638,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         manual_reconciliation_confirmed: bool = False,
         fast_pair: bool = False,
         test_scenario: str = "",
+        test_delay: bool = False,
         authorized_reentry_id: str = "",
         prechecked_accounts=None,
     ) -> None:
@@ -3674,6 +3727,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     profile_name,sheet_url,scenario=test_scenario,
                     test_run_id=str(time.time_ns()),draw_tv=draw_tv,
                     draw_internal=draw_internal,
+                    test_delay=test_delay,
                 )
                 scenario=result["scenario"]
                 initial=result.get("initial_positions")
@@ -3716,6 +3770,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         "可選擇重新進場；請先確認考試商規則。"
                     )
                     followup=True
+                elif result["outcome"]=="external_closed_after_timeout":
+                    title="場內補進逾時，場外已平倉"
+                    message="超過 15 秒仍未補進場內；已核對並平掉場外。\n兩邊目前皆無持倉，沒有再送單。"
+                    followup=False
                 else:
                     title="場外快平並補進測試完成"
                     message=(
@@ -3798,6 +3856,23 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     "internal_platform":internal_platform,
                     "external_platform":external_platform,
                 }
+                if (getattr(exc,"test_recovery_timeout",False)
+                        and tuple(closed)==("external",)):
+                    report.update({
+                        "title":"場外補進逾時，請選擇下一步",
+                        "message":"場外已平倉，超過 15 秒未補進。\n可選擇平掉場內，或補進場外；執行前會重新核對持倉。",
+                        "single_confirmed_role":"internal",
+                        "incident_action_request":{
+                            "item":item,"profile_name":profile_name,"sheet_url":sheet_url,
+                            "internal_platform":internal_platform,
+                            "external_platform":external_platform,
+                            "confirmed_role":"internal",
+                            "confirmed_ticket":initial["internal"].ticket,
+                            "account_ids":{role:pos.account_id for role,pos in initial.items()},
+                            "symbol":flow._effective_test_symbol(item.symbol),
+                            "draw_tv":draw_tv,"draw_internal":draw_internal,
+                        },
+                    })
                 signal=getattr(
                     getattr(self,"signals",None),"auto_entry_result",None
                 )
@@ -5121,6 +5196,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.log("已更新方案順序。")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._update_in_progress and not self._allow_update_exit:
+            event.ignore()
+            return
         self.save_ui_state()
         self.emergency.close()
         event.accept()
@@ -6957,7 +7035,7 @@ class SettingsDialog(ThemedDialog):
         columns_group.setObjectName("sheetColumnsDefaults")
         form = QFormLayout(columns_group)
         for key, value in self.draft["sheet"]["columns"].items():
-            if key == "expected_sl_percent":
+            if key == "expected_sl_percent" or not str(value).strip():
                 continue
             entry = QLineEdit(str(value))
             self.column_fields[key] = entry
