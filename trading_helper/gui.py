@@ -254,6 +254,9 @@ class ThemedMessageBox(ThemedDialog):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        if parent is not None and parent.window().windowFlags() & Qt.WindowStaysOnTopHint:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            self.setWindowModality(Qt.WindowModal)
         self.setMinimumWidth(420)
         self._clicked_button: QPushButton | None = None
         self._standard_by_button: dict[QPushButton, object] = {}
@@ -386,6 +389,7 @@ class ThemedMessageBox(ThemedDialog):
                 else box._standard_by_button[box._buttons[0]]
             )
         box.setDefaultButton(default_button)
+        QTimer.singleShot(0, lambda: (box.raise_(), box.activateWindow()))
         box.exec()
         result = box._standard_by_button.get(box.clickedButton())
         box.close()
@@ -2414,9 +2418,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         incident_request=report.get("incident_action_request")
         if (role in ("internal","external")
                 and isinstance(incident_request,dict)):
+            confirmed_label = "場內" if role == "internal" else "場外"
+            missing_label = "場外" if role == "internal" else "場內"
             for option,title in (
-                ("close","平掉已確認的一邊"),
-                ("reenter","補進缺少的一邊"),
+                ("close",f"平掉{confirmed_label}"),
+                ("reenter",f"補進{missing_label}"),
             ):
                 choice=QPushButton(title,dialog)
                 choice.setObjectName(
@@ -2476,6 +2482,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if selected_symbol is None and item is not None:
             selected_symbol=item.symbol
         account_ids=request.get("account_ids")
+        receipt=getattr(self,"_auto_entry_receipt",None)
+        try:
+            current_item=self._require_instruction()
+        except (AutomationError, ValueError):
+            current_item=None
         if (item is None or not internal_platform or not external_platform
                 or not isinstance(account_ids,dict)
                 or not account_ids.get("internal")
@@ -2483,17 +2494,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 or self.profiles.active_name!=request.get("profile_name")
                 or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
                     !=request.get("sheet_url")
-                or self.instruction is not item
+                or current_item != item
                 or self.internal_platform.currentText()!=internal_platform
                 or self.external_platform.currentText()!=external_platform
                 or selected_symbol!=request.get("symbol")):
             QMessageBox.warning(
-                self,"進場資料已改變",
+                receipt or self,"進場資料已改變",
                 "方案、試算表、商品或平台已改變。請重新核對後再操作，"
                 "本次沒有平倉或補進。"
             )
             return
-        receipt=getattr(self,"_auto_entry_receipt",None)
         if receipt is not None:
             receipt.close()
         title="異常後平倉" if action=="close" else "異常後補進"
@@ -2580,22 +2590,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         item=request.get("item")
         internal_platform=str(request.get("internal_platform") or "")
         external_platform=str(request.get("external_platform") or "")
+        receipt=getattr(self,"_auto_entry_receipt",None)
+        try:
+            current_item=self._require_instruction()
+        except (AutomationError, ValueError):
+            current_item=None
         if (item is None or not internal_platform or not external_platform
                 or self.profiles.active_name!=request.get("profile_name")
                 or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
                     !=request.get("sheet_url")
-                or self.instruction!=item
+                or current_item!=item
                 or self.internal_platform.currentText()!=internal_platform
                 or self.external_platform.currentText()!=external_platform):
             QMessageBox.warning(
-                self,"進場資料已改變",
+                receipt or self,"進場資料已改變",
                 "方案、試算表、商品或平台已改變。請重新核對後再開始，"
                 "本次沒有重新進場。"
             )
             return
-        receipt=getattr(self,"_auto_entry_receipt",None)
         if receipt is not None:
             receipt.close()
+        fast_control=getattr(self,"auto_fast_pair",None)
+        fast_pair=bool(fast_control is not None and fast_control.isChecked())
         self._start(
             "重新進場",
             lambda:self._fill_both_task(
@@ -2603,7 +2619,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 sync_sl_tp=True,
                 draw_tv=bool(request.get("draw_tv",False)),
                 draw_internal=bool(request.get("draw_internal",False)),
-                fast_pair=False,
+                fast_pair=fast_pair,
                 authorized_reentry_id=f"{time.time_ns()}",
             ),
             restore_after=False,
@@ -3416,7 +3432,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                            test_symbol: str | None = None) -> None:
         auto_entry = self.auto_entry_on_fill_both.isChecked()
         fast_control = getattr(self,"auto_fast_pair",None)
-        fast_pair = bool(fast_control is not None and fast_control.isChecked() and auto_entry)
+        fast_pair = bool(fast_control is not None and fast_control.isChecked()
+                         and (auto_entry or test_action))
         sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
             auto_entry
@@ -3440,6 +3457,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     test_action, platforms, symbol=test_symbol,
                     draw_tv=auto_draw,draw_internal=draw_internal,
                     test_delay=test_delay,
+                    fast_pair=fast_pair,
                 ),
                 restore_after=False,
             )
@@ -3457,6 +3475,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     test_action, platforms, symbol=test_symbol,
                     draw_tv=auto_draw,draw_internal=draw_internal,
                     test_delay=test_delay,
+                    fast_pair=fast_pair,
                 ),
                 restore_after=False,
             )
@@ -3489,6 +3508,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         *, symbol: str | None = None,
         draw_tv: bool = False, draw_internal: bool = False,
         test_delay: bool = False,
+        fast_pair: bool = False,
     ) -> None:
         if symbol is None and action.startswith("weekend:"):
             symbol = action.split(":", 1)[1]
@@ -3496,7 +3516,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._fill_both_task(
                 platforms["internal"],platforms["external"],True,
                 sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=False,
+                draw_internal=draw_internal,
+                fast_pair=fast_pair and not action.startswith("reentry:"),
                 test_scenario=action,
                 test_delay=test_delay,
             )
@@ -3588,7 +3609,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._auto_entry_after_fill_both_pending(
                 internal_platform,external_platform,item,
                 sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=False,
+                draw_internal=draw_internal,fast_pair=fast_pair,
                 test_scenario=test_scenario,
                 test_delay=test_delay,
             )
@@ -3677,6 +3698,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 internal_platform=internal_platform,
                 external_platform=external_platform,
             )
+            if (test_scenario == "reentry:external" and test_delay
+                    and flow._test_delay_expired_role == "external"):
+                report["title"] = "場外補進逾時，請選擇下一步"
+                report["message"] = (
+                    f"場內（{internal_platform}）：先前已確認進場\n"
+                    f"場外（{external_platform}）：本次測試刻意未送單\n"
+                    "測試延遲超過 15 秒，已停止自動補進。\n"
+                    "請選擇平掉場內或補進場外；操作前會重新核對持倉。"
+                )
             if (
                 success and not test_scenario
                 and item.expected_sl_points is not None
@@ -3728,6 +3758,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     test_run_id=str(time.time_ns()),draw_tv=draw_tv,
                     draw_internal=draw_internal,
                     test_delay=test_delay,
+                    fast_pair=fast_pair,
                 )
                 scenario=result["scenario"]
                 initial=result.get("initial_positions")

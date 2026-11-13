@@ -1621,6 +1621,7 @@ class AutoEntryWorkflow:
         test_run_id: str, draw_tv: bool = False,
         draw_internal: bool = False,
         test_delay: bool = False,
+        fast_pair: bool = False,
     ) -> dict:
         """Run one complete, explicitly selected recovery test."""
         if not test_run_id.strip():
@@ -1635,7 +1636,7 @@ class AutoEntryWorkflow:
             positions=self.run(
                 instruction,internal_platform,external_platform,
                 profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=False,
+                draw_internal=draw_internal,fast_pair=fast_pair,
                 test_run_id=test_run_id,
             )
             return {
@@ -1676,7 +1677,7 @@ class AutoEntryWorkflow:
         first,second=self.run(
             instruction,internal_platform,external_platform,
             profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
-            draw_internal=draw_internal,fast_pair=False,
+            draw_internal=draw_internal,fast_pair=fast_pair,
             test_run_id=test_run_id,
         )
         initial={"internal":first,"external":second}

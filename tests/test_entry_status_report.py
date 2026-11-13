@@ -189,7 +189,7 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
             "單邊平倉測試尚未確認完成；不會再次點擊。原因："
             "MT5 唯讀 API 回報 1 筆仍有效委託（查詢全部商品，這不是已成交持倉）；"
             "為避免重複送單，已停止：\n"
-            "- XAUUSD | 市價買入委託 | 單號 2081233647 | 0.1 手 | 價格 0\n"
+            "- XAUUSD | 市價買入委託 | 單號 TEST-ORDER-01 | 0.1 手 | 價格 0\n"
             "請在 MT5「交易」分頁用單號核對。若畫面找不到相同單號，"
             "請回傳這段明細；代表程式讀值與畫面不一致。"
         )
@@ -204,7 +204,7 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
         self.signal.emit.assert_called_once()
         report=self.signal.emit.call_args.args[0]
         self.assertEqual(report["title"],"測試中斷，請核對持倉")
-        self.assertIn("單號 2081233647",report["message"])
+        self.assertIn("單號 TEST-ORDER-01",report["message"])
         self.assertIn("不是持倉",report["message"])
         self.assertIn("不會重送或自行平倉",report["message"])
         self.assertNotIn("單邊平倉測試尚未確認完成",report["message"])
@@ -213,11 +213,11 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
     def test_pending_mt5_order_summary_keeps_ticket_and_next_step(self):
         summary=summarize_interruption_reason(
             "原因：MT5 唯讀 API 回報 1 筆仍有效委託；已停止：\n"
-            "- XAUUSD | 市價買入委託 | 單號 2081233647 | 0.1 手 | 價格 0\n"
+            "- XAUUSD | 市價買入委託 | 單號 TEST-ORDER-01 | 0.1 手 | 價格 0\n"
             "請在 MT5「交易」分頁用單號核對。完整技術細節。"
         )
         self.assertIn("不是持倉",summary)
-        self.assertIn("2081233647",summary)
+        self.assertIn("TEST-ORDER-01",summary)
         self.assertIn("MT5「交易」核對單號",summary)
         self.assertIn("XAUUSD 買入 0.1 手",summary)
         self.assertNotIn("價格 0",summary)
@@ -319,6 +319,8 @@ class ReceiptWindowTests(unittest.TestCase):
             profiles=SimpleNamespace(active_name="exam"),
             store=SimpleNamespace(data={"sheet":{"spreadsheet_url":"sheet"}}),
             instruction=item,
+            _require_instruction=lambda:replace(item),
+            auto_fast_pair=SimpleNamespace(isChecked=lambda:True),
             internal_platform=SimpleNamespace(currentText=lambda:"cTrader"),
             external_platform=SimpleNamespace(currentText=lambda:"MT5"),
             _auto_entry_receipt=SimpleNamespace(close=MagicMock()),
@@ -342,6 +344,7 @@ class ReceiptWindowTests(unittest.TestCase):
         self.assertTrue(call.kwargs["draw_tv"])
         self.assertFalse(call.kwargs["draw_internal"])
         self.assertTrue(call.kwargs["authorized_reentry_id"])
+        self.assertTrue(call.kwargs["fast_pair"])
 
 
 if __name__ == "__main__":

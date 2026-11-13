@@ -29,6 +29,7 @@ class DemoUiBrokerPort:
         # same broker window's possibly shared title binding.
         # Ticket values can overlap across two separate brokers.
         self._ticket_role: dict[tuple[str, str], str] = {}
+        self._pending_modify_windows: dict[tuple[str, str], object] = {}
         self._account_binding: dict[tuple[str, str], DemoAccount] = {}
         self._expected_accounts: dict[tuple[str,str],DemoAccount] = {}
         self._expected_symbol: str | None = None
@@ -1146,6 +1147,14 @@ class DemoUiBrokerPort:
         positions=self.snapshot_positions(pos.platform,role)
         if len(positions)!=1 or positions[0].ticket!=pos.ticket:
             raise AutomationError("修改前無法唯一確認要修改的 Demo 持倉。")
+        current=positions[0]
+        self.log(
+            f"{pos.platform} SL/TP：目前 {current.sl}／{current.tp}，"
+            f"預期 {sl}／{tp}。"
+        )
+        if pos.platform == "MT5" and current.sl == sl and current.tp == tp:
+            self.log("MT5 持倉止盈止損已與預期相同，不需重複修改。")
+            return
         profile,win=self._bound(pos.platform,role)
         points=profile.get("points",{})
         required=("position_order_row","position_sl_input",
@@ -1186,8 +1195,10 @@ class DemoUiBrokerPort:
                 )
         self.automation.emergency.guard()
         self.automation.windows.click(modify,points["position_modify_confirm"])
+        if pos.platform == "MT5":
+            self._pending_modify_windows[(pos.platform,pos.ticket)]=modify
 
-    def verify_position_sl_tp(self,pos,sl,tp):
+    def verify_position_sl_tp(self,pos,sl,tp,*,modify_window=None):
         role=self._ticket_role.get((pos.platform,pos.ticket))
         if role not in ("internal","external"):
             raise AutomationError("缺少經過成交確認的持倉場別，拒絕讀回。")
@@ -1199,13 +1210,38 @@ class DemoUiBrokerPort:
             if len(matching)!=1:
                 raise AutomationError("SL／TP 修改後無法唯一確認原持倉。")
             current=matching[0]
+            if (current.account_id != pos.account_id
+                    or current.symbol != pos.symbol
+                    or current.direction != pos.direction
+                    or current.volume != pos.volume):
+                raise AutomationError("SL／TP 核對時持倉資料已改變，已停止。")
             if current.sl==sl and current.tp==tp:
+                self.log(f"{pos.platform} 持倉已讀回核對：SL {sl}／TP {tp}。")
+                pending=self._pending_modify_windows.pop((pos.platform,pos.ticket),None)
+                modify_window=modify_window or pending
+                if pos.platform == "MT5" and modify_window is not None:
+                    self._dismiss_verified_modify_window(modify_window)
                 return
             if time.monotonic()>deadline:
                 raise AutomationError(
                     "SL／TP 修改送出後，無法從持倉清單確認新價格。"
                 )
             time.sleep(0.25)
+
+    def _dismiss_verified_modify_window(self, window):
+        """Dismiss only the exact modification window after position readback."""
+        windows=self.automation.windows
+        if not any(w.handle == window.handle for w in windows.list_windows()):
+            return
+        self.automation.emergency.guard()
+        windows.press(window,"esc")
+        deadline=time.monotonic()+1.0
+        while any(w.handle == window.handle for w in windows.list_windows()):
+            self.automation.emergency.guard()
+            if time.monotonic() >= deadline:
+                raise AutomationError("止盈止損已核對，但修改視窗未關閉，請手動關閉。")
+            time.sleep(0.05)
+        self.log("止盈止損已符合預期，已關閉留下的 MT5 修改視窗。")
 
     def close_position_once(self, pos: Position, role: str) -> None:
         """Click one manually calibrated close control and verify that ticket exits."""

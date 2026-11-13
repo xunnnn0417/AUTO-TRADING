@@ -19,8 +19,8 @@ from tests.test_auto_entry_state_machine import FakeBrokerPort, instruction
 
 
 class SingleLegFakePort(FakeBrokerPort):
-    def __init__(self, *, mt5_external=False):
-        super().__init__(mt5_internal=False)
+    def __init__(self, *, mt5_external=False, mt5_internal=False):
+        super().__init__(mt5_internal=mt5_internal)
         points = {
             name: {"id": name, "x_px": 10, "y_px": 10,
                    "window_width": 800, "window_height": 600}

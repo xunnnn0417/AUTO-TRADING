@@ -1169,15 +1169,19 @@ class PlatformAutomation:
                 # to match symbol, direction and volume, then correlate the
                 # unique ticket to the visible Trade row before opening it.
                 from .demo_broker_port import DemoUiBrokerPort
+                native_port=DemoUiBrokerPort(self, self.log)
                 matched_row, matched_position = timed_call(
                     "唯一辨識 MT5 場外持倉",
-                    DemoUiBrokerPort(self, self.log).find_mt5_position_row,
+                    native_port.find_mt5_position_row,
                     external_platform, "external",
                     expected_symbol=effective_test_symbol(instruction.symbol),
                     expected_direction=instruction.external_direction,
                     expected_volume=instruction.external.lot,
                     window=bound_window,
                     platform=external_platform, role="external",
+                )
+                native_port.remember_verified_position_role(
+                    external_platform,"external",matched_position
                 )
                 operation_points = points
                 position_point = self._offset_position_point(
@@ -1308,6 +1312,10 @@ class PlatformAutomation:
             operation_points = points
 
         if use_position_modify_flow:
+            self.log(
+                f"場外 {external_platform} 預期止盈止損："
+                f"SL {instruction.format_price(sl_price)}／TP {instruction.format_price(tp_price)}。"
+            )
             current_values: dict[str, Decimal] = {}
             for point_name, label, value in values:
                 raw = timed_call(
@@ -1323,6 +1331,14 @@ class PlatformAutomation:
                 current_values[point_name] == Decimal(value)
                 for point_name, _, value in values
             ):
+                if _is_mt5(external_platform):
+                    timed_call(
+                        "核對場外持倉並關閉修改視窗",
+                        native_port.verify_position_sl_tp,matched_position,
+                        sl_price,tp_price,modify_window=modify_window,
+                        platform=external_platform,role="external",
+                    )
+                    return None
                 self.emergency.guard()
                 self.windows.press(modify_window, "esc")
                 self.windows.wait_for_active_window_change(
@@ -1379,6 +1395,14 @@ class PlatformAutomation:
                 modify_window, confirm_point,
                 platform=external_platform, role="external",
             )
+            if _is_mt5(external_platform):
+                timed_call(
+                    "核對場外持倉並關閉修改視窗",
+                    native_port.verify_position_sl_tp,matched_position,
+                    sl_price,tp_price,modify_window=modify_window,
+                    platform=external_platform,role="external",
+                )
+                return None
             try:
                 timed_call(
                     "等待場外修改完成", self.windows.wait_for_active_window_change,
