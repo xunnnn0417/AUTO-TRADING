@@ -102,11 +102,16 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual((self.root / "main.py").read_bytes(), b"print('old')\n")
         self.assertEqual(update.baseline(self.root), self.before)
 
-    def test_dependency_change_requires_manual_environment_update(self):
+    def test_dependency_change_stages_a_private_runtime_without_touching_shared_python(self):
         self.files["requirements.txt"] = b"new-package==2\n"
-        with patch.object(update, "read_download", side_effect=self.download()):
-            with self.assertRaisesRegex(ValueError, "執行環境"):
-                update.prepare_update(self.root, "1.0.0")
+        env={"path":".hedge-runtime-"+"c"*32,"files":{}}
+        with patch.object(update,"read_download",side_effect=self.download()), patch(
+            "trading_helper.portable_environment.prepare_environment",return_value=env
+        ) as prepare:
+            stage=update.prepare_update(self.root,"1.0.0")
+        self.assertEqual(json.loads((stage/"plan.json").read_text())["environment"],env)
+        prepare.assert_called_once_with(stage,"a"*40,"1.0.1",self.files)
+        self.assertEqual((self.root/"main.py").read_bytes(),b"print('old')\n")
 
     def test_portable_sdk_dependency_change_keeps_old_environment(self):
         target = self.root / "requirements-portable.txt"
@@ -114,10 +119,86 @@ class SelfUpdateTests(unittest.TestCase):
         self.before["requirements-portable.txt"] = update.digest(target.read_bytes())
         (self.root / update.RECEIPT).write_text(json.dumps({"files": self.before}))
         self.files["requirements-portable.txt"] = b"MetaTrader5==2\n"
-        with patch.object(update, "read_download", side_effect=self.download()):
+        with patch.object(update, "read_download", side_effect=self.download()), patch(
+            "trading_helper.portable_environment.prepare_environment",
+            side_effect=ValueError("執行環境完整包尚未發布"),
+        ):
             with self.assertRaisesRegex(ValueError, "執行環境"):
                 update.prepare_update(self.root, "1.0.0")
         self.assertEqual(target.read_bytes(), b"MetaTrader5==1\n")
+
+    def make_environment_plan(self):
+        stage=self.prepare()
+        env=stage/"environment"
+        hashes={}
+        for name,data in (("python/python.exe",b"new-python"),
+                          ("python/pythonw.exe",b"new-pythonw"),
+                          ("mt5_readonly/MetaTrader5/sdk.pyd",b"sdk")):
+            target=env/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes(data)
+            hashes[name]=update.digest(data)
+        plan=json.loads((stage/"plan.json").read_text())
+        plan["environment"]={"path":".hedge-runtime-"+"c"*32,"files":hashes}
+        (stage/"plan.json").write_text(json.dumps(plan))
+        return stage,plan
+
+    def test_environment_apply_and_rollback_preserve_original_python_and_user_data(self):
+        legacy=self.root/"runtime/pythonw.exe"
+        legacy.parent.mkdir()
+        legacy.write_bytes(b"old-python")
+        stage,plan=self.make_environment_plan()
+        update.apply_update(stage)
+        selected=update.installed_python(self.root)
+        self.assertEqual(selected.read_bytes(),b"new-pythonw")
+        self.assertEqual(legacy.read_bytes(),b"old-python")
+        update.rollback(stage,plan)
+        self.assertIsNone(update.installed_python(self.root))
+        self.assertEqual((self.root/"config.json").read_text(),"private calibration")
+        self.assertEqual((self.root/"journal.json").read_text(),"trade history")
+
+    def test_modified_environment_is_rejected_before_any_source_change(self):
+        stage,_=self.make_environment_plan()
+        (stage/"environment/python/pythonw.exe").write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError,"環境檔案已變動"):
+            update.apply_update(stage)
+        self.assertEqual((self.root/"main.py").read_bytes(),b"print('old')\n")
+
+    def test_environment_failure_relaunches_original_interpreter(self):
+        stage,plan=self.make_environment_plan()
+        with patch.object(update,"wait_for_exit"),patch.object(update.subprocess,"Popen") as popen:
+            popen.return_value.poll.return_value=1
+            update.run_worker(stage,"original-pythonw.exe",123)
+        self.assertEqual(Path(popen.call_args_list[0].args[0][0]),
+            self.root/plan["environment"]["path"]/"python/pythonw.exe")
+        self.assertEqual(popen.call_args_list[1].args[0][0],"original-pythonw.exe")
+        self.assertIsNone(update.installed_python(self.root))
+
+    def test_source_only_update_keeps_selected_private_environment(self):
+        name=".hedge-runtime-"+"d"*32
+        python=self.root/name/"python/pythonw.exe"
+        python.parent.mkdir(parents=True)
+        python.write_bytes(b"existing-env")
+        (self.root/update.RECEIPT).write_text(json.dumps({"files":self.before,"environment":name}))
+        stage=self.prepare()
+        update.apply_update(stage)
+        self.assertEqual(update.installed_python(self.root),python)
+
+    def test_environment_path_cannot_retarget_production_or_outside_folder(self):
+        for name in ("../trading-workflow-helper", "runtime", "C:/other", ".hedge-runtime-../"):
+            with self.subTest(name=name),self.assertRaises(ValueError):
+                update.environment_root(self.root,name)
+
+    def test_existing_launcher_redirects_to_private_environment_before_loading_gui(self):
+        import main
+        stage,_=self.make_environment_plan()
+        update.apply_update(stage)
+        selected=update.installed_python(self.root)
+        with patch.object(main,"APP_BASE",self.root),patch("subprocess.Popen") as launch:
+            main.main()
+        self.assertEqual(Path(launch.call_args.args[0][0]),selected)
+        self.assertEqual(Path(launch.call_args.args[0][1]),self.root/"main.py")
+        self.assertEqual(launch.call_count,1)
 
     def test_production_folder_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "LAB"):

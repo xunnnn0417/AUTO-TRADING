@@ -32,6 +32,7 @@ config.json
 TradingWorkflowHelper.lnk
 
 # LAB local test and user data
+.hedge-runtime-*/
 *.log
 *.png
 vendor/

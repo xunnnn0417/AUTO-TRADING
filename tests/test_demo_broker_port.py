@@ -47,6 +47,10 @@ class DemoPortTests(unittest.TestCase):
             FakeText("CTraderAccountNumberTextBlock_AId","11111111"),
             FakeText("AccountSelector_BrokerNameShort_AId","Example Broker Ltd")
         ]
+        # Every test stays offline even when a new code path needs UIA.
+        default_uia=self.with_uia(self.ui_text)
+        default_uia.start()
+        self.addCleanup(default_uia.stop)
     def with_uia(self,items):
         root=SimpleNamespace(descendants=lambda control_type=None:items)
         return patch("pywinauto.Desktop",return_value=SimpleNamespace(

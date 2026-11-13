@@ -686,6 +686,8 @@ class AutoEntryWorkflow:
         if draw_tv and not sync_sl_tp:
             raise RecoveryRequired("繪製 TradingView 前必須完成 SL／TP 同步。")
         self.guard()
+        if submit_deadline is not None and time.monotonic()>=submit_deadline:
+            raise RecoveryRequired("15 秒補進時限已過，未送出恢復單。")
         platforms={"internal":internal_platform,"external":external_platform}
         instruction_legs={
             "internal":(instruction.internal_direction,instruction.internal),
@@ -935,7 +937,9 @@ class AutoEntryWorkflow:
                     "另一邊目前也有持倉；狀態已改變，停止平倉。"
                 )
         positions=timed_call(
-            "讀取待平倉持倉",self.port.snapshot_positions,
+            "讀取待平倉持倉",getattr(
+                self.port,"snapshot_for_close",self.port.snapshot_positions
+            ),
             platforms[role],role,platform=platforms[role],role=role,
         )
         if len(positions)!=1:
@@ -1000,11 +1004,13 @@ class AutoEntryWorkflow:
             fast_pair: bool = False,
             test_skip_role: str | None = None,
             test_run_id: str = "",
+            test_delay: bool = False,
             authorized_reentry_id: str = "",
             prechecked_accounts: tuple[DemoAccount,DemoAccount] | None = None,
             ) -> tuple[Position,Position]:
         self.last_key = None
         self.journal_current_attempt = False
+        self._test_delay_expired_role = None
         precheck_started=time.perf_counter()
         self.guard()
         execution_symbol=self._effective_test_symbol(instruction.symbol)
@@ -1463,6 +1469,8 @@ class AutoEntryWorkflow:
                         "已確認場內從未送出；立即開始一次性補進"
                     )
                     recovery_deadline=time.monotonic()+15.0
+                    if test_delay:
+                        self._wait_test_timeout(recovery_deadline, "internal")
                     first=self._submit_and_confirm(
                         internal_platform,"internal",
                         instruction.internal_direction,instruction.internal.lot,
@@ -1520,6 +1528,8 @@ class AutoEntryWorkflow:
                             "已確認場外從未送出；立即開始一次性補進"
                         )
                         recovery_deadline=time.monotonic()+15.0
+                        if test_delay:
+                            self._wait_test_timeout(recovery_deadline, "external")
                     else:
                         recovery_deadline=None
                     try:
@@ -1610,6 +1620,7 @@ class AutoEntryWorkflow:
         profile: str, sheet_url: str, *, scenario: str,
         test_run_id: str, draw_tv: bool = False,
         draw_internal: bool = False,
+        test_delay: bool = False,
     ) -> dict:
         """Run one complete, explicitly selected recovery test."""
         if not test_run_id.strip():
@@ -1633,12 +1644,30 @@ class AutoEntryWorkflow:
             }
         role=scenario.rsplit(":",1)[1]
         if scenario.startswith("reentry:"):
-            positions=self.run(
-                instruction,internal_platform,external_platform,
-                profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=False,
-                test_skip_role=role,test_run_id=test_run_id,
-            )
+            try:
+                positions=self.run(
+                    instruction,internal_platform,external_platform,
+                    profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
+                    draw_internal=draw_internal,fast_pair=False,
+                    test_skip_role=role,test_run_id=test_run_id,
+                    test_delay=test_delay,
+                )
+            except RecoveryRequired:
+                if not (test_delay and role=="internal" and
+                        self._test_delay_expired_role=="internal"):
+                    raise
+                confirmed=self.journal.entry(self.last_key).get("confirmed_legs",{})
+                ticket=confirmed.get("external")
+                if not ticket or confirmed.get("internal"):
+                    raise
+                self.run_single_leg_close_test(
+                    instruction,internal_platform,external_platform,
+                    profile,sheet_url,role="external",expected_ticket=ticket,
+                    expected_account_ids=self.last_account_ids,
+                    require_other_empty=True,
+                )
+                return {"scenario":scenario,"outcome":"external_closed_after_timeout",
+                        "positions":()}
             return {
                 "scenario":scenario,"outcome":"reentry_confirmed",
                 "positions":positions,
@@ -1673,10 +1702,13 @@ class AutoEntryWorkflow:
 
             # A confirmed external fill that is then closed is known to have
             # exited. Re-enter that external role once and resynchronize SL/TP.
+            recovery_deadline=time.monotonic()+15.0
+            if test_delay:
+                self._wait_test_timeout(recovery_deadline, "external")
             final=self.run_single_leg_test(
                 instruction,internal_platform,external_platform,
                 profile,sheet_url,role="external",sync_sl_tp=True,
-                submit_deadline=time.monotonic()+15.0,
+                submit_deadline=recovery_deadline,
             )
             return {
                 "scenario":scenario,"outcome":"external_reentered",
@@ -1686,4 +1718,16 @@ class AutoEntryWorkflow:
             setattr(exc,"test_scenario",scenario)
             setattr(exc,"test_initial_positions",initial)
             setattr(exc,"test_closed_roles",tuple(closed_roles))
+            setattr(exc,"test_recovery_timeout",bool(
+                test_delay and self._test_delay_expired_role=="external"
+            ))
             raise
+
+    @timed_operation("測試注入15秒延遲")
+    def _wait_test_timeout(self, deadline: float, role: str) -> None:
+        self.log("測試延遲中：將超過 15 秒補進時限；Esc 或右鍵可停止。")
+        while time.monotonic() <= deadline:
+            self.guard()
+            time.sleep(min(0.1, max(0.001, deadline-time.monotonic()+0.01)))
+        self.guard()
+        self._test_delay_expired_role=role

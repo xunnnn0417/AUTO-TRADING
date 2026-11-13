@@ -137,6 +137,34 @@ class NativeReadOnlyPositionTests(unittest.TestCase):
         )
         self.assertEqual(len(ps),1)
         self.assertEqual(ps[0].ticket,"11111111")
+
+    def test_market_close_transition_waits_then_returns_fresh_positions(self):
+        self.sdk.orders_get=MagicMock(side_effect=[(
+            N(ticket=2085584674,type=0,symbol="XAUUSD",volume_current=0.09,
+              price_open=0,position_id=11111111,state=0),
+        ),()])
+        self.sdk.positions_get=MagicMock(side_effect=[self.sdk.positions,()])
+        with patch("trading_helper.mt5_native_readonly.time.sleep") as sleep:
+            self.assertEqual(self.snapshot(),())
+        sleep.assert_called_once_with(0.15)
+        self.assertEqual(self.sdk.positions_get.call_count,2)
+
+    def test_stuck_market_order_never_looks_empty_or_causes_a_write(self):
+        from trading_helper.mt5_native_readonly import MarketOrderInProgress
+        self.sdk.positions=()
+        self.sdk.orders=(N(ticket=123,type=0,position_id=11111111,state=0),)
+        with patch("trading_helper.mt5_native_readonly.time.sleep") as sleep:
+            with self.assertRaises(MarketOrderInProgress):
+                self.snapshot()
+        self.assertEqual(sleep.call_count,8)
+
+    def test_account_switch_during_market_settlement_stops_read(self):
+        self.sdk.orders=(N(ticket=123,type=0),)
+        self.sdk.account_info=MagicMock(side_effect=[self.sdk.account,
+            self.sdk.account,N(login=99999,server="Other")])
+        with patch("trading_helper.mt5_native_readonly.time.sleep"):
+            with self.assertRaisesRegex(AutomationError,"不符"):
+                self.snapshot()
     def test_fill_confirmation_keeps_polling_through_pending_state(self):
         port=DemoUiBrokerPort(MagicMock(),lambda _:None)
         port.inspect_account=lambda platform,role:ACCOUNT

@@ -39,11 +39,14 @@ def digest(data: bytes) -> str:
 
 
 def read_download(url: str) -> bytes:
-    if urlsplit(url).hostname not in ("api.github.com", "codeload.github.com"):
+    if urlsplit(url).hostname not in ("api.github.com", "codeload.github.com", "github.com"):
         raise ValueError("更新來源不正確。")
     req = Request(url, headers={"User-Agent": "HedgeAssistant-LAB-updater"})
     with urlopen(req, timeout=15) as response:
-        if urlsplit(response.geturl()).hostname not in ("api.github.com", "codeload.github.com"):
+        if urlsplit(response.geturl()).hostname not in (
+            "api.github.com", "codeload.github.com", "github.com",
+            "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+        ):
             raise ValueError("更新下載被導向其他網站。")
         data = response.read(MAX_DOWNLOAD + 1)
     if len(data) > MAX_DOWNLOAD:
@@ -67,6 +70,30 @@ def checked_path(root: Path, path: str) -> Path:
     return target
 
 
+def environment_root(root: Path, name: str) -> Path:
+    if not re.fullmatch(r"\.hedge-runtime-[0-9a-f]{32}",name):
+        raise ValueError("執行環境位置不正確。")
+    target=root/name
+    if target.is_symlink() or target.resolve().parent!=root.resolve():
+        raise ValueError("執行環境位置不正確。")
+    return target
+
+
+def installed_python(root: Path) -> Path | None:
+    receipt=root/RECEIPT
+    if not receipt.is_file():
+        return None
+    name=json.loads(receipt.read_text(encoding="utf-8")).get("environment")
+    if not name:
+        return None
+    folder=environment_root(root,name)
+    target=folder/"python"/"pythonw.exe"
+    if (not target.is_file() or target.is_symlink()
+            or not target.resolve().is_relative_to(folder.resolve())):
+        raise ValueError("執行環境缺少檔案，請重新下載完整包。")
+    return target
+
+
 def baseline(root: Path) -> dict[str, str]:
     """Recognize an earlier installed update, or an unmodified Git checkout."""
     receipt = root / RECEIPT
@@ -79,7 +106,8 @@ def baseline(root: Path) -> dict[str, str]:
             raise ValueError("找不到此 LAB 的原始版本，請使用 GitHub 更新頁。")
         dirty = subprocess.check_output(
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all",
-             "--", "main.py", "requirements.txt", "trading_helper", "assets"], **flags)
+             "--", "main.py", "requirements.txt", "requirements-portable.txt",
+             "trading_helper", "assets"], **flags)
         if dirty.strip():
             raise ValueError("本機程式有尚未保存的修改，請先處理後再更新。設定與校準不受影響。")
         tracked = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z"], **flags)
@@ -134,11 +162,12 @@ def prepare_update(root: Path, current_version: str) -> Path:
     current = _version_tuple(current_version)
     if latest is None or current is None or latest <= current:
         raise ValueError("目前已是最新版，無須更新。")
+    environment_changed=False
     for name in ("requirements.txt", "requirements-portable.txt"):
         if name in files:
             installed = (root / name).read_bytes() if (root / name).exists() else b""
             if files[name].replace(b"\r\n", b"\n").strip() != installed.replace(b"\r\n", b"\n").strip():
-                raise ValueError("此版本需要更新執行環境，請下載新版完整包；目前版本已保留。")
+                environment_changed=True
     parent = root.parent / ".hedge-updates"
     parent.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="update-", dir=parent))
@@ -148,10 +177,14 @@ def prepare_update(root: Path, current_version: str) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         after[path] = digest(data)
-    (stage / "plan.json").write_text(json.dumps({
+    plan={
         "root": str(root), "before": before, "after": after,
         "commit": sha, "version": version.group(1),
-    }), encoding="utf-8")
+    }
+    if environment_changed:
+        from trading_helper.portable_environment import prepare_environment
+        plan["environment"]=prepare_environment(stage,sha,version.group(1),files)
+    (stage / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     shutil.copyfile(__file__, stage / "worker.py")
     return stage
 
@@ -176,6 +209,22 @@ def apply_update(stage: Path) -> dict:
     if baseline(root) != plan["before"]:
         raise ValueError("下載期間程式有變動，已取消更新。")
     paths = set(plan["before"]) | set(plan["after"])
+    environment=plan.get("environment")
+    if environment:
+        dest=environment_root(root,environment["path"])
+        if dest.exists():
+            raise ValueError("新的執行環境位置已存在，未覆蓋。")
+        staged=stage/"environment"
+        actual={}
+        for item in staged.rglob("*"):
+            if item.is_symlink():
+                raise ValueError("執行環境包含連結，已停止。")
+            if item.is_file():
+                actual[item.relative_to(staged).as_posix()]=digest(item.read_bytes())
+        if actual!=environment["files"] or not {
+            "python/python.exe","python/pythonw.exe"
+        }<=actual.keys():
+            raise ValueError("執行環境檔案已變動，未更新。")
     # Check every source and destination before touching the installed version.
     for path in paths:
         target = checked_path(root, path)
@@ -194,12 +243,23 @@ def apply_update(stage: Path) -> dict:
     if (root / RECEIPT).exists():
         shutil.copyfile(root / RECEIPT, stage / "old-receipt.json")
     try:
+        receipt={"files":plan["after"],"commit":plan["commit"],"version":plan["version"]}
+        if (stage/"old-receipt.json").exists():
+            previous=json.loads((stage/"old-receipt.json").read_text(encoding="utf-8"))
+            if previous.get("environment"):
+                environment_root(root,previous["environment"])
+                receipt["environment"]=previous["environment"]
+        if environment:
+            # The old interpreter stays intact/in use by this worker. Only
+            # the receipt selects the new, separately installed runtime.
+            os.replace(stage/"environment",environment_root(root,environment["path"]))
+            receipt["environment"]=environment["path"]
         for path in sorted(paths):
             if path in plan["after"]:
                 replace_bytes(root / path, (stage / "new" / path).read_bytes())
             else:
                 (root / path).unlink()
-        replace_bytes(root / RECEIPT, json.dumps({"files": plan["after"], "commit": plan["commit"]}).encode())
+        replace_bytes(root / RECEIPT, json.dumps(receipt).encode())
     except Exception:
         rollback(stage, plan)
         raise
@@ -256,7 +316,8 @@ def run_worker(stage: Path, python: str, pid: int) -> None:
         applied = True
         env["HEDGE_UPDATE_RECEIPT"] = str(stage / "started")
         (stage / "started").unlink(missing_ok=True)
-        process = subprocess.Popen([python, str(root / "main.py")], cwd=root, env=env)
+        new_python=installed_python(root) or python
+        process = subprocess.Popen([str(new_python), str(root / "main.py")], cwd=root, env=env)
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
             if (stage / "started").exists() and process.poll() is None:

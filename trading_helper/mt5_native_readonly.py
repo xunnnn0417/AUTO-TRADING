@@ -9,16 +9,24 @@ from decimal import Decimal,InvalidOperation
 from pathlib import Path
 from ctypes import wintypes
 import importlib,sys
+import time
 from .auto_entry import DemoAccount,Position
 from .windows import AutomationError
 
 _VENDOR=Path(__file__).resolve().parents[1]/"vendor"/"mt5_readonly"
 _TERMINAL=Path(r"C:\Program Files\RL Crates MT5 Terminal\terminal64.exe")
 
+
+class MarketOrderInProgress(AutomationError):
+    """The terminal still has a market request; never infer an empty account."""
+
 def _sdk():
-    if not (_VENDOR/"MetaTrader5").is_dir():
+    from .self_update import installed_python
+    selected=installed_python(Path(__file__).resolve().parents[1])
+    vendor=selected.parent.parent/"mt5_readonly" if selected else _VENDOR
+    if not (vendor/"MetaTrader5").is_dir():
         raise AutomationError("MT5 唯讀套件未安裝在 LAB，禁止假設空倉。")
-    if str(_VENDOR) not in sys.path:sys.path.insert(0,str(_VENDOR))
+    if str(vendor) not in sys.path:sys.path.insert(0,str(vendor))
     try:return importlib.import_module("MetaTrader5")
     except Exception as exc:
         raise AutomationError("MT5 唯讀套件載入失敗。") from exc
@@ -113,6 +121,8 @@ def _describe_active_order(order, mt):
     return (
         f"{symbol}｜{order_type}｜單號 {ticket}｜"
         f"{_display_number(volume)} 手｜價格 {_display_number(price)}"
+        f"｜狀態 {_display_text(getattr(order,'state',None))}"
+        f"｜持倉 {_display_text(getattr(order,'position_id',None))}"
     )
 
 def _last_error_text(mt):
@@ -175,6 +185,23 @@ def snapshot_mt5_account(
         pendings=mt.orders_get()
         orders_error=_last_error_text(mt) if pendings is None else ""
         verify_account()
+        # orders_get includes market requests during execution/closing, not
+        # just parked limit/stop orders. Wait READ-ONLY for a fresh settled
+        # snapshot; never drop an order or invent an empty position list.
+        for _attempt in range(8):
+            if (allow_pending_orders or not pendings or
+                any(getattr(order,"type",None) not in (
+                    getattr(mt,"ORDER_TYPE_BUY",0),
+                    getattr(mt,"ORDER_TYPE_SELL",1),
+                ) for order in pendings)):
+                break
+            time.sleep(0.15)
+            verify_account()
+            positions=mt.positions_get()
+            positions_error=_last_error_text(mt) if positions is None else ""
+            pendings=mt.orders_get()
+            orders_error=_last_error_text(mt) if pendings is None else ""
+            verify_account()
         if positions is None:
             raise AutomationError(
                 "MT5 持倉讀取失敗，無法確認是否已有成交持倉。"
@@ -189,7 +216,11 @@ def snapshot_mt5_account(
             details=[_describe_active_order(order,mt) for order in pendings[:5]]
             if len(pendings)>len(details):
                 details.append(f"另有 {len(pendings)-len(details)} 筆未展開")
-            raise AutomationError(
+            error_class=(MarketOrderInProgress if all(
+                getattr(order,"type",None) in (
+                    getattr(mt,"ORDER_TYPE_BUY",0),getattr(mt,"ORDER_TYPE_SELL",1)
+                ) for order in pendings) else AutomationError)
+            raise error_class(
                 f"MT5 唯讀 API 回報 {len(pendings)} 筆仍有效委託"
                 "（查詢全部商品，這不是已成交持倉）；為避免重複送單，"
                 "已停止：\n- " + "\n- ".join(details)

@@ -1,6 +1,7 @@
 """The test menu's one-leg actions are exercised with an offline fake broker."""
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from decimal import Decimal as D
 from pathlib import Path
@@ -260,6 +261,64 @@ class SingleLegTestModeTests(unittest.TestCase):
             event[0]=="modify" and event[1]=="T-external"
             for event in self.port.events
         ))
+
+    def _delay_past_deadline(self, clock):
+        def wait(deadline, role):
+            clock.return_value=deadline+0.01
+            self.flow._test_delay_expired_role=role
+        return patch.object(self.flow,"_wait_test_timeout",side_effect=wait)
+
+    def test_delayed_internal_reentry_closes_external_without_second_submit(self):
+        with patch("trading_helper.auto_entry.time.monotonic",return_value=100) as clock:
+            with self._delay_past_deadline(clock):
+                result=self.flow.run_test_scenario(
+                    self.item,"cTrader","MT5","test","sheet",
+                    scenario="reentry:internal",test_run_id="delayed-i",test_delay=True,
+                )
+        self.assertEqual(result["outcome"],"external_closed_after_timeout")
+        self.assertEqual([e[1] for e in self.port.events if e[0]=="submit"],["external"])
+        self.assertEqual(self.port.closed,[("external","T-external")])
+        self.assertFalse(any(self.port.open_positions.values()))
+
+    def test_delayed_external_reentry_stops_with_internal_still_open(self):
+        with patch("trading_helper.auto_entry.time.monotonic",return_value=100) as clock:
+            with self._delay_past_deadline(clock):
+                with self.assertRaisesRegex(RecoveryRequired,"15 秒"):
+                    self.flow.run_test_scenario(
+                        self.item,"cTrader","MT5","test","sheet",
+                        scenario="reentry:external",test_run_id="delayed-e",test_delay=True,
+                    )
+        self.assertEqual([e[1] for e in self.port.events if e[0]=="submit"],["internal"])
+        self.assertTrue(self.port.open_positions["internal"])
+        self.assertFalse(self.port.open_positions["external"])
+        self.assertFalse(self.port.closed)
+
+    def test_delayed_external_close_does_not_reopen_and_carries_action_context(self):
+        with patch("trading_helper.auto_entry.time.monotonic",return_value=100) as clock:
+            with self._delay_past_deadline(clock):
+                with self.assertRaisesRegex(RecoveryRequired,"15 秒") as raised:
+                    self.flow.run_test_scenario(
+                        self.item,"cTrader","MT5","test","sheet",
+                        scenario="close:external",test_run_id="delayed-close",test_delay=True,
+                    )
+        self.assertTrue(raised.exception.test_recovery_timeout)
+        self.assertEqual(raised.exception.test_closed_roles,("external",))
+        self.assertEqual([e[1] for e in self.port.events if e[0]=="submit"],["internal","external"])
+        self.assertTrue(self.port.open_positions["internal"])
+
+    def test_internal_close_does_not_delay_the_protective_external_close(self):
+        with patch.object(self.flow,"_wait_test_timeout") as wait:
+            result=self.flow.run_test_scenario(
+                self.item,"cTrader","MT5","test","sheet",
+                scenario="close:internal",test_run_id="delay-no-risk",test_delay=True,
+            )
+        wait.assert_not_called()
+        self.assertEqual(result["outcome"],"both_closed_waiting_user")
+
+    def test_delay_itself_remains_cancellable(self):
+        self.flow.guard=lambda: (_ for _ in ()).throw(AutomationError("使用者停止"))
+        with self.assertRaisesRegex(AutomationError,"使用者停止"):
+            self.flow._wait_test_timeout(float("inf"),"internal")
 
     def test_reentry_requires_exactly_one_opposite_demo_position(self):
         with self.assertRaisesRegex(RecoveryRequired, "恰有一筆"):

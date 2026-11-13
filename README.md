@@ -37,7 +37,7 @@ The default settings already include non-private cell mappings and platform defa
 
 一般使用者：到 [GitHub 版本下載區](https://github.com/xunnnn0417/AUTO-TRADING/releases)，下載附件中名稱以 `AUTO-TRADING-Windows-x64` 開頭的 ZIP，完整解壓縮後雙擊「啟動對沖小幫手.vbs」。包內已包含 Python 與所需套件，不用另外安裝。
 
-第一次仍需設定自己的試算表、綁定交易視窗與校準。請保留 `AUTO-TRADING-lab-unified` 資料夾名稱，讓程式能直接更新。一般更新會沿用包內的 Python；執行環境有變更時，程式會引導下載新版完整包。
+第一次會顯示「預設方案」，需設定自己的試算表、服務帳戶、交易視窗及校準；未完成項目以紅點提醒。請保留 `AUTO-TRADING-lab-unified` 資料夾名稱，讓程式能直接更新。一般更新沿用包內 Python；執行環境有變更時會自動下載對應版本的完整包、核對後安裝獨立環境，啟動失敗時還原。原有捷徑、設定及交易紀錄保留。
 
 此下載包會在安全 LAB 分支每次有程式修改合併後自動產生：**測試通過 → 準備／沿用執行環境 → 打包並檢查 → 發布下載附件**。只改 Markdown 文件時略過。尚未看到 ZIP 附件時，可到 Actions 查看該次打包是否仍在執行或失敗；原始碼的「Source code」ZIP 不含 Python。
 

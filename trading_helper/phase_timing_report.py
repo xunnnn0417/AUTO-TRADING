@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from contextlib import contextmanager
+from collections import deque
 from datetime import datetime, timezone
 from functools import wraps
 import inspect
@@ -143,11 +144,31 @@ class LocalPhaseTimingStore:
         self.path = Path(path)
 
     def append(self, report: PhaseTimingRun) -> None:
-        line = json.dumps(
-            report.as_dict(), ensure_ascii=False, separators=(",", ":"),
-            allow_nan=False,
-        )
         with _REPORT_FILE_LOCK:
+            payload=report.as_dict()
+            if payload["outcome"]=="completed" and self.path.exists():
+                # Link a quick successful retry to its earlier interruption.
+                # Local-only, uses the existing scrubbed reason, no account IDs.
+                with self.path.open("rb") as source:
+                    source.seek(max(0,self.path.stat().st_size-65536))
+                    recent=deque(source.read().decode("utf-8",errors="replace").splitlines(),maxlen=20)
+                for line in reversed(recent):
+                    try:
+                        old=json.loads(line)
+                        same=all(old.get(key)==payload.get(key) for key in (
+                            "workflow","scenario","platforms"
+                        ))
+                        gap=(datetime.fromisoformat(payload["started_at_utc"])-
+                             datetime.fromisoformat(old["started_at_utc"])).total_seconds()
+                    except (ValueError,KeyError,TypeError):
+                        continue
+                    if same and 0<=gap<=600:
+                        if old.get("outcome")=="interrupted":
+                            payload["successful_retry_after"]={key:old.get(key) for key in (
+                                "run_id","failed_phase","error_summary"
+                            )}
+                        break
+            line=json.dumps(payload,ensure_ascii=False,separators=(",",":"),allow_nan=False)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(line + "\n")

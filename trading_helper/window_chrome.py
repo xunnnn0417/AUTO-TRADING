@@ -119,9 +119,12 @@ class WindowChromeButton(QToolButton):
             painter.drawLine(x-4,y+1,x+4,y+1)
         elif self.role=="maximize":
             if self.window().isMaximized():
-                painter.drawRect(x-2,y-3,7,7)
-                painter.drawLine(x-5,y-1,x+2,y-1)
-                painter.drawLine(x-5,y-1,x-5,y+6)
+                # Back window's exposed top/right edges; complete front
+                # window below. No crossed or missing rectangle edges.
+                painter.drawLine(x-1,y-5,x+5,y-5)
+                painter.drawLine(x+5,y-5,x+5,y+1)
+                painter.drawLine(x+5,y+1,x+3,y+1)
+                painter.drawRect(x-4,y-2,7,7)
             else:
                 painter.drawRect(x-4,y-4,8,8)
         elif self.role=="close":

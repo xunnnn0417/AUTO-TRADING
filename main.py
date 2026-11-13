@@ -37,6 +37,14 @@ def acquire_single_instance():
 
 
 def main() -> None:
+    # Existing desktop/taskbar shortcuts keep working after a runtime update.
+    # Select the private, verified runtime before importing any Qt/OCR DLLs.
+    from trading_helper.self_update import installed_python
+    selected=installed_python(APP_BASE)
+    if selected and Path(sys.executable).resolve()!=selected.resolve():
+        import subprocess
+        subprocess.Popen([str(selected),str(APP_BASE/"main.py")],cwd=APP_BASE)
+        return
     enable_dpi_awareness()
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)

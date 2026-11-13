@@ -16,6 +16,22 @@ from trading_helper.windows import AutomationError
 
 
 class PhaseTimingReportTests(unittest.TestCase):
+    def test_successful_retry_links_earlier_interruption_without_private_data(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"timings.jsonl"
+            store=LocalPhaseTimingStore(path)
+            failed=PhaseTimingRun("fill",{"scenario":"close_internal"})
+            failed.failed_phase="持倉回讀"
+            failed.finish("interrupted",AutomationError("短暫失敗 12345678"))
+            store.append(failed)
+            success=PhaseTimingRun("fill",{"scenario":"close_internal"})
+            success.finish("completed")
+            store.append(success)
+            payload=json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(payload["successful_retry_after"]["run_id"],failed.run_id)
+        self.assertEqual(payload["successful_retry_after"]["failed_phase"],"持倉回讀")
+        self.assertNotIn("12345678",json.dumps(payload))
+
     def test_manual_sync_records_full_background_workflow(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "reports" / "timings.jsonl"

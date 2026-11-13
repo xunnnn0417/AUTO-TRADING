@@ -41,6 +41,19 @@ class ProfileStoreTests(unittest.TestCase):
             "D6",
         )
 
+    def test_first_user_starts_with_default_plan_without_any_personal_data(self):
+        config=ConfigStore(self.path.parent/"new-config.json")
+        store=ProfileStore(config.data,self.path)
+        self.assertEqual(store.active_name,"預設方案")
+        data=store.load_profile()
+        self.assertEqual(data["sheet"]["spreadsheet_url"],"")
+        self.assertEqual(data["sheet"]["service_account_file"],"")
+        self.assertEqual(data["sheet"]["gid"],"")
+        for platform,profile in data["platforms"].items():
+            self.assertFalse(profile["points"],platform)
+            self.assertFalse(any(profile.get("account_number",{}).values()),platform)
+        self.assertFalse(data["ui"]["auto_entry_on_fill_both"])
+
     def test_legacy_internal_entry_price_header_migrates_to_d6(self):
         migrated = _migrate_config(
             {

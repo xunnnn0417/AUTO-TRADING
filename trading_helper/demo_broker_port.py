@@ -821,6 +821,21 @@ class DemoUiBrokerPort:
         self, platform,role,direction,lot, *,
         _controls=None, _window=None
     ) -> None:
+        if _controls is None and "MT5" not in platform.upper():
+            # One CURRENT inventory covers account, instrument and inputs.
+            # The final click still obtains its own independent inventory.
+            from pywinauto import Desktop
+            _, _window = self._form_window(platform, role)
+            self.automation.emergency.guard()
+            self.automation.windows.focus(_window)
+            try:
+                _controls = Desktop(backend="uia").window(
+                    handle=_window.handle
+                ).descendants()
+            except Exception as exc:
+                raise AutomationError("cTrader 表單讀取失敗，未送單。") from exc
+            if not isinstance(_controls, list) or not _controls:
+                raise AutomationError("cTrader 表單尚未讀取完整，未送單。")
         verified_fills=getattr(self.automation,"_last_verified_fills",None)
         expected_form=None
         if isinstance(verified_fills,dict):
@@ -1202,7 +1217,7 @@ class DemoUiBrokerPort:
                 or account.account_id != pos.account_id):
             raise AutomationError("平倉前交易帳戶身分不符，未操作。")
         self.remember_verified_position_role(pos.platform, role, pos)
-        before = self.snapshot_positions(pos.platform, role)
+        before = self.snapshot_for_close(pos.platform, role)
         if len(before) != 1 or before[0].ticket != pos.ticket:
             raise AutomationError(
                 "平倉前持倉不再是唯一且相同的訂單；未點擊平倉。"
@@ -1221,7 +1236,9 @@ class DemoUiBrokerPort:
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             self.automation.emergency.guard()
-            current = self.snapshot_positions(pos.platform, role)
+            current = self.snapshot_for_close(
+                pos.platform, role, deadline=deadline
+            )
             if not any(item.ticket == pos.ticket for item in current):
                 if current:
                     raise AutomationError(
@@ -1238,6 +1255,20 @@ class DemoUiBrokerPort:
             "已點擊一次校準的平倉按鈕，但 15 秒內仍無法確認指定持倉消失；"
             "不會再次點擊。"
         )
+
+    def snapshot_for_close(self, platform, role, *, deadline=None):
+        """Only reread a still-processing market request; never click twice."""
+        from .mt5_native_readonly import MarketOrderInProgress
+        deadline = time.monotonic()+15.0 if deadline is None else deadline
+        while True:
+            self.automation.emergency.guard()
+            try:
+                return self.snapshot_positions(platform, role)
+            except MarketOrderInProgress:
+                if time.monotonic() >= deadline:
+                    raise
+                self.log("MT5 市價委託仍在處理，等待持倉更新；不會重複點擊。")
+                time.sleep(0.15)
 
     def draw_tradingview(self,instruction,internal_platform,entry,draw_internal):
         self.automation.draw_tradingview(
