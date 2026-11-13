@@ -21,6 +21,10 @@ class SelfUpdateTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "AUTO-TRADING-lab-unified"
         self.root.mkdir()
+        # Hosted Windows TEMP may use RUNNER~1 while the updater resolves
+        # runneradmin. Keep fault injection and expected launch paths equal
+        # to the canonical directory used by the actual updater.
+        self.root = self.root.resolve()
         self.files = {
             "main.py": b"print('new')\n",
             "requirements.txt": b"PySide6==6.10.1\n",
