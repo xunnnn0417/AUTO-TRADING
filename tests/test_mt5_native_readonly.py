@@ -131,10 +131,11 @@ class NativeReadOnlyPositionTests(unittest.TestCase):
         self.assertNotIn("回報 1 筆",message)
     def test_pending_order_does_not_block_post_submit_position_readback(self):
         self.sdk.orders=(N(ticket=123),)
-        ps=snapshot_mt5_demo(
-            ACCOUNT,terminal_path=self.path,sdk=self.sdk,
-            allow_pending_orders=True,
-        )
+        with patch("pathlib.Path.is_file",return_value=True):
+            ps=snapshot_mt5_demo(
+                ACCOUNT,terminal_path=self.path,sdk=self.sdk,
+                allow_pending_orders=True,
+            )
         self.assertEqual(len(ps),1)
         self.assertEqual(ps[0].ticket,"11111111")
 
