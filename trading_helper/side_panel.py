@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen
+from PySide6.QtCore import QEvent, QRectF, QSignalBlocker, Qt, QTimer
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen, QRegion
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QToolButton, QVBoxLayout, QWidget,
@@ -19,6 +19,7 @@ from .ui_theme import themed_icon
 
 class SideQuickPanel(QWidget):
     WIDTH = 340
+    HANDLE_HEIGHT = 40
 
     def __init__(self, app):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -31,6 +32,14 @@ class SideQuickPanel(QWidget):
         self.setMouseTracking(True)
         self.collapsed = False
         self._drag_offset = None
+        self._drag_widgets = ()
+        self._handle_press = None
+        self._handle_pointer = None
+        self._handle_dragging = False
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setInterval(180)
+        self._hold_timer.timeout.connect(self._begin_handle_drag)
         self._screen = app.screen() or QGuiApplication.primaryScreen()
         self._y = int(app.store.data['ui'].get('side_panel_y', 70))
         self.setStyleSheet('''
@@ -45,9 +54,11 @@ class SideQuickPanel(QWidget):
             QPushButton, QToolButton { background: transparent; border: 0; border-radius: 6px; padding: 4px; }
             QPushButton:hover, QToolButton:hover { background: #34303f; }
             QPushButton:disabled, QToolButton:disabled { color: #706a7a; }
-            QPushButton#sideFill { background: #7053d9; border: 1px solid #9278ed; min-height: 30px; }
+            QPushButton#sideFill { background: #7053d9; border: 1px solid #9278ed; min-height: 26px; padding: 3px; }
             QPushButton#sideFill:hover { background: #8063e9; }
             QPushButton#sideFill:disabled { background: #393442; border-color: #494050; }
+            QToolButton#sideHome { border: 1px solid rgba(245,243,250,55); border-radius: 7px; }
+            QToolButton#sideHandle, QToolButton#sideHandle:hover { background: transparent; border: 0; padding: 0; }
             QScrollArea { background: transparent; border: 0; }
             QScrollBar:vertical { background: transparent; width: 5px; }
             QScrollBar::handle:vertical { background: #51495f; min-height: 20px; border-radius: 2px; }
@@ -57,6 +68,10 @@ class SideQuickPanel(QWidget):
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(0)
         self.handle = self._icon_button('panel-right-open', '展開側邊快捷')
+        self.handle.setObjectName('sideHandle')
+        self.handle.setToolTip('按一下展開，長按拖動')
+        self.handle.setCursor(Qt.OpenHandCursor)
+        self.handle.installEventFilter(self)
         self.handle.clicked.connect(lambda: self.set_collapsed(False))
         outer.addWidget(self.handle)
         self.handle.hide()
@@ -72,7 +87,7 @@ class SideQuickPanel(QWidget):
         title = QLabel('對沖小幫手')
         title.setStyleSheet('font-size: 13px; font-weight: 600;')
         self.stage_label = QLabel('尚未讀取')
-        self.stage_label.setStyleSheet('font-size: 10px; color: #b8a8d5; padding-bottom: 2px;')
+        self.stage_label.setStyleSheet('font-size: 10px; color: #b8a8d5; padding-bottom: 4px;')
         row.addWidget(title)
         row.addWidget(self.stage_label, 0, Qt.AlignBottom)
         row.addStretch()
@@ -148,19 +163,25 @@ class SideQuickPanel(QWidget):
         actions.setSpacing(7)
         self.fill_button = QPushButton('填入兩邊')
         self.fill_button.setObjectName('sideFill')
+        self.fill_button.setFixedHeight(36)
         self.fill_button.setIcon(themed_icon('arrow-left-right', '#ffffff', 16))
         self.fill_button.clicked.connect(app.fill_both_from_side_panel)
         actions.addWidget(self.fill_button, 1)
         home = self._icon_button('home', '開啟主畫面')
-        home.setFixedSize(34, 34)
+        home.setObjectName('sideHome')
+        home.setFixedSize(36, 36)
         home.clicked.connect(self.open_main)
         actions.addWidget(home)
         root.addLayout(actions)
         progress = QLabel('帳號進度')
         progress.setAlignment(Qt.AlignCenter)
-        root.addWidget(progress)
+        progress_layout = QVBoxLayout()
+        progress_layout.setContentsMargins(0, 7, 0, 0)
+        progress_layout.setSpacing(0)
+        progress_layout.addWidget(progress)
         self.ruler = AccountRuler()
-        root.addWidget(self.ruler)
+        progress_layout.addWidget(self.ruler)
+        root.addLayout(progress_layout)
 
         self.events_button = QToolButton()
         self.events_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -210,6 +231,7 @@ class SideQuickPanel(QWidget):
         self.calendar.refresh()
 
     def suspend(self):
+        self._cancel_handle_drag()
         self.hide()
         self.sync_timer.stop()
         self.event_timer.stop()
@@ -273,7 +295,7 @@ class SideQuickPanel(QWidget):
     def _expand_events(self, expanded):
         self.events_button.setArrowType(Qt.UpArrow if expanded else Qt.DownArrow)
         self.event_scroll.setVisible(expanded)
-        self.adjustSize()
+        self._fit_contents()
         self.dock()
 
     def update_events(self):
@@ -299,23 +321,104 @@ class SideQuickPanel(QWidget):
 
     def set_collapsed(self, collapsed):
         self.collapsed = collapsed
+        self.clearMask()
         self.body.setVisible(not collapsed)
         self.handle.setVisible(collapsed)
-        self.layout().setContentsMargins(*( (2, 8, 2, 8) if collapsed else (10, 8, 10, 8)))
-        self.setFixedWidth(28 if collapsed else self.WIDTH)
-        self.setMinimumHeight(0)
-        self.setMaximumHeight(64 if collapsed else 16777215)
-        self.adjustSize()
+        self.layout().setContentsMargins(*((0, 0, 0, 0) if collapsed else (10, 8, 10, 8)))
+        self._fit_contents()
         self.dock()
 
+    def _fit_contents(self):
+        if self.collapsed:
+            self.handle.setFixedSize(28, self.HANDLE_HEIGHT)
+            self.setFixedSize(28, self.HANDLE_HEIGHT)
+            return
+        # adjustSize alone retains the expanded layout's old minimum height
+        # after hiding its scroll area. Recompute before fixing the height.
+        self.setFixedWidth(self.WIDTH)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(16777215)
+        self.body.layout().invalidate()
+        self.body.layout().activate()
+        self.body.updateGeometry()
+        self.layout().invalidate()
+        self.layout().activate()
+        self.setFixedHeight(self.layout().sizeHint().height())
+
     def dock(self, *_):
-        if self._screen is None:
+        if self._screen is None or self._handle_dragging:
             return
         area = self._screen.availableGeometry()
-        self.move(area.right() - self.width() - 4,
+        self.move(area.right() - self.width() + 1,
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
 
+    def _begin_handle_drag(self):
+        if self._handle_pointer is None or not self.collapsed:
+            return
+        self._handle_dragging = True
+        self.handle.setCursor(Qt.ClosedHandCursor)
+        self.handle.setFixedSize(self.HANDLE_HEIGHT, self.HANDLE_HEIGHT)
+        self.setFixedSize(self.HANDLE_HEIGHT, self.HANDLE_HEIGHT)
+        self.setMask(QRegion(self.rect(), QRegion.Ellipse))
+        self._move_handle_drag(self._handle_pointer)
+        self.update()
+
+    def _move_handle_drag(self, point):
+        screen = QGuiApplication.screenAt(point) or self._screen
+        if screen is not self._screen:
+            self._screen.availableGeometryChanged.disconnect(self.dock)
+            self._screen = screen
+            self._screen.availableGeometryChanged.connect(self.dock)
+        area = self._screen.availableGeometry()
+        radius = self.HANDLE_HEIGHT // 2
+        self.move(max(area.left(), min(point.x() - radius, area.right() - self.width() + 1)),
+                  max(area.top(), min(point.y() - radius, area.bottom() - self.height() + 1)))
+
+    def _release_handle(self, point):
+        self._hold_timer.stop()
+        dragging = self._handle_dragging
+        if dragging:
+            self._move_handle_drag(point)
+            self._y = self.y()
+        self._handle_dragging = False
+        self._handle_press = self._handle_pointer = None
+        self.handle.releaseMouse()
+        self.handle.setCursor(Qt.OpenHandCursor)
+        self.set_collapsed(dragging)
+        if dragging:
+            # Persist only the parked handle, never the temporary upward
+            # offset needed to fit the expanded panel above the taskbar.
+            self.app.store.data['ui']['side_panel_y'] = self._y
+            self.app.save_ui_state()
+
+    def _cancel_handle_drag(self):
+        self._hold_timer.stop()
+        if self._handle_press is None:
+            return
+        self._handle_dragging = False
+        self._handle_press = self._handle_pointer = None
+        self.handle.releaseMouse()
+        self.handle.setCursor(Qt.OpenHandCursor)
+        self.set_collapsed(True)
+
     def eventFilter(self, watched, event):
+        if watched is self.handle:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._handle_press = self._handle_pointer = event.globalPosition().toPoint()
+                self._hold_timer.start()
+                self.handle.grabMouse()
+                return True
+            if event.type() == QEvent.MouseMove and self._handle_press is not None:
+                self._handle_pointer = event.globalPosition().toPoint()
+                if not self._handle_dragging and (self._handle_pointer - self._handle_press).manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
+                    self._hold_timer.stop()
+                    self._begin_handle_drag()
+                if self._handle_dragging:
+                    self._move_handle_drag(self._handle_pointer)
+                return True
+            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self._handle_press is not None:
+                self._release_handle(event.globalPosition().toPoint())
+                return True
         for key, badge in getattr(self, 'warnings', {}).items():
             if watched is badge and event.type() == QEvent.MouseButtonRelease:
                 if event.button() == Qt.LeftButton:
@@ -350,11 +453,20 @@ class SideQuickPanel(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(218, 210, 233, 50), 1))
+        painter.setPen(QPen(QColor(245, 243, 250, 70), 0.7))
         painter.setBrush(QColor('#08080b'))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        rect = QRectF(0.35, 0.35, self.width() - 0.7, self.height() - 0.7)
+        if self._handle_dragging:
+            painter.drawEllipse(rect)
+        elif self.collapsed:
+            # The rounded left cap extends beyond the right edge so the
+            # parked handle meets the screen with no transparent gap.
+            painter.drawRoundedRect(rect.adjusted(0, 0, 12, 0), 10, 10)
+        else:
+            painter.drawRoundedRect(rect, 10, 10)
 
     def closeEvent(self, event):
+        self._cancel_handle_drag()
         self.sync_timer.stop()
         self.event_timer.stop()
         self.calendar.close()

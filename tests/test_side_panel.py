@@ -5,7 +5,8 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -183,3 +184,77 @@ class SidePanelTests(unittest.TestCase):
         start.assert_not_called()
         write.assert_not_called()
         self.assertTrue(panel.collapsed)
+
+    def test_event_expand_collapse_restores_height_and_control_positions(self):
+        panel = self.open_panel()
+        original = panel.height()
+        button_y, ruler_y = panel.fill_button.y(), panel.ruler.y()
+        for _ in range(3):
+            panel.events_button.click()
+            self.qtapp.processEvents()
+            self.assertGreater(panel.height(), original)
+            panel.events_button.click()
+            self.qtapp.processEvents()
+            self.assertEqual(panel.height(), original)
+            self.assertEqual((panel.fill_button.y(), panel.ruler.y()), (button_y, ruler_y))
+
+    def test_flush_edge_and_bottom_clamp_preserve_collapsed_anchor(self):
+        panel = self.open_panel()
+        panel.set_collapsed(True)
+        area = panel.screen().availableGeometry()
+        panel._y = area.bottom() - panel.height() + 1
+        panel.dock()
+        anchor = panel.y()
+        self.assertEqual(panel.frameGeometry().right(), area.right())
+        panel.set_collapsed(False)
+        self.qtapp.processEvents()
+        self.assertEqual(panel.frameGeometry().bottom(), area.bottom())
+        panel.events_button.click()
+        self.qtapp.processEvents()
+        self.assertEqual(panel.frameGeometry().bottom(), area.bottom())
+        panel.events_button.click()
+        panel.set_collapsed(True)
+        self.qtapp.processEvents()
+        self.assertEqual(panel.y(), anchor)
+        self.assertEqual(panel.frameGeometry().right(), area.right())
+
+    def test_handle_long_press_floats_as_ball_and_release_snaps_without_opening(self):
+        panel = self.open_panel()
+        panel.set_collapsed(True)
+        QTest.mousePress(panel.handle, Qt.LeftButton)
+        QTest.qWait(240)
+        self.assertEqual(panel.width(), panel.height())
+        self.assertFalse(panel.mask().isEmpty())
+        area = panel.screen().availableGeometry()
+        destination = QPoint(area.left() + 100, area.top() + 400)
+        local = panel.handle.mapFromGlobal(destination)
+        event = QMouseEvent(QEvent.MouseMove, QPointF(local), QPointF(destination),
+                            Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(panel.handle, event)
+        self.assertLess(panel.x(), area.right() - 100)
+        release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(panel.handle.mapFromGlobal(destination)),
+                              QPointF(destination), Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+        QApplication.sendEvent(panel.handle, release)
+        self.qtapp.processEvents()
+        self.assertTrue(panel.collapsed)
+        self.assertTrue(panel.mask().isEmpty())
+        self.assertEqual(panel.frameGeometry().right(), area.right())
+        self.assertEqual(panel.y(), destination.y() - panel.height() // 2)
+        self.assertEqual(self.w.store.data['ui']['side_panel_y'], panel.y())
+        QTest.mouseClick(panel.handle, Qt.LeftButton)
+        self.assertFalse(panel.collapsed)
+
+    def test_disabling_while_holding_cancels_drag_and_can_be_reopened(self):
+        panel = self.open_panel()
+        panel.set_collapsed(True)
+        QTest.mousePress(panel.handle, Qt.LeftButton)
+        QTest.qWait(240)
+        self.w.toggle_side_panel(False)
+        self.assertFalse(panel._hold_timer.isActive())
+        self.assertIsNone(panel._handle_press)
+        self.assertFalse(panel._handle_dragging)
+        with patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+            self.w.toggle_side_panel(True)
+        self.assertTrue(panel.mask().isEmpty())
+        QTest.mouseClick(panel.handle, Qt.LeftButton)
+        self.assertFalse(panel.collapsed)
