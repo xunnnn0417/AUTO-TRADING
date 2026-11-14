@@ -5,6 +5,7 @@ Does not change clicks, selections, window targets or trading automation.
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QTimer
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QToolTip, QWidget
 
 
@@ -29,6 +30,8 @@ class DelayedHoverHelp(QObject):
         widget = self._active
         if widget is None or not widget.isVisible() or not widget.isEnabled():
             return
+        if not widget.rect().contains(widget.mapFromGlobal(QCursor.pos())):
+            return
         QToolTip.showText(
             widget.mapToGlobal(QPoint(2, widget.height() + 4)),
             self._details[widget],
@@ -37,7 +40,7 @@ class DelayedHoverHelp(QObject):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched in self._details:
-            if event.type() in (QEvent.Enter, QEvent.FocusIn):
+            if event.type() == QEvent.Enter:
                 self._active = watched
                 self._timer.start(self.delay_ms)
             elif event.type() in (

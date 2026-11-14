@@ -210,6 +210,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         fake.data_labels={"two":QLabel()}
         fake._trade_settings_context=lambda:("test-profile","","","")
         fake._show_trade_sheet_settings=MagicMock()
+        fake.balance_warning_badge=QLabel(fake)
         dialog=MagicMock()
         fake.auto_entry_on_fill_both.toggled.connect(dialog)
         TradingHelperApp._apply_profile_ui(fake)
@@ -221,6 +222,8 @@ class AutoEntryOptionTests(unittest.TestCase):
         self.assertFalse(fake.auto_draw_tv_after_entry.isChecked())
         dialog.assert_not_called()
         self.assertIsNone(fake.instruction)
+        self.assertTrue(fake.balance_warning_badge.isHidden())
+        self.assertIsNone(fake._balance_warning_context)
         fake.store.data["ui"]["auto_entry_on_fill_both"]=False
         TradingHelperApp._apply_profile_ui(fake)
         self.assertFalse(fake.auto_entry_on_fill_both.isChecked())

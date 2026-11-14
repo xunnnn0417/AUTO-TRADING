@@ -221,6 +221,80 @@ class FillGuardTests(unittest.TestCase):
         self.assertFalse(w._fill_task_lock.acquire(timeout=0.02) is False)
         w._fill_task_lock.release()
 
+    def test_tighter_sl_confirmation_controls_both_platform_orders(self):
+        self.calibrated()
+        w = self.w
+        w.instruction = gui.replace(
+            sample(), original_sl_points=D('-8.35'), expected_sl_points=D('-7.59'),
+        )
+        w._show_instruction(w.instruction)
+        w.auto_entry_on_fill_both.blockSignals(True)
+        w.auto_entry_on_fill_both.setChecked(True)
+        w.auto_entry_on_fill_both.blockSignals(False)
+        for internal, external in (('cTrader', 'MT5'), ('MT5', 'cTrader')):
+            w.internal_platform.setCurrentText(internal)
+            w.external_platform.setCurrentText(external)
+            for answer in (QMessageBox.No, QMessageBox.Yes):
+                with self.subTest(internal=internal, answer=answer), \
+                     patch.object(gui.QMessageBox, 'question', return_value=answer) as ask, \
+                     patch.object(w, '_start_fill_worker') as start, \
+                     patch.object(w, 'update_all_trade_parameters') as write:
+                    w.fill_both()
+                    ask.assert_called_once()
+                    self.assertIn('請先確認保證金比例相關規則，仍要進場嗎？', ask.call_args.args[2])
+                    self.assertEqual(ask.call_args.args[4], QMessageBox.No)
+                    self.assertEqual(ask.call_args.kwargs['yes_text'], '繼續進場')
+                    write.assert_not_called()
+                    self.assertEqual(start.call_count, int(answer == QMessageBox.Yes))
+
+    def test_tighter_sl_cancel_prevents_pending_sheet_write(self):
+        self.calibrated()
+        w = self.w
+        w.instruction = gui.replace(
+            sample(), original_sl_points=D('-8.35'), expected_sl_points=D('-8.59'),
+        )
+        w._show_instruction(w.instruction)
+        w.parameter_inputs['expected_sl_combined'].setText('-7.59')
+        answers = iter((QMessageBox.Yes, QMessageBox.No))
+        with patch.object(gui.QMessageBox, 'question', side_effect=lambda *a, **k: next(answers)) as ask, \
+             patch.object(w, '_start_fill_worker') as start, \
+             patch.object(w, 'update_all_trade_parameters') as write:
+            w.fill_both()
+        self.assertEqual(ask.call_count, 2)
+        self.assertIn('保證金比例相關規則', ask.call_args.args[2])
+        write.assert_not_called()
+        start.assert_not_called()
+        self.assertIsNone(w._fill_waiting_for_sheet)
+
+    def test_equal_or_wider_sl_does_not_add_confirmation(self):
+        self.calibrated()
+        for points in ('-8.35', '-9.00'):
+            with self.subTest(points=points):
+                self.w.instruction = gui.replace(
+                    sample(), original_sl_points=D('-8.35'), expected_sl_points=D(points),
+                )
+                self.w._show_instruction(self.w.instruction)
+                with patch.object(gui.QMessageBox, 'question') as ask, \
+                     patch.object(self.w, '_start_fill_worker') as start:
+                    self.w.fill_both()
+                ask.assert_not_called()
+                start.assert_called_once()
+
+    def test_tighter_sl_fill_only_prompt_does_not_claim_to_enter(self):
+        self.calibrated()
+        w = self.w
+        w.instruction = gui.replace(
+            sample(), original_sl_points=D('-8.35'), expected_sl_points=D('-7.59'),
+        )
+        w._show_instruction(w.instruction)
+        w.auto_entry_on_fill_both.setChecked(False)
+        with patch.object(gui.QMessageBox, 'question', return_value=QMessageBox.No) as ask, \
+             patch.object(w, '_start_fill_worker') as start:
+            w.fill_both()
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.kwargs['yes_text'], '繼續填入')
+        start.assert_not_called()
+
 
 if __name__=="__main__":
     unittest.main()
