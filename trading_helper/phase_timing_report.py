@@ -176,6 +176,7 @@ class LocalPhaseTimingStore:
 
 def _safe_metadata(function, args, kwargs) -> dict:
     bound = inspect.signature(function).bind_partial(*args, **kwargs)
+    bound.apply_defaults()
     values = bound.arguments
     metadata: dict = {}
     internal = values.get("internal_platform")
@@ -198,6 +199,8 @@ def _safe_metadata(function, args, kwargs) -> dict:
     else:
         metadata["scenario"] = "standard"
     metadata["fast_pair"] = bool(values.get("fast_pair", False))
+    if values.get("auto_entry_requested") is False and not scenario:
+        metadata["fast_pair"] = False
     metadata["sync_sl_tp"] = bool(values.get("sync_sl_tp", False))
     metadata["draw_tv"] = bool(values.get("draw_tv", False))
     return metadata

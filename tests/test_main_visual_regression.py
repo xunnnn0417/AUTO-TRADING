@@ -155,7 +155,7 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertIn("原始 SL：-5.57", message)
         self.assertIn("預期 SL：-5.27", message)
         self.assertIn("保證金限額", message)
-        self.assertIn("無法替你確認是否超限", message)
+        self.assertIn("無法確認即時保證金限額", message)
 
     def test_expected_sl_warning_hides_when_distance_is_not_reduced(self):
         self.window.instruction = SimpleNamespace(

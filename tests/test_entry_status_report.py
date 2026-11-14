@@ -180,6 +180,22 @@ class ReceiptWorkflowSignalTests(unittest.TestCase):
             report["_repeat_expected_sl"]["points"],"-8.59"
         )
 
+    def test_closed_pair_reentry_request_carries_actual_test_symbol(self):
+        from trading_helper.test_mode import test_symbol_scope
+        initial={side:SimpleNamespace(ticket=side) for side in ("internal","external")}
+        with patch("trading_helper.gui.DemoUiBrokerPort",return_value=self.port), \
+             patch("trading_helper.gui.APP_DIR",Path(self.tmp.name)), \
+             patch.object(AutoEntryWorkflow,"run_test_scenario",return_value={
+                 "scenario":"close:internal","outcome":"both_closed_waiting_user",
+                 "initial_positions":initial,"positions":(),
+             }), test_symbol_scope("ETHUSD"):
+            TradingHelperApp._auto_entry_after_fill_both_pending(
+                self.fake,"cTrader","MT5",instruction(),sync_sl_tp=True,
+                test_scenario="close:internal",
+            )
+        report=self.signal.emit.call_args.args[0]
+        self.assertEqual(report["reentry_request"]["symbol"],"ETHUSD")
+
     def test_interrupted_test_receipt_keeps_order_id_but_summarizes_details(self):
         initial={
             "internal":SimpleNamespace(ticket="I-01"),

@@ -131,6 +131,33 @@ class ExistingMt5OrderDialogTests(unittest.TestCase):
         self.windows.click.assert_called_once()
         self.automation._fill_field.assert_not_called()
 
+    def test_new_modal_can_finish_loading_without_another_click(self):
+        with patch.object(
+            DemoUiBrokerPort, "_form_window", side_effect=[
+                (self.profile, None),
+                AutomationError("MT5 訂單商品尚未核對成功"),
+                (self.profile, self.dialog),
+            ],
+        ), patch("trading_helper.automation.time.sleep"):
+            self.automation.fill("MT5", "external", self.instruction)
+        self.windows.click.assert_called_once_with(
+            self.main, self.points["new_order_button"]
+        )
+        self.automation._verify_filled_side.assert_called_once()
+
+    def test_unverified_new_modal_never_gets_filled_or_reopened(self):
+        failure=AutomationError("MT5 商品不符")
+        with patch.object(
+            DemoUiBrokerPort,"_form_window",
+            side_effect=[(self.profile,None),failure],
+        ), patch("trading_helper.automation.time.monotonic",side_effect=[0,0,3]),\
+             patch("trading_helper.automation.time.sleep"):
+            with self.assertRaisesRegex(AutomationError,"點擊新訂單後未找到") as caught:
+                self.automation.fill("MT5","external",self.instruction)
+        self.assertIs(caught.exception.__cause__,failure)
+        self.windows.click.assert_called_once()
+        self.automation._fill_field.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

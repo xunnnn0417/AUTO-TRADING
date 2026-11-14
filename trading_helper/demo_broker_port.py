@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 
 from .auto_entry import DemoAccount, Position
 from .test_mode import effective_test_symbol
+from .phase_timing_report import timed_call
 from .windows import AutomationError, WindowInfo, WindowController
 
 
@@ -330,7 +331,9 @@ class DemoUiBrokerPort:
                     list(_controls) if _controls is not None
                     else Desktop(backend="uia").window(
                         handle=window.handle
-                    ).descendants()
+                    ).descendants(
+                        control_type="Text",
+                    )
                 )
                 visible=[e for e in elements if e.is_visible()]
                 number_nodes=[e for e in visible if
@@ -384,40 +387,13 @@ class DemoUiBrokerPort:
 
     def _ctrader_positions(self, platform, role, account):
         grid=self._ctrader_grid(platform,role)
-        rows=grid.descendants(control_type="DataItem")
-        # A hidden zero-size DataItem can be a cTrader empty-grid placeholder.
-        # Never treat a virtualized or unreadable real row as empty.
-        ghosts=bool(rows)
-        for row in rows:
-            try:
-                rect=row.rectangle()
-                if (row.is_visible() or rect.right>rect.left
-                        or rect.bottom>rect.top):
-                    ghosts=False
-                    break
-            except Exception:
-                ghosts=False
-                break
-        if ghosts or not rows:
-            try:
-                count=int(grid.iface_grid.CurrentRowCount)
-                time.sleep(0.1)
-                count2=int(grid.iface_grid.CurrentRowCount)
-                any_text=any(
-                    str(node.window_text()).strip()
-                    for row in rows
-                    for node in row.descendants(control_type="Text")
-                )
-            except Exception as exc:
-                raise AutomationError(
-                    "cTrader 持倉表列數讀取失敗；目前持倉狀態未知。"
-                ) from exc
-            if count==count2==0 and not any_text:
-                return ()
-            raise AutomationError(
-                "cTrader 持倉表資料列與原生列數不一致；"
-                "目前持倉狀態未知。"
-            )
+        rows=timed_call("cTrader持倉列讀取",self._ctrader_rows,grid,
+                        platform=platform,role=role)
+        if not rows:
+            return ()
+        row_count=int(grid.iface_grid.CurrentRowCount)
+        if row_count != len(rows):
+            raise AutomationError("cTrader 持倉表在讀取中更新，請重新核對持倉。")
         headers={}
         for h in grid.descendants(control_type="HeaderItem"):
             name=str(h.window_text()).strip().casefold()
@@ -435,10 +411,7 @@ class DemoUiBrokerPort:
         for row in rows:
             rr=row.rectangle()
             children=row.descendants()
-            # cTrader's UIA rectangle call can be slow. Cache each child
-            # geometry once for this read instead of requesting the same
-            # rectangle again for every one of the seven position columns.
-            # Keep value reads and the per-column uniqueness checks fresh.
+            # Cache geometry once; repeatedly querying UIA per column is slow.
             child_geometry=[]
             for node in children:
                 try:
@@ -483,10 +456,84 @@ class DemoUiBrokerPort:
                 self._decimal(values["sl"],empty_ok=True),
                 self._decimal(values["tp"],empty_ok=True),
             ))
+        if int(grid.iface_grid.CurrentRowCount) != row_count:
+            raise AutomationError("cTrader 持倉表在讀取中更新，請重新核對持倉。")
         tickets=[p.ticket for p in found]
         if len(tickets)!=len(set(tickets)):
             raise AutomationError("cTrader 唯一持倉識別碼重複，拒絕進場。")
         return tuple(found)
+
+    @staticmethod
+    def _ctrader_native_row(grid, index):
+        """Read a row through GridPattern when the visual tree omits it."""
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        from pywinauto.uia_element_info import UIAElementInfo
+        cell=grid.iface_grid.GetItem(index,0)
+        node=UIAWrapper(UIAElementInfo(cell))
+        for _ in range(4):
+            if node.element_info.control_type in ("DataItem","ListItem"):
+                return node
+            node=node.parent()
+        raise AutomationError("cTrader 原生持倉列無法定位。")
+
+    def _ctrader_rows(self, grid):
+        rows=grid.descendants(control_type="DataItem")
+        # A hidden zero-size DataItem can be a cTrader empty-grid placeholder.
+        # Never treat a virtualized or unreadable real row as empty.
+        ghosts=bool(rows)
+        for row in rows:
+            try:
+                rect=row.rectangle()
+                if (row.is_visible() or rect.right>rect.left
+                        or rect.bottom>rect.top):
+                    ghosts=False
+                    break
+            except Exception:
+                ghosts=False
+                break
+        try:
+            count=int(grid.iface_grid.CurrentRowCount)
+        except Exception as exc:
+            raise AutomationError("cTrader 持倉表列數讀取失敗；目前持倉狀態未知。") from exc
+        if count == len(rows) and rows and not ghosts:
+            return rows
+        if count == 0 and (ghosts or not rows):
+            try:
+                count=int(grid.iface_grid.CurrentRowCount)
+                time.sleep(0.1)
+                count2=int(grid.iface_grid.CurrentRowCount)
+                any_text=any(
+                    str(node.window_text()).strip()
+                    for row in rows
+                    for node in row.descendants(control_type="Text")
+                )
+            except Exception as exc:
+                raise AutomationError(
+                    "cTrader 持倉表列數讀取失敗；目前持倉狀態未知。"
+                ) from exc
+            if count==count2==0 and not any_text:
+                return []
+        # One short refresh covers the UI tree changing while a fill arrives.
+        self.automation.emergency.guard()
+        time.sleep(0.1)
+        refreshed=grid.descendants(control_type="DataItem")
+        count=int(grid.iface_grid.CurrentRowCount)
+        if (count > 0 and count == len(refreshed)
+                and all(row.is_visible() for row in refreshed)):
+            return refreshed
+        if 0 < count <= 100:
+            try:
+                native=[timed_call("cTrader原生持倉補讀",self._ctrader_native_row,grid,i)
+                        for i in range(count)]
+                if int(grid.iface_grid.CurrentRowCount)==count:
+                    self.log(f"cTrader 畫面列舉漏列，改用原生表格讀回 {count} 筆持倉。")
+                    return native
+            except Exception as exc:
+                self.log(f"cTrader 原生持倉列讀取失敗：{type(exc).__name__}。")
+        raise AutomationError(
+            f"cTrader 持倉表資料列與原生列數不一致（畫面 {len(refreshed)}／原生 {count}）；"
+            "持倉讀取失敗，目前持倉狀態未知；不能據此判定未進場。"
+        )
 
     def _mt5_position_rows(
         self, platform, role, account, *, window=None, allow_blank_rows=False
@@ -917,6 +964,11 @@ class DemoUiBrokerPort:
                        ("sl_checkbox","tp_checkbox")):
                 raise AutomationError("cTrader SL／TP 有未勾選項目。")
 
+    def prepare_reentry(self, platform, role, instruction):
+        """Open/reuse the order form and establish fresh ordinary fill evidence."""
+        self.set_expected_symbol(effective_test_symbol(instruction.symbol))
+        self.automation.fill(platform,role,instruction)
+
     def submit_once(
         self,platform,role,direction,lot,key,submit_deadline=None
     ):
@@ -1243,7 +1295,7 @@ class DemoUiBrokerPort:
             time.sleep(0.05)
         self.log("止盈止損已符合預期，已關閉留下的 MT5 修改視窗。")
 
-    def close_position_once(self, pos: Position, role: str) -> None:
+    def close_position_once(self, pos: Position, role: str) -> tuple[Position, ...]:
         """Click one manually calibrated close control and verify that ticket exits."""
         if role not in ("internal", "external"):
             raise AutomationError("平倉場別無效，未操作。")
@@ -1281,7 +1333,7 @@ class DemoUiBrokerPort:
                         "指定持倉已消失，但持倉清單出現其他訂單；"
                         "停止後續動作並人工核對。"
                     )
-                return
+                return current
             if len(current) != 1:
                 raise AutomationError(
                     "平倉後持倉清單變成多筆或身分改變；停止重試。"

@@ -248,6 +248,12 @@ class AutoEntryWorkflowTests(unittest.TestCase):
         self.assertFalse(any(x[0]=="submit" for x in self.port.events))
 
     def test_complete_scenarios_do_not_require_demo_live_classification(self):
+        original_confirm=self.port.confirm_new_position
+        def confirm_and_store(*args):
+            position=original_confirm(*args)
+            self.port.open_positions[args[1]]=(position,)
+            return position
+        self.port.confirm_new_position=confirm_and_store
         self.port.accounts["internal"]=replace(
             self.port.accounts["internal"],server="broker-Live",is_demo=False
         )

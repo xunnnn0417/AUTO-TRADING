@@ -1483,12 +1483,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             "其中一邊未成交可能造成單邊曝險。"
         )
         self.auto_fast_pair.setText("快速")
-        self.auto_fast_pair.setChecked(
-            bool(self.store.data["ui"].get("auto_fast_pair",False))
-        )
-        self.auto_fast_pair.toggled.connect(self._confirm_fast_pair_toggle)
-        # Keep the saved speed preference active, but hide its control from
-        # the compact automation row as requested.
+        # Compatibility control only: rapid pair dispatch is now fixed policy.
+        self.auto_fast_pair.setChecked(True)
+        self.auto_fast_pair.setEnabled(False)
+        self.auto_fast_pair.toggled.connect(self._keep_fast_pair_enabled)
         self.auto_fast_pair.setParent(self)
         self.auto_fast_pair.hide()
         self.auto_sync_sl_tp_after_entry = QCheckBox("同步 SL/TP")
@@ -1517,12 +1515,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
         )
         automation_layout.addWidget(self.auto_draw_tv_after_entry)
-        self.test_mode_checkbox = QCheckBox("測試")
-        self.test_mode_checkbox.setObjectName("test_mode_checkbox")
-        self.test_mode_checkbox.setToolTip(
-            "預設關閉。選好測試項目後按「填入兩邊」執行；"
-            "單邊重進／平倉會再次確認，且只操作唯一核對的持倉。"
-        )
+        self.test_controls = QWidget(automation_row)
+        self.test_controls.setObjectName("testControls")
+        test_layout = QHBoxLayout(self.test_controls)
+        test_layout.setContentsMargins(0, 0, 0, 0)
+        test_layout.setSpacing(4)
+        test_layout.addWidget(QLabel("—"))
+        test_layout.addWidget(QLabel("測試項目"))
         self.test_asset_checkboxes: dict[str, QCheckBox] = {}
         self.test_scenario_checkboxes: dict[str, QCheckBox] = {}
         for symbol, label in (("BTCUSD", "BTC"), ("ETHUSD", "ETH")):
@@ -1571,7 +1570,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.auto_entry_on_fill_both, self.auto_fast_pair,
             self.auto_sync_sl_tp_after_entry,
             self.auto_draw_tv_after_entry,
-            self.test_mode_checkbox, *self.test_asset_checkboxes.values(),
+            *self.test_asset_checkboxes.values(),
             *self.test_scenario_checkboxes.values(),
             self.test_delay_checkbox,
         ):
@@ -1583,24 +1582,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.test_delay_checkbox,
         ):
             option.setStyleSheet("font-size: 9px; spacing: 2px;")
-        self.test_mode_checkbox.setChecked(False)
-        for choice in (*self.test_asset_checkboxes.values(),
-                       *self.test_scenario_checkboxes.values(),
-                       self.test_delay_checkbox):
-            choice.setEnabled(False)
-        self.test_mode_checkbox.toggled.connect(self._toggle_test_mode)
-        automation_layout.addWidget(self.test_mode_checkbox)
-        asset_label = QLabel("商品")
-        asset_label.setObjectName("testAssetSeparator")
-        automation_layout.addWidget(asset_label)
         for choice in self.test_asset_checkboxes.values():
-            automation_layout.addWidget(choice)
+            test_layout.addWidget(choice)
+        self.test_asset_checkboxes["BTCUSD"].hide()
         separator = QLabel("情境")
         separator.setObjectName("testScenarioSeparator")
-        automation_layout.addWidget(separator)
+        test_layout.addWidget(separator)
         for choice in self.test_scenario_checkboxes.values():
-            automation_layout.addWidget(choice)
-        automation_layout.addWidget(self.test_delay_checkbox)
+            test_layout.addWidget(choice)
+        test_layout.addWidget(self.test_delay_checkbox)
+        automation_layout.addWidget(self.test_controls)
+        # Accepted recovery tests remain available in code, but the normal
+        # release hides the entire section. No selection is restored on launch.
+        self.test_controls.hide()
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
@@ -2062,7 +2056,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if message.startswith(MISSING_SPREADSHEET_URL_MESSAGE):
             QMessageBox.information(self, "請先完成方案設定", message)
             return
-        QMessageBox.critical(self, "對沖小幫手", message)
+        self.log(message)
+        QMessageBox.critical(self, "操作未完成", summarize_interruption_reason(message))
 
     def _show_duplicate_entry_decision(self, data: dict) -> None:
         """GUI-thread-only question, never an implicit send/retry."""
@@ -2094,22 +2089,23 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if manual_needed:
             dialog.setInformativeText(
                 record_prefix
-                + "請先核對兩邊持倉與交易紀錄。兩邊都有單可核對／同步；"
-                "兩邊都空才可重新進場；只有一邊有單請返回人工處理。"
+                + "請先核對持倉與交易紀錄：\n"
+                "兩邊有單：核對／同步；兩邊空倉：重新進場。\n"
+                "只有一邊有單：取消，先處理單邊持倉。"
             )
         else:
             dialog.setInformativeText(
                 record_prefix
-                + "繼續後會重新檢查帳戶、持倉及表單，通過才會進場。"
+                + "重新核對帳戶、持倉與表單；通過才進場。"
             )
-        adjust=dialog.addButton("返回",QMessageBox.RejectRole)
+        adjust=dialog.addButton("取消進場",QMessageBox.RejectRole)
         proceed=dialog.addButton(
-            "已核對，繼續" if manual_needed else "重新核對並進場",
+            "核對持倉並繼續" if manual_needed else "核對並進場兩邊",
             QMessageBox.AcceptRole
         )
         if manual_needed:
             acknowledgement=QCheckBox(
-                "我已核對兩邊目前持倉與進出場紀錄，確認可以繼續。"
+                "已核對兩邊持倉與交易紀錄。"
             )
             dialog.setCheckBox(acknowledgement)
             proceed.setEnabled(False)
@@ -2338,10 +2334,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         answer = QMessageBox.question(
             self,
             "預期 SL 與上次相同",
-            f"上次與這次都是 {previous} 點。\n"
-            f"依規則，從原始 {instruction.original_sl_points} 點到上次數值減 1 點"
-            f"（{bounds[0]} 至 {bounds[1]}）隨機選 {proposed} 點。\n"
-            "調整可能增加手數與保證金占用，要調整並繼續嗎？",
+            f"這次仍是 {previous} 點，建議改為 {proposed} 點。\n"
+            f"規則：原始 {instruction.original_sl_points} 至上次減 1，"
+            f"在 {bounds[0]}～{bounds[1]} 隨機取小數兩位。\n"
+            "調整可能增加手數與保證金占用。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
             yes_text="調整並繼續",
@@ -2395,7 +2391,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         actions = QHBoxLayout()
         reentry_request=report.get("reentry_request")
         if isinstance(reentry_request,dict):
-            reenter=QPushButton("重新進場",dialog)
+            reenter=QPushButton("重新進場兩邊",dialog)
             reenter.setObjectName("autoEntryReentryButton")
             reenter.clicked.connect(
                 lambda checked=False, request=dict(reentry_request):
@@ -2410,7 +2406,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             actions.addWidget(reminder,1)
         actions.addStretch()
         button = QPushButton(
-            "結束" if isinstance(reentry_request,dict) else "確認",dialog
+            "關閉",dialog
         )
         button.setObjectName("autoEntryResultConfirmButton")
         button.clicked.connect(dialog.accept)
@@ -2436,7 +2432,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 )
                 actions.addWidget(choice)
             reminder=QLabel(
-                "按下後會先重查帳戶與持倉；補進前請確認考試商規則。",
+                "操作前會重查持倉；補進前請確認考試商規則。",
                 dialog,
             )
             reminder.setObjectName("autoEntryIncidentActionReminder")
@@ -2444,7 +2440,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             actions.addWidget(reminder,1)
         elif role in ("internal","external"):
             unavailable=QLabel(
-                "缺少可核對的帳戶或訂單資料，暫時不能安全執行平倉／補進。",
+                "帳戶或單號不完整，暫時無法平倉／補進。",
                 dialog,
             )
             unavailable.setWordWrap(True)
@@ -2500,8 +2496,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 or selected_symbol!=request.get("symbol")):
             QMessageBox.warning(
                 receipt or self,"進場資料已改變",
-                "方案、試算表、商品或平台已改變。請重新核對後再操作，"
-                "本次沒有平倉或補進。"
+                "方案、試算表、商品、平台或數值已變更。\n"
+                "請重新核對；本次未平倉或補進。"
             )
             return
         if receipt is not None:
@@ -2600,30 +2596,36 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
                     !=request.get("sheet_url")
                 or current_item!=item
+                or (TradingHelperApp._selected_test_symbol(
+                    self,("internal","external")
+                ) or item.symbol)!=request.get("symbol",item.symbol)
                 or self.internal_platform.currentText()!=internal_platform
                 or self.external_platform.currentText()!=external_platform):
             QMessageBox.warning(
                 receipt or self,"進場資料已改變",
-                "方案、試算表、商品或平台已改變。請重新核對後再開始，"
-                "本次沒有重新進場。"
+                "方案、試算表、商品、平台或數值已變更。\n"
+                "請重新核對；本次未重新進場。"
             )
             return
         if receipt is not None:
             receipt.close()
-        fast_control=getattr(self,"auto_fast_pair",None)
-        fast_pair=bool(fast_control is not None and fast_control.isChecked())
         self._start(
             "重新進場",
-            lambda:self._fill_both_task(
-                internal_platform,external_platform,True,
+            lambda:TradingHelperApp._fill_approved_reentry(self,request),
+            restore_after=False,
+        )
+
+    def _fill_approved_reentry(self, request: dict) -> None:
+        # Keep the chosen test instrument inside the worker thread, just as
+        # for ordinary test entry. Do not run another fault-injection test.
+        with test_symbol_scope(request.get("symbol")):
+            self._fill_both_task(
+                request["internal_platform"],request["external_platform"],True,
                 sync_sl_tp=True,
                 draw_tv=bool(request.get("draw_tv",False)),
                 draw_internal=bool(request.get("draw_internal",False)),
-                fast_pair=fast_pair,
-                authorized_reentry_id=f"{time.time_ns()}",
-            ),
-            restore_after=False,
-        )
+                fast_pair=True,authorized_reentry_id=f"{time.time_ns()}",
+            )
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = ThemedDialog(self)
@@ -3073,11 +3075,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         detail = (
             f"原始 SL：{original} 點\n"
             f"預期 SL：{adjusted} 點\n"
-            f"止損距離縮短：約 {reduction:.1f}%\n\n"
-            "止損距離縮短時，若依固定風險重新計算，所需手數可能增加，"
-            "也可能碰到帳戶或平台的保證金限額。\n\n"
-            "目前程式沒有可靠的即時保證金資料，無法替你確認是否超限。"
-            "請在交易平台核對預計手數與可用保證金。"
+            f"止損距離縮短 {reduction:.1f}%，手數與保證金可能增加。\n"
+            "程式無法確認即時保證金限額；請在平台核對手數、可用保證金及考試商規則。"
         )
         QMessageBox.warning(self, "預期止損與保證金提醒", detail)
 
@@ -3148,9 +3147,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _selected_test_action(self, roles: tuple[str, ...]) -> str:
         if roles != ("internal", "external"):
             return ""
-        checkbox = getattr(self, "test_mode_checkbox", None)
-        if checkbox is None or not checkbox.isChecked():
-            return ""
         for action, option in getattr(self, "test_scenario_checkboxes", {}).items():
             if option.isChecked():
                 return action
@@ -3160,9 +3156,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     @staticmethod
     def _selected_test_symbol(owner, roles: tuple[str, ...]) -> str | None:
         if roles != ("internal", "external"):
-            return None
-        checkbox = getattr(owner, "test_mode_checkbox", None)
-        if checkbox is None or not checkbox.isChecked():
             return None
         for symbol, option in getattr(owner, "test_asset_checkboxes", {}).items():
             if option.isChecked():
@@ -3178,21 +3171,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         for option in group.values():
             if option is not current and option.isChecked():
                 option.setChecked(False)
-
-    def _toggle_test_mode(self, enabled: bool) -> None:
-        choices = (
-            *getattr(self, "test_asset_checkboxes", {}).values(),
-            *getattr(self, "test_scenario_checkboxes", {}).values(),
-            *([self.test_delay_checkbox] if hasattr(self,"test_delay_checkbox") else []),
-        )
-        for choice in choices:
-            choice.setEnabled(enabled)
-            if not enabled:
-                choice.setChecked(False)
-        if enabled:
-            self.log("已啟用本次測試選單；選好項目後按「填入兩邊」才會執行。")
-        else:
-            self.log("已關閉測試模式；恢復一般「填入兩邊」流程。")
 
     @staticmethod
     def _test_action_role(action: str) -> str:
@@ -3251,7 +3229,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             symbol = test_symbol or action.split(":", 1)[1]
             return QMessageBox.question(
                 self,"開始假日雙邊測試？",
-                f"目前連線的兩個帳戶會以 {symbol} 各進場一單並同步 SL／TP。開始？",
+                f"{symbol}：兩個連線帳戶各進場一單，並同步 SL／TP。會實際下單。",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3260,15 +3238,20 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         instrument = test_symbol or item.symbol
         if action.startswith("reentry:"):
             return QMessageBox.question(
-                self,"開始單邊重進測試？",
-                f"目前連線帳戶將用 {instrument} 測試{side}漏單後補進一次，會實際開倉；結果不明就停止。開始？",
+                self,f"測試{side}補進？",
+                f"{instrument}：先讓另一邊進場，再補進{side}一次。\n"
+                + ("逾時平掉場外。" if role=="internal" else "逾時由你選擇平倉或補進。")
+                + "會實際下單；結果不明就停止。",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
         if action.startswith("close:"):
             return QMessageBox.question(
-                self,"開始單邊平倉測試？",
-                f"目前連線帳戶將用 {instrument} 測試{side}快平，會實際開倉和平倉。開始？",
+                self,f"測試{side}快平？",
+                f"{instrument}：兩邊進場後，"
+                + ("平掉場內及場外，再詢問是否重新進場。"
+                   if role=="internal" else "平掉場外，再於 15 秒內補進並同步 SL／TP。")
+                + "\n會實際開倉及平倉；勾選延遲時會改測逾時處理。",
                 QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
                 yes_text="開始測試", no_text="取消",
             )==QMessageBox.Yes
@@ -3431,9 +3414,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                            *, test_action: str = "",
                            test_symbol: str | None = None) -> None:
         auto_entry = self.auto_entry_on_fill_both.isChecked()
-        fast_control = getattr(self,"auto_fast_pair",None)
-        fast_pair = bool(fast_control is not None and fast_control.isChecked()
-                         and (auto_entry or test_action))
+        fast_pair = bool(auto_entry or test_action)
         sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
             auto_entry
@@ -3508,7 +3489,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         *, symbol: str | None = None,
         draw_tv: bool = False, draw_internal: bool = False,
         test_delay: bool = False,
-        fast_pair: bool = False,
+        fast_pair: bool = True,
     ) -> None:
         if symbol is None and action.startswith("weekend:"):
             symbol = action.split(":", 1)[1]
@@ -3566,7 +3547,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self, internal_platform: str, external_platform: str,
         auto_entry_requested: bool = False,
         *, sync_sl_tp: bool = False, draw_tv: bool = False,
-        draw_internal: bool = False, fast_pair: bool = False,
+        draw_internal: bool = False, fast_pair: bool = True,
         test_scenario: str = "",
         test_delay: bool = False,
         authorized_reentry_id: str = "",
@@ -3657,7 +3638,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         draw_tv: bool = False, draw_internal: bool = False,
         duplicate_confirmation: tuple[str,str,str,str] | None = None,
         manual_reconciliation_confirmed: bool = False,
-        fast_pair: bool = False,
+        fast_pair: bool = True,
         test_scenario: str = "",
         test_delay: bool = False,
         authorized_reentry_id: str = "",
@@ -3795,7 +3776,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         message+="\nTradingView 後續步驟已依設定執行。"
                     followup=False
                 elif result["outcome"]=="both_closed_waiting_user":
-                    title="場內快平測試已處理，等你確認下一步"
+                    title="兩邊已平倉，要重新進場嗎？"
                     message=(
                         f"兩邊進場已核對：{initial_text}；之後兩邊皆已確認平倉。\n"
                         "可選擇重新進場；請先確認考試商規則。"
@@ -3824,6 +3805,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         "test_followup":followup,
                         "reentry_request":({
                             "item":item,
+                            "symbol":flow._effective_test_symbol(item.symbol),
                             "profile_name":profile_name,
                             "sheet_url":sheet_url,
                             "internal_platform":internal_platform,
@@ -4879,10 +4861,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         "show_calibration_badges", True))
                 ),
                 "auto_entry_on_fill_both": self.auto_entry_on_fill_both.isChecked(),
-                "auto_fast_pair": (
-                    self.auto_fast_pair.isChecked()
-                    if hasattr(self,"auto_fast_pair") else False
-                ),
+                "auto_fast_pair": True,
                 "auto_sync_sl_tp_after_entry": (
                     self.auto_sync_sl_tp_after_entry.isChecked()
                     if hasattr(self, "auto_sync_sl_tp_after_entry")
@@ -4909,7 +4888,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         first_checked = first.isChecked()
         if fast is not None:
-            fast.setEnabled(first_checked)
+            fast.setEnabled(False)
         sync_checked = bool(sync is not None and sync.isChecked())
         third.setToolTip(
             "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
@@ -4922,30 +4901,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             third.blockSignals(was_blocked)
         third.setEnabled(first_checked and sync_checked)
 
-    def _confirm_fast_pair_toggle(self, enabled: bool) -> None:
+    def _keep_fast_pair_enabled(self, enabled: bool) -> None:
+        """Ignore legacy speed-off state; entry itself still requires opt-in."""
         if not enabled:
-            if hasattr(self, "save_ui_state"):
-                self.save_ui_state()
-            self.log("已關閉快速雙邊進場，恢復先確認場內再進場場外。")
-            return
-        if not self.auto_entry_on_fill_both.isChecked():
-            accepted=QMessageBox.No
-        else:
-            accepted=QMessageBox.question(
-                self,"啟用快速雙邊？",
-                "核對通過後會連續送出兩筆訂單。Live 會建立真實倉位；"
-                "單邊結果不明就停止，不補單或平倉。啟用？",
-                QMessageBox.Yes | QMessageBox.No,QMessageBox.No,
-                yes_text="啟用", no_text="取消",
-            )
-        if accepted!=QMessageBox.Yes:
             was=self.auto_fast_pair.blockSignals(True)
-            self.auto_fast_pair.setChecked(False)
+            self.auto_fast_pair.setChecked(True)
             self.auto_fast_pair.blockSignals(was)
-            return
-        if hasattr(self,"save_ui_state"):
-            self.save_ui_state()
-        self.log("已啟用快速雙邊偏好；送單仍須按填入兩邊並通過核對。")
 
     def _confirm_auto_entry_toggle(self, enabled: bool) -> None:
         """Explicit opt-in; switching off takes effect immediately."""
@@ -5162,7 +5123,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             bool(ui.get("auto_draw_tv_after_entry",False))
         )
         if fast_control is not None:
-            fast_control.setChecked(bool(ui.get("auto_fast_pair",False)))
+            fast_control.setChecked(True)
         self.internal_platform.blockSignals(False)
         self.external_platform.blockSignals(False)
         self.tv_draw_internal.blockSignals(False)
@@ -5177,9 +5138,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # Dependencies are checked without emitting clicked/toggled events;
         # a restored preference never triggers broker I/O by itself.
         ui["auto_entry_on_fill_both"] = self.auto_entry_on_fill_both.isChecked()
-        ui["auto_fast_pair"] = (
-            fast_control.isChecked() if fast_control is not None else False
-        )
+        ui["auto_fast_pair"] = True
         ui["auto_sync_sl_tp_after_entry"] = (
             self.auto_sync_sl_tp_after_entry.isChecked()
         )
@@ -6100,10 +6059,9 @@ class CalibrationDialog(ThemedDialog):
             if other is None:
                 QMessageBox.warning(
                     self, "尚未辨識已開啟的持倉修改視窗",
-                    "請先在平台持倉列表自行雙擊目標的 "
+                    "請先在平台持倉列表雙擊目標的 "
                     + ("TP" if self.platform=="cTrader" else "SL")
-                    + " 欄，確認修改視窗已開啟後，再重新掃描。"
-                    "不會用主畫面或新訂單視窗冒充修改視窗。"
+                    + " 欄，開啟修改視窗後再掃描。"
                 )
                 return
             target=other
