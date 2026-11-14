@@ -208,9 +208,14 @@ class AutoEntryOptionTests(unittest.TestCase):
         fake.internal_direction_input=combo("BUY")
         fake.parameter_inputs={"one":QLineEdit()}
         fake.data_labels={"two":QLabel()}
+        fake._trade_settings_context=lambda:("test-profile","","","")
+        fake._show_trade_sheet_settings=MagicMock()
         dialog=MagicMock()
         fake.auto_entry_on_fill_both.toggled.connect(dialog)
         TradingHelperApp._apply_profile_ui(fake)
+        fake._show_trade_sheet_settings.assert_called_once_with(
+            (("test-profile","","",""),None,"請先讀取試算表。")
+        )
         self.assertTrue(fake.auto_entry_on_fill_both.isChecked())
         self.assertTrue(fake.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(fake.auto_draw_tv_after_entry.isChecked())
