@@ -2955,31 +2955,26 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _confirm_trade_setting(self, cell: str, value) -> None:
         expected = self._trade_settings
         context = self._trade_settings_context()
-        # Restore the read-back value while asking. Neither a tentative tick
-        # nor cancellation may look like a successful sheet write.
+        # Keep the last read-back value until the sheet write is verified.
         self._show_trade_sheet_settings((context, expected, ""))
         if expected is None or self._trade_settings_busy:
             return
         if self._active_tasks or self._parameter_write_active or self._update_in_progress:
             QMessageBox.information(self, "操作進行中", "請等目前操作完成後，再調整交易設定。")
             return
-        if cell == "A4":
-            title = "切換階段"
-            message = f"改為「{value}」？\n會重新計算手數及止盈止損。"
-            yes_text = "切換並更新"
-        else:
+        if cell != "A4":
             label, detail, off_detail = TRADE_RULES[cell]
             action = "啟用" if value else "關閉"
             title = "調整交易規則"
             message = f"{action}「{label}」？\n" + (detail if value else off_detail)
             yes_text = action + "並更新"
-        answer = QMessageBox.question(
-            self, title, message,
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            yes_text=yes_text, no_text="取消",
-        )
-        if answer != QMessageBox.Yes:
-            return
+            answer = QMessageBox.question(
+                self, title, message,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                yes_text=yes_text, no_text="取消",
+            )
+            if answer != QMessageBox.Yes:
+                return
         sheet = copy.deepcopy(self.store.data["sheet"])
         self._trade_settings_busy = True
         self._refresh_trade_settings_enabled()

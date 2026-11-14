@@ -88,16 +88,20 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertTrue(self.w.trade_rule_checkboxes['C2'].isChecked())
         self.assertFalse(self.w._trade_settings_busy)
 
-    def test_stage_choice_confirms_and_refreshes_same_a4(self):
+    def test_stage_choice_updates_same_a4_without_confirmation(self):
         self.load_settings()
-        with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes),\
+        with patch.object(gui.QMessageBox,'question') as confirm,\
              patch.object(self.w,'_start') as start,\
              patch.object(self.w,'_read_sheet_task'):
             self.w.stage_selector.setCurrentIndex(1)
+            confirm.assert_not_called()
+            self.assertFalse(self.w.stage_selector.isEnabled())
+            self.assertEqual(self.w.reader.writes,[])
             start.call_args.args[1]()
             self.qtapp.processEvents()
         self.assertEqual(self.w.reader.writes,[{'A4':'真金階段'}])
         self.assertEqual(self.w.stage_selector.currentText(),'真金階段')
+        self.assertTrue(self.w.stage_selector.isEnabled())
 
     def test_all_three_rules_require_confirmation_in_both_directions(self):
         self.load_settings()
