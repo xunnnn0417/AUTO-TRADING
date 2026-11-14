@@ -8,6 +8,13 @@ class ValidationError(ValueError):
     pass
 
 
+class InvalidInternalTakeProfit(ValidationError):
+    def __init__(self, display_values: dict[str, object] | None = None) -> None:
+        super().__init__("場內止盈點數必須大於零。\n請確認並修改場內餘額。")
+        # Raw sheet values remain display-only; no executable instruction exists.
+        self.display_values = dict(display_values or {})
+
+
 def _decimal(
     value: object,
     label: str,
@@ -24,6 +31,13 @@ def _decimal(
         number = abs(number)
     if (number < 0 and not allow_negative) or (number == 0 and not allow_zero):
         raise ValidationError(f"{label} 必須大於零。")
+    return number
+
+
+def _internal_take_profit(value: object, display_values: dict[str, object]) -> Decimal:
+    number = _decimal(value, "場內止盈點數", allow_zero=True, allow_negative=True)
+    if number <= 0:
+        raise InvalidInternalTakeProfit(display_values)
     return number
 
 
@@ -112,7 +126,8 @@ class TradeInstruction:
                     "場內止損點數",
                     allow_negative=True,
                 ),
-                _decimal(values.get("internal_tp_points"), "場內止盈點數"),
+                _internal_take_profit(values.get("internal_tp_points"),
+                                      {**values, "direction": direction, "symbol": symbol}),
             ),
             external=SideValues(
                 _decimal(values.get("external_lot"), "場外手數"),

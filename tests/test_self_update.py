@@ -314,6 +314,7 @@ class UpdateDialogTests(unittest.TestCase):
         self.assertFalse(TradingHelperApp.can_update(fake))
         fake._parameter_write_pending = False
         self.assertTrue(TradingHelperApp.begin_update(fake))
+        fake._balance_warning_active = lambda: TradingHelperApp._balance_warning_active(fake)
         called = []
         TradingHelperApp._start(fake, "填入兩邊", lambda: called.append(True))
         self.assertFalse(called)
