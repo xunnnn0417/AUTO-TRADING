@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QIcon,
     QPainter,
+    QPalette,
     QPen,
     QKeySequence,
     QShortcut,
@@ -58,6 +59,9 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTextBrowser,
     QStyledItemDelegate,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QStyleOptionViewItem,
     QToolButton,
     QVBoxLayout,
@@ -564,8 +568,25 @@ class ChevronCombo(QComboBox):
     model, popup, keyboard navigation, or selected text.
     """
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        painter = QPainter(self)
+        if self.property("centerCurrentText"):
+            # Paint the native frame, retaining the real, non-editable combo.
+            # Symmetric room for the chevron keeps the text centered in the
+            # whole field while preventing long labels from hitting the arrow.
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+            text = self.currentText() if self.currentIndex() >= 0 else self.placeholderText()
+            option.currentText = ""
+            painter = QStylePainter(self)
+            painter.drawComplexControl(QStyle.CC_ComboBox, option)
+            painter.drawControl(QStyle.CE_ComboBoxLabel, option)
+            text_rect = self.rect().adjusted(24, 0, -24, 0)
+            group = QPalette.Active if self.isEnabled() else QPalette.Disabled
+            painter.setPen(self.palette().color(group, QPalette.Text))
+            painter.drawText(text_rect, Qt.AlignCenter,
+                             self.fontMetrics().elidedText(text, Qt.ElideRight, text_rect.width()))
+        else:
+            super().paintEvent(event)
+            painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         ink = QColor("#b2a9ba" if self.isEnabled() else "#6e6973")
         pen = QPen(ink, 1.5)
@@ -1237,6 +1258,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         stage_label.setAlignment(Qt.AlignCenter)
         self.stage_selector = ChevronCombo()
         self.stage_selector.setObjectName("tradeStageSelector")
+        self.stage_selector.setProperty("centerCurrentText", True)
         self.stage_selector.setPlaceholderText("尚未讀取")
         self.stage_selector.setMinimumWidth(0)
         self.stage_selector.setEnabled(False)

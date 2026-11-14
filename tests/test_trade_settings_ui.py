@@ -32,6 +32,27 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertTrue(self.w.trade_rule_checkboxes['E14'].isChecked())
         self.assertEqual(self.w.reader.writes,[])
 
+    def test_only_stage_text_is_centered_inside_the_whole_native_field(self):
+        from PySide6.QtCore import Qt
+        self.load_settings()
+        draws=[]
+        real_painter=gui.QStylePainter
+        class RecordingPainter(real_painter):
+            def drawText(self, rect, flags, text):
+                draws.append((rect,flags,text))
+                return super().drawText(rect,flags,text)
+        with patch.object(gui,'QStylePainter',RecordingPainter):
+            self.w.stage_selector.grab()
+        rect,flags,text=draws[-1]
+        self.assertEqual(rect.center(),self.w.stage_selector.rect().center())
+        self.assertTrue(flags & Qt.AlignHCenter)
+        self.assertTrue(flags & Qt.AlignVCenter)
+        self.assertEqual(text,'階段甲')
+        self.assertFalse(self.w.stage_selector.isEditable())
+        self.assertFalse(self.w.internal_platform.property('centerCurrentText'))
+        self.assertFalse(self.w.external_platform.property('centerCurrentText'))
+        self.assertEqual(self.w.reader.writes,[])
+
     def test_each_rule_asks_before_writing_and_cancel_keeps_original(self):
         self.load_settings()
         for cell,checkbox in self.w.trade_rule_checkboxes.items():
