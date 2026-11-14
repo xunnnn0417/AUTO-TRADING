@@ -14,6 +14,11 @@ def summarize_interruption_reason(reason: str) -> str:
     raw = str(reason or "").strip()
     if not raw:
         return ""
+    if "cTrader" in raw and any(marker in raw for marker in (
+        "持倉表資料列與原生列數不一致", "持倉讀取失敗", "欄沒有唯一原生讀值",
+        "持倉表在讀取中更新",
+    )):
+        return "cTrader 持倉資料未讀完整，無法確認成交。請保持 Positions 清單展開並核對持倉，勿直接重複進場；完整原因見操作紀錄。"
 
     pending_match = re.search(
         r"MT5 唯讀 API 回報 (\d+) 筆仍有效委託[^\n]*", raw
@@ -94,8 +99,17 @@ def build_entry_status_report(
         title = "開倉後續結果需要核對"
     else:
         title = "進場結果待確認"
+    if "cTrader" in reason and any(marker in reason for marker in (
+        "持倉表資料列與原生列數不一致", "持倉讀取失敗", "欄沒有唯一原生讀值",
+        "持倉表在讀取中更新",
+    )):
+        title = "持倉讀取未完成，請核對兩邊"
 
     def side(label: str, platform: str, verified: bool) -> str:
+        if (not verified and platform == "cTrader"
+                and (f"{label}（cTrader）" in reason or f"{label} cTrader" in reason)
+                and any(marker in reason for marker in ("持倉表", "持倉讀取", "原生讀值"))):
+            return f"{label}（{platform}）：持倉讀取失敗，成交待核對"
         return f"{label}（{platform}）：{'已確認進場' if verified else '尚未確認進場'}"
 
     parts = [

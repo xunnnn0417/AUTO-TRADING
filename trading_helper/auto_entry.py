@@ -66,6 +66,7 @@ class Position:
 class BrokerExecutionPort(Protocol):
     def inspect_account(self, platform: str, role: str) -> DemoAccount: ...
     def snapshot_positions(self, platform: str, role: str) -> tuple[Position, ...]: ...
+    def prepare_reentry(self, platform: str, role: str, instruction) -> None: ...
     def verify_order_form(self, platform: str, role: str, direction: str,
                           lot: Decimal) -> None: ...
     def submit_once(self, platform: str, role: str, direction: str,
@@ -359,25 +360,18 @@ class AutoEntryWorkflow:
         # Start the recovery clock when a correlated final rejection is
         # established. Unknown or delayed fills never enter this path.
         recovery_deadline=time.monotonic()+15.0
-        # Reject stale account changes, other-leg movement or ambiguous
-        # missing-leg positions even if the broker proof was genuine.
-        for plat,side,expected_account in (
-            (platform,role,account),
-            (other_platform,other_role,other_account),
-        ):
-            fresh=self.port.inspect_account(plat,side)
+        platforms={role:platform,other_role:other_platform}
+        accounts,snapshots=self._review_recovery_pair(
+            instruction,platforms["internal"],platforms["external"],
+            expected_account_ids={role:account.account_id,other_role:other_account.account_id},
+            expected_tickets={other_role:verified_other.ticket},missing_role=role,
+        )
+        for side,expected_account in ((role,account),(other_role,other_account)):
+            fresh=accounts[side]
             if (not fresh.verified
                     or not _same_account_identity(fresh,expected_account)):
                 raise RecoveryRequired("補單前帳戶身分已變動，禁止再送單。")
-        current_other=self.port.snapshot_positions(other_platform,other_role)
-        matches=[p for p in current_other if p.ticket==verified_other.ticket]
-        if len(current_other)!=1 or len(matches)!=1:
-            raise RecoveryRequired("補單前另一邊已成交持倉不再唯一，停止。")
-        self._validate_position(
-            matches[0],other_platform,other_direction,
-            other_lot,other_account,symbol
-        )
-        current_missing=self.port.snapshot_positions(platform,role)
+        current_missing=snapshots[role]
         if current_missing!=baseline or current_missing:
             raise RecoveryRequired("拒單側持倉已變動或非空，禁止補單。")
         # Reservation is the crash-safe barrier. A restart cannot resend.
@@ -666,6 +660,67 @@ class AutoEntryWorkflow:
             except Exception:
                 pass
 
+    @timed_operation("恢復前雙邊持倉審查")
+    def _review_recovery_pair(
+        self, instruction, internal_platform: str, external_platform: str, *,
+        expected_account_ids: dict | None = None,
+        expected_tickets: dict | None = None,
+        missing_role: str | None = None,
+    ) -> tuple[dict, dict]:
+        """Read current facts; this review alone never authorizes another order."""
+        self.guard()
+        platforms={"internal":internal_platform,"external":external_platform}
+        accounts={}
+        for role,platform in platforms.items():
+            account=timed_call("確認交易帳戶",self.port.inspect_account,
+                              platform,role,platform=platform,role=role)
+            if (not account.verified or not account.account_id
+                    or account.platform != platform
+                    or (not account.server and platform.casefold()
+                        not in {"ctrader","gooeytrade"})):
+                raise RecoveryRequired(f"{platform} 帳戶身分未完整核對，停止恢復操作。")
+            if (expected_account_ids and expected_account_ids.get(role)
+                    and account.account_id != expected_account_ids[role]):
+                raise RecoveryRequired(f"{platform} 帳戶已改變，停止恢復操作。")
+            accounts[role]=account
+        if _same_account_identity(accounts["internal"],accounts["external"]):
+            raise RecoveryRequired("場內與場外是同一帳戶，停止恢復操作。")
+        snapshots={}
+        symbol=self._effective_test_symbol(instruction.symbol)
+        for role,platform in platforms.items():
+            positions=timed_call("核對目前持倉",self.port.snapshot_positions,
+                                 platform,role,platform=platform,role=role)
+            if not isinstance(positions,(tuple,list)):
+                raise RecoveryRequired(f"{role} 持倉讀取失敗，不能判定空倉。")
+            if len(positions)>1:
+                raise RecoveryRequired(f"{role} 需要恰有一筆可核對持倉，停止恢復操作。")
+            if positions:
+                position=positions[0]
+                if (expected_tickets and expected_tickets.get(role)
+                        and position.ticket != expected_tickets[role]):
+                    raise RecoveryRequired(f"{role} 持倉編號已改變，停止恢復操作。")
+                direction,values=(
+                    (instruction.internal_direction,instruction.internal)
+                    if role=="internal" else
+                    (instruction.external_direction,instruction.external)
+                )
+                self._validate_position(position,platform,direction,values.lot,
+                                        accounts[role],symbol)
+            snapshots[role]=tuple(positions)
+        if missing_role is not None:
+            if missing_role not in platforms:
+                raise RecoveryRequired("補進場別無效，未送單。")
+            other="external" if missing_role=="internal" else "internal"
+            if snapshots[missing_role]:
+                raise RecoveryRequired(f"{missing_role} 目前仍有持倉，不會重複進場。")
+            if len(snapshots[other])!=1:
+                raise RecoveryRequired(f"{other} 需要恰有一筆可核對持倉，才允許單邊重進。")
+        self.log("恢復前持倉審查："+"；".join(
+            f"{'場內' if role=='internal' else '場外'}{'有持倉' if positions else '無持倉'}"
+            for role,positions in snapshots.items()
+        )+"，帳戶與持倉資料已核對。")
+        return accounts,snapshots
+
     @timed_operation("單側重新進場")
     def run_single_leg_test(
         self, instruction, internal_platform: str, external_platform: str,
@@ -693,55 +748,14 @@ class AutoEntryWorkflow:
             "internal":(instruction.internal_direction,instruction.internal),
             "external":(instruction.external_direction,instruction.external),
         }
-        accounts={}
-        for side,platform in platforms.items():
-            accounts[side]=timed_call(
-                "確認交易帳戶",self.port.inspect_account,
-                platform,side,platform=platform,role=side,
-            )
-        for side, account in accounts.items():
-            if (not account.verified or not account.account_id
-                    or (not account.server and platforms[side].casefold()
-                        not in {"ctrader","gooeytrade"})
-                    or account.platform != platforms[side]):
-                raise RecoveryRequired(
-                    f"{platforms[side]} 帳戶身分未完整核對，停止單邊重進。"
-                )
-            if (isinstance(expected_account_ids,dict)
-                    and expected_account_ids.get(side)
-                    and account.account_id!=expected_account_ids[side]):
-                raise RecoveryRequired(
-                    f"{platforms[side]} 帳戶已改變，停止單邊重進。"
-                )
-        if _same_account_identity(
-            accounts["internal"],accounts["external"]
-        ):
-            raise RecoveryRequired("場內與場外是同一帳戶，停止單邊重進。")
         symbol=self._effective_test_symbol(instruction.symbol)
-        snapshots={}
-        for side in ("internal","external"):
-            snapshots[side]=timed_call(
-                "核對目前持倉",self.port.snapshot_positions,
-                platforms[side],side,platform=platforms[side],role=side,
-            )
+        if hasattr(self.port,"set_expected_symbol"):
+            self.port.set_expected_symbol(symbol)
         other="external" if role=="internal" else "internal"
-        if snapshots[role]:
-            raise RecoveryRequired(
-                f"{role} 目前仍有持倉，不會重複進場。"
-            )
-        if len(snapshots[other])!=1:
-            raise RecoveryRequired(
-                f"{other} 需要恰有一筆可核對持倉，才允許單邊重進。"
-            )
-        if (expected_other_ticket is not None
-                and snapshots[other][0].ticket!=expected_other_ticket):
-            raise RecoveryRequired(
-                f"{other} 持倉編號已改變，停止單邊重進。"
-            )
-        other_direction,other_values=instruction_legs[other]
-        self._validate_position(
-            snapshots[other][0],platforms[other],other_direction,
-            other_values.lot,accounts[other],symbol,
+        accounts,snapshots=self._review_recovery_pair(
+            instruction,internal_platform,external_platform,
+            expected_account_ids=expected_account_ids,
+            expected_tickets={other:expected_other_ticket},missing_role=role,
         )
         other_position=snapshots[other][0]
         if (other_position.sl is None or other_position.tp is None
@@ -805,6 +819,24 @@ class AutoEntryWorkflow:
             role,
         )
         try:
+            # The original MT5 order modal closes on entry. A new adapter
+            # also has no current expected instrument/form evidence. Reuse
+            # ordinary fill/readback instead of submitting a stale form.
+            self.guard()
+            if submit_deadline is not None and time.monotonic()>=submit_deadline:
+                raise RecoveryRequired("15 秒補進時限已過，未送出恢復單。")
+            timed_call(
+                "重新填入並核對補進表單",self.port.prepare_reentry,
+                target_platform,role,instruction,
+                platform=target_platform,role=role,
+            )
+            # Filling can take time: a late fill, closed counterpart or
+            # changed account must stop this recovery before its one click.
+            accounts,snapshots=self._review_recovery_pair(
+                instruction,internal_platform,external_platform,
+                expected_account_ids={side:account.account_id for side,account in accounts.items()},
+                expected_tickets={other:other_position.ticket},missing_role=role,
+            )
             new_position=self._submit_and_confirm(
                 target_platform,role,direction,values.lot,accounts[role],
                 snapshots[role],symbol,self.last_key,
@@ -967,12 +999,17 @@ class AutoEntryWorkflow:
             close_once=getattr(self.port,"close_position_once",None)
             if not callable(close_once):
                 raise RecoveryRequired("交易介面尚未支援校準平倉按鈕。")
-            timed_call(
+            closed_snapshot=timed_call(
                 "執行平倉按鈕",close_once,position,role,
                 platform=platforms[role],role=role,
             )
             if require_other_empty:
                 for side in ("internal","external"):
+                    # The production adapter just read back an empty target
+                    # after the click. Reuse that returned result, not a cache;
+                    # ports without this receipt retain the full reread.
+                    if side==role and isinstance(closed_snapshot,tuple) and closed_snapshot==():
+                        continue
                     if timed_call(
                         "平倉後持倉回讀",self.port.snapshot_positions,
                         platforms[side],side,
@@ -1466,7 +1503,12 @@ class AutoEntryWorkflow:
                     )
                     self.journal.record(
                         key,"test_recovery_started_internal",
-                        "已確認場內從未送出；立即開始一次性補進"
+                        "場內首筆未送出；重新審查雙邊持倉後才決定是否補進"
+                    )
+                    accounts,snapshots=self._review_recovery_pair(
+                        instruction,internal_platform,external_platform,
+                        expected_account_ids=self.last_account_ids,
+                        expected_tickets={"external":second.ticket},missing_role="internal",
                     )
                     recovery_deadline=time.monotonic()+15.0
                     if test_delay:
@@ -1474,7 +1516,7 @@ class AutoEntryWorkflow:
                     first=self._submit_and_confirm(
                         internal_platform,"internal",
                         instruction.internal_direction,instruction.internal.lot,
-                        account_i,before_i,execution_symbol,key,
+                        accounts["internal"],snapshots["internal"],execution_symbol,key,
                         submit_deadline=recovery_deadline,
                     )
                 else:
@@ -1525,8 +1567,15 @@ class AutoEntryWorkflow:
                         )
                         self.journal.record(
                             key,"test_recovery_started_external",
-                            "已確認場外從未送出；立即開始一次性補進"
+                            "場外首筆未送出；重新審查雙邊持倉後才決定是否補進"
                         )
+                        accounts,snapshots=self._review_recovery_pair(
+                            instruction,internal_platform,external_platform,
+                            expected_account_ids=self.last_account_ids,
+                            expected_tickets={"internal":first.ticket},missing_role="external",
+                        )
+                        account_e=accounts["external"]
+                        before_e=snapshots["external"]
                         recovery_deadline=time.monotonic()+15.0
                         if test_delay:
                             self._wait_test_timeout(recovery_deadline, "external")
@@ -1621,6 +1670,7 @@ class AutoEntryWorkflow:
         test_run_id: str, draw_tv: bool = False,
         draw_internal: bool = False,
         test_delay: bool = False,
+        fast_pair: bool = False,
     ) -> dict:
         """Run one complete, explicitly selected recovery test."""
         if not test_run_id.strip():
@@ -1635,7 +1685,7 @@ class AutoEntryWorkflow:
             positions=self.run(
                 instruction,internal_platform,external_platform,
                 profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,fast_pair=False,
+                draw_internal=draw_internal,fast_pair=fast_pair,
                 test_run_id=test_run_id,
             )
             return {
@@ -1676,23 +1726,42 @@ class AutoEntryWorkflow:
         first,second=self.run(
             instruction,internal_platform,external_platform,
             profile,sheet_url,sync_sl_tp=True,draw_tv=draw_tv,
-            draw_internal=draw_internal,fast_pair=False,
+            draw_internal=draw_internal,fast_pair=fast_pair,
             test_run_id=test_run_id,
         )
         initial={"internal":first,"external":second}
+        expected_account_ids={side:position.account_id for side,position in initial.items()}
+        expected_tickets={side:position.ticket for side,position in initial.items()}
         closed_roles=[]
         try:
             self.run_single_leg_close_test(
                 instruction,internal_platform,external_platform,
                 profile,sheet_url,role=role,
+                expected_ticket=expected_tickets[role],
+                expected_account_ids=expected_account_ids,
             )
             closed_roles.append(role)
+            _accounts,snapshots=self._review_recovery_pair(
+                instruction,internal_platform,external_platform,
+                expected_account_ids=expected_account_ids,
+                expected_tickets=expected_tickets,
+            )
+            if snapshots[role]:
+                raise RecoveryRequired("預期平倉的一邊仍有持倉，已停止後續恢復操作。")
+            if not snapshots["internal"] and not snapshots["external"]:
+                return {
+                    "scenario":scenario,"outcome":"both_closed_waiting_user",
+                    "initial_positions":initial,"positions":(),
+                }
             if role=="internal":
                 # Internal is the risk baseline: once its confirmed position
                 # closes, close the still-open external Demo side, then stop.
                 self.run_single_leg_close_test(
                     instruction,internal_platform,external_platform,
                     profile,sheet_url,role="external",
+                    expected_ticket=expected_tickets["external"],
+                    expected_account_ids=expected_account_ids,
+                    require_other_empty=True,
                 )
                 closed_roles.append("external")
                 return {
@@ -1709,6 +1778,8 @@ class AutoEntryWorkflow:
                 instruction,internal_platform,external_platform,
                 profile,sheet_url,role="external",sync_sl_tp=True,
                 submit_deadline=recovery_deadline,
+                expected_other_ticket=expected_tickets["internal"],
+                expected_account_ids=expected_account_ids,
             )
             return {
                 "scenario":scenario,"outcome":"external_reentered",

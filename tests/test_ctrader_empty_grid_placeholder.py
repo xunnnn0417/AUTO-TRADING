@@ -28,7 +28,9 @@ def make_ghost():
 
 class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
     def setUp(self):
-        self.port = object.__new__(DemoUiBrokerPort)
+        self.port = DemoUiBrokerPort(
+            SimpleNamespace(emergency=SimpleNamespace(guard=lambda:None)),lambda _:None
+        )
 
     def scan(self, grid):
         with patch.object(DemoUiBrokerPort, "_ctrader_grid", return_value=grid):
@@ -79,7 +81,10 @@ class CTraderEmptyGridPlaceholderTests(unittest.TestCase):
 
     def test_no_data_items_with_changing_count_is_unknown(self):
         grid = make_grid([])
-        grid.iface_grid.CurrentRowCount = MagicMock(side_effect=[0, 1])
+        counts=iter([0,0,1,1,1,1])
+        grid.iface_grid=type("ChangingCount",(),{
+            "CurrentRowCount":property(lambda _:next(counts))
+        })()
         with self.assertRaisesRegex(AutomationError, "持倉狀態未知"):
             self.scan(grid)
 

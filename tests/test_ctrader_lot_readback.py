@@ -27,6 +27,7 @@ class Grid(Node):
     values=("GOLD","0.01 Lots","SELL","100.0","101.0","99.0","2025-01-01 00:00")
     def __init__(self, vals=None):
         super().__init__("DataGrid","",(0,0,1400,300))
+        self.iface_grid=SimpleNamespace(CurrentRowCount=1)
         vals=vals or self.values
         self.heads=[
             Node("HeaderItem",key,(i*190,0,i*190+179,30))

@@ -19,8 +19,8 @@ from tests.test_auto_entry_state_machine import FakeBrokerPort, instruction
 
 
 class SingleLegFakePort(FakeBrokerPort):
-    def __init__(self, *, mt5_external=False):
-        super().__init__(mt5_internal=False)
+    def __init__(self, *, mt5_external=False, mt5_internal=False):
+        super().__init__(mt5_internal=mt5_internal)
         points = {
             name: {"id": name, "x_px": 10, "y_px": 10,
                    "window_width": 800, "window_height": 600}
@@ -36,6 +36,9 @@ class SingleLegFakePort(FakeBrokerPort):
             "MT5": {"points": dict(points)},
         }})
         self.closed = []
+
+    def prepare_reentry(self, platform, role, instruction):
+        self.events.append(("prepare", role))
 
     def confirm_new_position(
         self, platform, role, before, direction, volume, account_id
@@ -428,7 +431,6 @@ class SingleLegTestModeTests(unittest.TestCase):
 
     def test_ui_routes_test_selection_only_from_fill_both(self):
         fake = SimpleNamespace(
-            test_mode_checkbox=SimpleNamespace(isChecked=lambda: True),
             test_scenario_checkboxes={
                 "reentry:internal": SimpleNamespace(isChecked=lambda: True),
             },
@@ -444,7 +446,6 @@ class SingleLegTestModeTests(unittest.TestCase):
             TradingHelperApp._selected_test_symbol(fake, ("internal", "external"))
         )
         asset_fake = SimpleNamespace(
-            test_mode_checkbox=SimpleNamespace(isChecked=lambda: True),
             test_scenario_checkboxes={},
             test_asset_checkboxes={
                 "BTCUSD": SimpleNamespace(isChecked=lambda: True),

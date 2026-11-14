@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from trading_helper.auto_entry import AutoEntryJournal, AutoEntryWorkflow
 from trading_helper.phase_timing_report import (
-    LocalPhaseTimingStore, PhaseTimingRun, _ACTIVE_REPORT, timed_phase,
+    LocalPhaseTimingStore, PhaseTimingRun, _ACTIVE_REPORT, timed_phase, _safe_metadata,
 )
 from trading_helper.gui import TradingHelperApp
 from test_auto_entry_state_machine import FakeBrokerPort, instruction
@@ -16,6 +16,12 @@ from trading_helper.windows import AutomationError
 
 
 class PhaseTimingReportTests(unittest.TestCase):
+    def test_fast_default_is_reported_but_fill_only_is_not_marked_as_entry(self):
+        def operation(self,auto_entry_requested=False,fast_pair=True):
+            pass
+        self.assertTrue(_safe_metadata(operation,(None,True),{})["fast_pair"])
+        self.assertFalse(_safe_metadata(operation,(None,False),{})["fast_pair"])
+
     def test_successful_retry_links_earlier_interruption_without_private_data(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"timings.jsonl"

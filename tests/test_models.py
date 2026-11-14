@@ -732,13 +732,22 @@ class TradeInstructionTests(unittest.TestCase):
         with patch.object(
             DemoUiBrokerPort,"find_mt5_position_row",
             return_value=(0,matched_position),
-        ) as match:
+        ) as match, patch.object(
+            DemoUiBrokerPort,"remember_verified_position_role"
+        ) as remember, patch.object(
+            DemoUiBrokerPort,"verify_position_sl_tp"
+        ) as verify:
             automation.sync_external_sl_tp(
                 item,
                 internal_platform="MT5",
                 external_platform="MT5",
                 entry_price_override=Decimal("100"),
             )
+        remember.assert_called_once_with("MT5","external",matched_position)
+        verify.assert_called_once()
+        self.assertIs(verify.call_args.args[0],matched_position)
+        self.assertEqual(verify.call_args.kwargs["modify_window"].handle,2)
+        self.assertEqual(verify.call_args.args[1:],tuple(Decimal(v) for _,_,v in fake.typed))
         self.assertEqual(match.call_args.kwargs["expected_symbol"],"EURUSD")
         self.assertEqual(
             match.call_args.kwargs["expected_volume"],item.external.lot

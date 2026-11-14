@@ -63,6 +63,28 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(self.w.auto_entry_on_fill_both.isEnabled())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(DEFAULT_CONFIG["ui"]["auto_entry_on_fill_both"])
+
+    def test_test_section_is_hidden_unselected_and_needs_no_master_checkbox(self):
+        self.w.switch_workspace("交易")
+        self.assertFalse(hasattr(self.w,"test_mode_checkbox"))
+        self.assertFalse(self.w.test_controls.isVisible())
+        choices=(*self.w.test_asset_checkboxes.values(),
+                 *self.w.test_scenario_checkboxes.values(),self.w.test_delay_checkbox)
+        self.assertTrue(all(not c.isVisible() and not c.isChecked() for c in choices))
+        self.assertEqual(self.w._selected_test_action(("internal","external")),"")
+        # Show only in this isolated UI: choices must work directly if a
+        # later testing session restores the section, without a master gate.
+        self.w.test_controls.show()
+        self.qtapp.processEvents()
+        self.assertFalse(self.w.test_asset_checkboxes["BTCUSD"].isVisible())
+        self.assertTrue(self.w.test_asset_checkboxes["ETHUSD"].isEnabled())
+        self.w.test_asset_checkboxes["ETHUSD"].click()
+        self.assertEqual(self.w._selected_test_symbol(self.w,("internal","external")),"ETHUSD")
+        self.w.test_scenario_checkboxes["close:external"].click()
+        self.assertEqual(self.w._selected_test_action(("internal","external")),"close:external")
+        self.assertEqual(len(self.w.test_scenario_checkboxes),4)
+        self.w.test_delay_checkbox.click()
+        self.assertTrue(self.w.test_delay_checkbox.isChecked())
         self.assertTrue(DEFAULT_CONFIG["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertFalse(DEFAULT_CONFIG["ui"]["auto_draw_tv_after_entry"])
 
@@ -77,7 +99,6 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.auto_fast_pair,
             self.w.auto_sync_sl_tp_after_entry,
             self.w.auto_draw_tv_after_entry,
-            self.w.test_mode_checkbox,
             *self.w.test_asset_checkboxes.values(),
             *self.w.test_scenario_checkboxes.values(),
         )
@@ -190,7 +211,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.create_profile()
             dialogs.assert_not_called()
         self.assertEqual(self.w.profiles.active_name,"新的空白方案")
-        for key in ("auto_entry_on_fill_both","auto_fast_pair",
+        for key in ("auto_entry_on_fill_both",
                     "auto_draw_tv_after_entry"):
             self.assertFalse(getattr(self.w,key).isChecked(),key)
             self.assertFalse(self.w.profiles.load_profile()["ui"][key])
@@ -209,7 +230,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         with patch.object(self.w,"read_sheet",return_value=None):
             self.w.switch_profile("新的空白方案")
         self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertFalse(self.w.auto_fast_pair.isChecked())
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
 
     def test_bound_window_one_panel_no_double_questions(self):
         self.w._save_bound_window("MT5","external","old-bound-regex")
@@ -421,6 +442,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.auto_sync_sl_tp_after_entry.setChecked(True)
         self.assertTrue(self.w.store.data["ui"]["auto_fast_pair"])
         self.assertTrue(self.w.profiles.load_profile()["ui"]["auto_fast_pair"])
+
         with patch("trading_helper.gui.QMessageBox.question") as prompt:
             self.w._apply_profile_ui()
             prompt.assert_not_called()
@@ -429,7 +451,18 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
         self.w.auto_fast_pair.setChecked(False)
-        self.assertFalse(self.w.profiles.load_profile()["ui"]["auto_fast_pair"])
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
+        self.w.save_ui_state()
+        self.assertTrue(self.w.profiles.load_profile()["ui"]["auto_fast_pair"])
+
+    def test_old_speed_off_value_cannot_disable_normal_dual_entry(self):
+        self.w.store.data["ui"].update(auto_fast_pair=False,auto_entry_on_fill_both=True)
+        with patch("trading_helper.gui.QMessageBox.question") as prompt:
+            self.w._apply_profile_ui()
+            prompt.assert_not_called()
+        self.assertTrue(self.w.auto_fast_pair.isChecked())
+        self.assertFalse(self.w.auto_fast_pair.isEnabled())
+        self.assertTrue(self.w.store.data["ui"]["auto_fast_pair"])
 
     def test_tradingview_main_badge_follows_saved_points_and_display_switch(self):
         from trading_helper.calibration_status import completion

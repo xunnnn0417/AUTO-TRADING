@@ -86,7 +86,8 @@ class AutoEntryOptionTests(unittest.TestCase):
         events=[]
         def fill(platform, role, instruction):
             events.append(role)
-        def hook(internal_platform, external_platform, instruction):
+        def hook(internal_platform, external_platform, instruction, **options):
+            self.assertTrue(options["fast_pair"])
             events.append("reserved-hook")
         fake=SimpleNamespace(
             _require_instruction=lambda:"fake",
@@ -162,7 +163,7 @@ class AutoEntryOptionTests(unittest.TestCase):
         run.call_args.args[1]()
         fill.assert_called_once_with(
             "cTrader", "MT5", True, sync_sl_tp=True, draw_tv=False,
-            draw_internal=False, fast_pair=False,
+            draw_internal=False, fast_pair=True,
         )
         button.close();inside.close();outside.close()
 
@@ -221,31 +222,26 @@ class AutoEntryOptionTests(unittest.TestCase):
         dialog.assert_not_called()
         fake.close()
 
-    def test_fast_pair_confirmation_is_concise_and_only_when_user_enables(self):
+    def test_fast_pair_is_fixed_without_arming_auto_entry_or_prompting(self):
         self.parent.auto_fast_pair=QCheckBox("快速雙邊")
         self.parent.auto_entry_on_fill_both.setChecked(False)
         self.parent.auto_fast_pair.toggled.connect(
-            lambda checked: TradingHelperApp._confirm_fast_pair_toggle(self.parent,checked)
+            lambda checked: TradingHelperApp._keep_fast_pair_enabled(self.parent,checked)
         )
-        # With auto entry disabled, an accidental click cannot arm fast mode.
+        # Speed is fixed, but it must never enable entry authorization.
         with patch("trading_helper.gui.QMessageBox.question") as question:
             self.parent.auto_fast_pair.setChecked(True)
             question.assert_not_called()
-            self.assertFalse(self.parent.auto_fast_pair.isChecked())
+            self.assertTrue(self.parent.auto_fast_pair.isChecked())
+            self.assertFalse(self.parent.auto_entry_on_fill_both.isChecked())
         self.parent.auto_entry_on_fill_both.blockSignals(True)
         self.parent.auto_entry_on_fill_both.setChecked(True)
         self.parent.auto_entry_on_fill_both.blockSignals(False)
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes) as question:
-            self.parent.auto_fast_pair.setChecked(True)
+            self.parent.auto_fast_pair.setChecked(False)
             self.assertTrue(self.parent.auto_fast_pair.isChecked())
-            message=question.call_args.args[2]
-            self.assertIn("單邊結果不明就停止",message)
-            self.assertIn("不補單或平倉",message)
-            self.assertNotIn(chr(92)+"n",message)
-            self.assertEqual(question.call_args.kwargs["yes_text"],"啟用")
-            self.assertEqual(question.call_args.kwargs["no_text"],"取消")
-            question.assert_called_once()
+            question.assert_not_called()
         self.parent.auto_fast_pair.close()
 
     def test_records_log_room_and_no_per_fill_confirmation(self):

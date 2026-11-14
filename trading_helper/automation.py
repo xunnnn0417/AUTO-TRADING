@@ -155,7 +155,7 @@ class PlatformAutomation:
         role_text = "場內" if role == "internal" else "場外"
         self.log(f"已找到{role_text} {platform} 視窗：{window.title}")
         if _is_ctrader(platform):
-            with timed_phase("OCR核對cTrader帳號", platform=platform, role=role):
+            with timed_phase("核對cTrader帳號", platform=platform, role=role):
                 self._verify_ctrader_account(platform, profile, role, window)
 
         mt5_order_window = None
@@ -186,11 +186,20 @@ class PlatformAutomation:
                 with timed_phase("開啟並確認MT5訂單視窗", platform=platform, role=role):
                     self.windows.click(bound_window, points["new_order_button"])
                     deadline = time.monotonic() + 2.5
+                    last_error = None
                     while time.monotonic() < deadline:
                         self.emergency.guard()
-                        _, mt5_order_window = port._form_window(
-                            platform, role, allow_absent=True
-                        )
+                        try:
+                            _, mt5_order_window = port._form_window(
+                                platform, role, allow_absent=True
+                            )
+                        except AutomationError as exc:
+                            # A newly created modal can initially have an
+                            # incomplete title/geometry. Only repeat reads;
+                            # never click New order a second time or fill an
+                            # unverified/wrong-symbol dialog.
+                            last_error = exc
+                            mt5_order_window = None
                         if mt5_order_window is not None:
                             break
                         time.sleep(0.05)
@@ -199,7 +208,7 @@ class PlatformAutomation:
                             f"{role_text} MT5 點擊新訂單後未找到唯一、"
                             "商品與校準尺寸均符合的訂單視窗；"
                             "不以主視窗或過時標題代替，已停止填寫。"
-                        )
+                        ) from last_error
             self.log(f"{role_text} {platform} 訂單視窗：{mt5_order_window.title}")
         elif should_open_panel and "new_order_button" in points:
             panel_is_open = self.windows.point_window_exists(
@@ -783,9 +792,26 @@ class PlatformAutomation:
         if not expected_digits or not point:
             return
         role_text = "場內" if role == "internal" else "場外"
-        detected = self.windows.read_account_number(
-            window, point, expected_digits=expected_digits
-        )
+        detected = None
+        if isinstance(self.windows, WindowController):
+            from pywinauto import Desktop
+            try:
+                nodes=Desktop(backend="uia").window(handle=window.handle).descendants(
+                    control_type="Text"
+                )
+                numbers=[str(n.window_text()).strip() for n in nodes
+                         if str(n.element_info.automation_id)=="CTraderAccountNumberTextBlock_AId"
+                         and n.is_visible()]
+            except Exception:
+                numbers=[]
+            if len(numbers)>1:
+                raise AutomationError("cTrader 帳號欄位不唯一，已停止填寫。")
+            if len(numbers)==1 and numbers[0].isdigit() and len(numbers[0])>=5:
+                detected=numbers[0]
+        if detected is None:
+            detected = self.windows.read_account_number(
+                window, point, expected_digits=expected_digits
+            )
         if detected != expected_digits:
             raise AutomationError(
                 f"{role_text} cTrader 帳號不符：目前偵測到 {detected}，"
@@ -1169,15 +1195,19 @@ class PlatformAutomation:
                 # to match symbol, direction and volume, then correlate the
                 # unique ticket to the visible Trade row before opening it.
                 from .demo_broker_port import DemoUiBrokerPort
+                native_port=DemoUiBrokerPort(self, self.log)
                 matched_row, matched_position = timed_call(
                     "唯一辨識 MT5 場外持倉",
-                    DemoUiBrokerPort(self, self.log).find_mt5_position_row,
+                    native_port.find_mt5_position_row,
                     external_platform, "external",
                     expected_symbol=effective_test_symbol(instruction.symbol),
                     expected_direction=instruction.external_direction,
                     expected_volume=instruction.external.lot,
                     window=bound_window,
                     platform=external_platform, role="external",
+                )
+                native_port.remember_verified_position_role(
+                    external_platform,"external",matched_position
                 )
                 operation_points = points
                 position_point = self._offset_position_point(
@@ -1308,6 +1338,10 @@ class PlatformAutomation:
             operation_points = points
 
         if use_position_modify_flow:
+            self.log(
+                f"場外 {external_platform} 預期止盈止損："
+                f"SL {instruction.format_price(sl_price)}／TP {instruction.format_price(tp_price)}。"
+            )
             current_values: dict[str, Decimal] = {}
             for point_name, label, value in values:
                 raw = timed_call(
@@ -1323,6 +1357,14 @@ class PlatformAutomation:
                 current_values[point_name] == Decimal(value)
                 for point_name, _, value in values
             ):
+                if _is_mt5(external_platform):
+                    timed_call(
+                        "核對場外持倉並關閉修改視窗",
+                        native_port.verify_position_sl_tp,matched_position,
+                        sl_price,tp_price,modify_window=modify_window,
+                        platform=external_platform,role="external",
+                    )
+                    return None
                 self.emergency.guard()
                 self.windows.press(modify_window, "esc")
                 self.windows.wait_for_active_window_change(
@@ -1379,6 +1421,14 @@ class PlatformAutomation:
                 modify_window, confirm_point,
                 platform=external_platform, role="external",
             )
+            if _is_mt5(external_platform):
+                timed_call(
+                    "核對場外持倉並關閉修改視窗",
+                    native_port.verify_position_sl_tp,matched_position,
+                    sl_price,tp_price,modify_window=modify_window,
+                    platform=external_platform,role="external",
+                )
+                return None
             try:
                 timed_call(
                     "等待場外修改完成", self.windows.wait_for_active_window_change,

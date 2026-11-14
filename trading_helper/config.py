@@ -80,7 +80,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tv_draw_internal": False,
         "show_calibration_badges": True,
         "auto_entry_on_fill_both": False,
-        "auto_fast_pair": False,
+        "auto_fast_pair": True,
         "auto_sync_sl_tp_after_entry": True,
         "auto_draw_tv_after_entry": False,
         # Scheme-specific cTrader input preference; stale identities
@@ -365,11 +365,11 @@ class ProfileStore:
         # Existing schemes keep their own previously selected toggles.
         for field in (
             "auto_entry_on_fill_both",
-            "auto_fast_pair",
             "auto_draw_tv_after_entry",
         ):
             fresh.setdefault("ui", {})[field] = False
         fresh.setdefault("ui", {})["auto_sync_sl_tp_after_entry"] = True
+        fresh["ui"]["auto_fast_pair"] = True
         # Even if created by duplicating another scheme, defaults start
         # from native cTrader input until this scheme explicitly opts in.
         set_ctrader_mode_for_profile(fresh, name, "native")
