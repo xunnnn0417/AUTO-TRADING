@@ -265,7 +265,8 @@ class ThreeWorkspaceTests(unittest.TestCase):
                         w.test_controls,
                     )
                 summary=w.trade_page.findChildren(QWidget,"centeredSummaryCell")
-                self.assertEqual(len(summary),3)
+                self.assertEqual(len(summary),4)
+                self.assertTrue(summary[0].isAncestorOf(w.stage_selector))
                 self.assertLess(pos(platform_row).y(),pos(summary[0]).y())
                 self.assertLess(pos(entry).x()+entry.width(),pos(w.preview_sl_tp_button).x())
                 right_edge=pos(w.parameter_update_button).x()+w.parameter_update_button.width()
@@ -273,7 +274,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(abs(right_edge-(pos(right_card).x()+right_card.width()-14)),26)
                 centers=[]
                 for key,cell in zip(
-                    ("symbol","sheet_direction","original_sl_points"),summary
+                    ("symbol","sheet_direction","original_sl_points"),summary[1:]
                 ):
                     label=w.data_labels[key]
                     self.assertTrue(label.alignment() & Qt.AlignHCenter)

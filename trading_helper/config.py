@@ -370,6 +370,8 @@ class ProfileStore:
             fresh.setdefault("ui", {})[field] = False
         fresh.setdefault("ui", {})["auto_sync_sl_tp_after_entry"] = True
         fresh["ui"]["auto_fast_pair"] = True
+        fresh["ui"]["internal_platform"] = ""
+        fresh["ui"]["external_platform"] = ""
         # Even if created by duplicating another scheme, defaults start
         # from native cTrader input until this scheme explicitly opts in.
         set_ctrader_mode_for_profile(fresh, name, "native")

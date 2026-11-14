@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QIcon,
     QPainter,
+    QPalette,
     QPen,
     QKeySequence,
     QShortcut,
@@ -58,6 +59,9 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTextBrowser,
     QStyledItemDelegate,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QStyleOptionViewItem,
     QToolButton,
     QVBoxLayout,
@@ -68,6 +72,7 @@ from PySide6.QtWidgets import (
 from .automation import (
     PlatformAutomation, CTraderDecimalInputSuggestion,
 )
+from .sheet_preferences import TRADE_RULES, read_trade_settings, write_trade_setting
 from .auto_entry import (
     AutoEntryJournal, AutoEntryWorkflow, RecoveryRequired,
     DuplicateEntryDecisionRequired,
@@ -534,6 +539,8 @@ class UiSignals(QObject):
     instruction = Signal(object)
     sheet_note = Signal(str)
     ruler_sheet = Signal(object)
+    trade_sheet_settings = Signal(object)
+    trade_settings_finished = Signal()
     operation_started = Signal()
     operation_finished = Signal()
     operation_minimized = Signal()
@@ -561,15 +568,35 @@ class ChevronCombo(QComboBox):
     model, popup, keyboard navigation, or selected text.
     """
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        painter = QPainter(self)
+        x = self.width() - 15
+        if self.property("centerCurrentText"):
+            # Paint the native frame, retaining the real, non-editable combo.
+            # Center the label and chevron as one group, with an 8px gap.
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+            text = self.currentText() if self.currentIndex() >= 0 else self.placeholderText()
+            option.currentText = ""
+            painter = QStylePainter(self)
+            painter.drawComplexControl(QStyle.CC_ComboBox, option)
+            painter.drawControl(QStyle.CE_ComboBoxLabel, option)
+            text = self.fontMetrics().elidedText(text, Qt.ElideRight,
+                                                max(0, self.width() - 40))
+            text_width = self.fontMetrics().horizontalAdvance(text)
+            left = (self.width() - text_width - 16) / 2
+            text_rect = QRectF(left, 0, text_width, self.height())
+            x = left + text_width + 12
+            group = QPalette.Active if self.isEnabled() else QPalette.Disabled
+            painter.setPen(self.palette().color(group, QPalette.Text))
+            painter.drawText(text_rect, Qt.AlignCenter, text)
+        else:
+            super().paintEvent(event)
+            painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         ink = QColor("#b2a9ba" if self.isEnabled() else "#6e6973")
         pen = QPen(ink, 1.5)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        x = self.width() - 15
         y = self.height() / 2
         painter.drawLine(int(x - 4), int(y - 2), int(x), int(y + 2))
         painter.drawLine(int(x), int(y + 2), int(x + 4), int(y - 2))
@@ -802,6 +829,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._primary_entry_price_pending: Decimal | None = None
         self._last_log_trading_day: str | None = None
         self._parameter_write_active = False
+        self._trade_settings = None
+        self._trade_settings_busy = False
         self._parameter_write_pending = False
         # Only one fill operation may control broker windows at any time.
         self._fill_task_lock = threading.Lock()
@@ -827,6 +856,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.instruction.connect(self._show_instruction)
         self.signals.sheet_note.connect(self._show_sheet_note)
         self.signals.ruler_sheet.connect(self._show_ruler_sheet)
+        self.signals.trade_sheet_settings.connect(self._show_trade_sheet_settings)
+        self.signals.trade_settings_finished.connect(self._finish_trade_settings_write)
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
         self.signals.operation_minimized.connect(self._minimize_after_operation)
@@ -1121,19 +1152,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         platform_layout.setSpacing(18)
         self.internal_platform = ChevronCombo()
         self.internal_platform.addItems(PLATFORMS)
-        self.internal_platform.setCurrentText(self.store.data["ui"]["internal_platform"])
+        self.internal_platform.setPlaceholderText("請選擇")
+        self.internal_platform.setCurrentIndex(self.internal_platform.findText(self.store.data["ui"]["internal_platform"]))
         self.external_platform = ChevronCombo()
         self.external_platform.addItems(PLATFORMS)
-        self.external_platform.setCurrentText(self.store.data["ui"]["external_platform"])
+        self.external_platform.setPlaceholderText("請選擇")
+        self.external_platform.setCurrentIndex(self.external_platform.findText(self.store.data["ui"]["external_platform"]))
         self.internal_platform.currentTextChanged.connect(
-            lambda _value: self._refresh_calibration_badges()
+            lambda _value: self._platform_selection_changed()
         )
         self.external_platform.currentTextChanged.connect(
-            lambda _value: self._refresh_calibration_badges()
+            lambda _value: self._platform_selection_changed()
         )
         # Match the exact same two equal-width columns used by the trade data.
         # Unlike the previous four independent widgets, these headers cannot
         # drift out of alignment when the window is resized.
+        self._platform_selection_dots = {}
         for title, combo in (("場內", self.internal_platform),
                              ("場外", self.external_platform)):
             header_cell = QWidget(platforms)
@@ -1147,6 +1181,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             combo.setMinimumWidth(151)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             header_layout.addWidget(combo, 1)
+            dot = QLabel(combo)
+            dot.setObjectName("platformSelectionRequiredDot")
+            dot.setFixedSize(6, 6)
+            dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
+            dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            dot.setVisible(combo.currentIndex() < 0)
+            combo.installEventFilter(self)
+            self._platform_selection_dots[combo] = dot
             platform_layout.addWidget(header_cell, 1)
 
         # An inline section heading keeps Refresh on the very same baseline.
@@ -1209,6 +1251,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # and values share the same center; none are right-pinned anymore.
         summary_layout = QHBoxLayout()
         summary_layout.setSpacing(18)
+        stage_cell = QWidget(sheet_values)
+        stage_cell.setObjectName("centeredSummaryCell")
+        stage_layout = QVBoxLayout(stage_cell)
+        stage_layout.setContentsMargins(0, 2, 0, 3)
+        stage_layout.setSpacing(3)
+        stage_label = QLabel("階段")
+        stage_label.setProperty("role", "caption")
+        stage_label.setAlignment(Qt.AlignCenter)
+        self.stage_selector = ChevronCombo()
+        self.stage_selector.setObjectName("tradeStageSelector")
+        self.stage_selector.setProperty("centerCurrentText", True)
+        self.stage_selector.setPlaceholderText("尚未讀取")
+        self.stage_selector.setMinimumWidth(0)
+        self.stage_selector.setEnabled(False)
+        self.stage_selector.currentTextChanged.connect(self._stage_selection_changed)
+        stage_layout.addWidget(stage_label)
+        stage_layout.addWidget(self.stage_selector)
+        summary_layout.addWidget(stage_cell, 1)
         for text, key in (
             ("商品", "symbol"),
             ("表格方向", "sheet_direction"),
@@ -1468,7 +1528,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_row.setObjectName("automationOptionRow")
         automation_layout = QHBoxLayout(automation_row)
         automation_layout.setContentsMargins(3, 0, 3, 2)
-        automation_layout.setSpacing(1)
+        automation_layout.setSpacing(4)
         self.auto_entry_on_fill_both.setText("自動進場")
         self.auto_entry_on_fill_both.setToolTip(
             "填入兩邊後自動進場；先核對兩側帳戶與表單。Live 會建立真實倉位。"
@@ -1515,6 +1575,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
         )
         automation_layout.addWidget(self.auto_draw_tv_after_entry)
+        rule_separator = QFrame(automation_row)
+        rule_separator.setObjectName("tradeRuleSeparator")
+        rule_separator.setFrameShape(QFrame.VLine)
+        rule_separator.setFixedHeight(17)
+        rule_separator.setFixedWidth(1)
+        rule_separator.setStyleSheet("background-color:#5a5465;")
+        automation_layout.addWidget(rule_separator)
+        self.trade_rule_checkboxes = {}
+        for cell, (label, detail, _off_detail) in TRADE_RULES.items():
+            choice = QCheckBox(label)
+            choice.setObjectName("tradeRule_" + cell)
+            choice.setStyleSheet("font-size:10px;spacing:3px;")
+            choice.setToolTip(detail + "確認後寫回目前試算表，不會下單。")
+            install_checkmark_only_indicator(choice)
+            choice.setEnabled(False)
+            choice.toggled.connect(lambda checked, target=cell: self._confirm_trade_rule(target, checked))
+            self.trade_rule_checkboxes[cell] = choice
+            automation_layout.addWidget(choice)
         self.test_controls = QWidget(automation_row)
         self.test_controls.setObjectName("testControls")
         test_layout = QHBoxLayout(self.test_controls)
@@ -1892,6 +1970,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _refresh_calibration_badges(self) -> None:
         """Inspect saved setup values only; never scan or contact a broker."""
+        for combo, dot in getattr(self, "_platform_selection_dots", {}).items():
+            dot.move(max(2, combo.width()-9), 3)
+            dot.setVisible(combo.currentIndex() < 0)
+            if dot.isVisible():
+                dot.raise_()
         badges = getattr(self, "_calibration_badge_labels", None)
         if not badges:
             return
@@ -2237,6 +2320,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         badges = getattr(self, "_calibration_badge_labels", {})
+        platform_dots = getattr(self, "_platform_selection_dots", {})
+        if watched in platform_dots and event.type() in (QEvent.Resize, QEvent.Show):
+            platform_dots[watched].move(max(2, watched.width()-9), 3)
+            platform_dots[watched].raise_()
         if watched is getattr(self, "records_page", None) and event.type() == QEvent.Resize:
             QTimer.singleShot(0, self._update_activity_log_height)
         if (
@@ -2711,6 +2798,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             "測試場內重新進場", "測試場外重新進場",
             "測試場內關單", "測試場外關單",
         )
+        broker_operation = is_fill or name in (
+            "繪製 TradingView", "同步場外止盈止損", "同步到場外", "假日測試"
+        )
+        if broker_operation and getattr(self, "_trade_settings_busy", False):
+            QMessageBox.warning(self, "正在更新設定", "設定讀回完成後，請再操作。")
+            return
+        platform_attrs = (
+            ("internal_platform",) if name in ("填入場內", "繪製 TradingView")
+            else ("external_platform",) if name == "填入場外"
+            else ("internal_platform", "external_platform")
+        )
+        if broker_operation and any(
+            getattr(self, attr, None) is not None
+            and getattr(self, attr).currentText() not in PLATFORMS
+            for attr in platform_attrs
+        ):
+            QMessageBox.warning(self, "請選擇平台", "請先選擇場內及場外交易平台。")
+            return
         if is_fill and not self._fill_task_lock.acquire(blocking=False):
             self.log("已有填寫任務執行中，已忽略重複操作。")
             return
@@ -2805,13 +2910,114 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _platform_selection_changed(self) -> None:
+        self._refresh_calibration_badges()
+        self.save_ui_state()
+
+    def _trade_settings_context(self) -> tuple:
+        sheet = self.store.data["sheet"]
+        return (self.profiles.active_name, sheet.get("spreadsheet_url", ""),
+                sheet.get("gid", ""), sheet.get("worksheet", ""))
+
+    def _show_trade_sheet_settings(self, payload: tuple) -> None:
+        context, settings, error = payload
+        if context != self._trade_settings_context():
+            return
+        self._trade_settings = settings
+        selector = self.stage_selector
+        selector.blockSignals(True)
+        selector.clear()
+        if settings is not None:
+            selector.addItems(settings.stage_options)
+            selector.setCurrentIndex(selector.findText(settings.stage))
+        selector.setPlaceholderText("尚未讀取")
+        selector.blockSignals(False)
+        selector.setToolTip(error or "切換階段會寫回 A4，並重新讀取計算結果。")
+        for cell, checkbox in self.trade_rule_checkboxes.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(settings and settings.rules[cell]))
+            checkbox.blockSignals(False)
+        self._refresh_trade_settings_enabled()
+
+    def _refresh_trade_settings_enabled(self) -> None:
+        ready = self._trade_settings is not None and not self._trade_settings_busy
+        self.stage_selector.setEnabled(ready)
+        for checkbox in self.trade_rule_checkboxes.values():
+            checkbox.setEnabled(ready)
+
+    def _stage_selection_changed(self, value: str) -> None:
+        if self._trade_settings is not None and value != self._trade_settings.stage:
+            self._confirm_trade_setting("A4", value)
+
+    def _confirm_trade_rule(self, cell: str, checked: bool) -> None:
+        self._confirm_trade_setting(cell, checked)
+
+    def _confirm_trade_setting(self, cell: str, value) -> None:
+        expected = self._trade_settings
+        context = self._trade_settings_context()
+        # Keep the last read-back value until the sheet write is verified.
+        self._show_trade_sheet_settings((context, expected, ""))
+        if expected is None or self._trade_settings_busy:
+            return
+        if self._active_tasks or self._parameter_write_active or self._update_in_progress:
+            QMessageBox.information(self, "操作進行中", "請等目前操作完成後，再調整交易設定。")
+            return
+        if cell != "A4":
+            label, detail, off_detail = TRADE_RULES[cell]
+            action = "啟用" if value else "關閉"
+            title = "調整交易規則"
+            message = f"{action}「{label}」？\n" + (detail if value else off_detail)
+            yes_text = action + "並更新"
+            answer = QMessageBox.question(
+                self, title, message,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                yes_text=yes_text, no_text="取消",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        sheet = copy.deepcopy(self.store.data["sheet"])
+        self._trade_settings_busy = True
+        self._refresh_trade_settings_enabled()
+        self._set_parameter_write_busy(True)
+        self.internal_platform.setEnabled(False)
+        self.external_platform.setEnabled(False)
+
+        def task():
+            try:
+                if context != self._trade_settings_context():
+                    raise ValidationError("方案已切換，本次未更新設定。")
+                fresh = write_trade_setting(self.reader, sheet, expected, cell, value)
+                self._read_sheet_task(retries=2)
+                self.signals.trade_sheet_settings.emit((context, fresh, ""))
+                self.log(f"已更新並讀回交易設定：{cell}。")
+            except Exception as exc:
+                self.instruction = None
+                self.signals.trade_sheet_settings.emit((context, None, "更新未確認，請重新讀取。"))
+                self.log(f"交易設定未確認：{exc}")
+                raise ValidationError("交易設定更新未確認，請重新讀取試算表後再操作。") from exc
+            finally:
+                self.signals.trade_settings_finished.emit()
+        self._start("更新交易設定", task, hide_during=False)
+
+    def _finish_trade_settings_write(self) -> None:
+        self._trade_settings_busy = False
+        self._refresh_trade_settings_enabled()
+        self._set_parameter_write_busy(self._parameter_write_active)
+        self.internal_platform.setEnabled(True)
+        self.external_platform.setEnabled(True)
+
     def read_sheet(self) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            return
+        self._show_trade_sheet_settings((self._trade_settings_context(), None, "正在讀取試算表。"))
         self.ruler_sheet_values = None
         self.ruler_sheet_status = "正在讀取兩個試算表分頁"
         self._refresh_ruler()
-        self._start("讀取中", self._read_sheet_task, hide_during=False)
+        self._start("讀取中", lambda: self._read_sheet_task(include_trade_settings=True), hide_during=False)
 
-    def _read_sheet_task(self, retries: int = 0) -> None:
+    def _read_sheet_task(self, retries: int = 0, *, include_trade_settings: bool = False) -> None:
+        settings_context = self._trade_settings_context() if include_trade_settings else None
+        settings_config = copy.deepcopy(self.store.data["sheet"]) if include_trade_settings else None
         self.log("正在讀取 Google 試算表。")
         item = None
         for attempt in range(retries + 1):
@@ -2864,6 +3070,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             f"場內{direction_text(item.internal_direction)}／"
             f"場外{direction_text(item.external_direction)}。"
         )
+        if include_trade_settings:
+            try:
+                settings = read_trade_settings(self.reader, settings_config)
+                self.signals.trade_sheet_settings.emit((settings_context, settings, ""))
+            except Exception as exc:
+                self.log(f"階段與交易規則讀取失敗：{exc}")
+                self.signals.trade_sheet_settings.emit((settings_context, None, "讀取失敗，請重新讀取試算表。"))
 
     def _show_instruction(self, item: TradeInstruction) -> None:
         values = {
@@ -4101,6 +4314,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         busy: bool = True,
         reset_inputs: bool = True,
     ) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            QMessageBox.information(self, "正在更新設定", "設定更新完成後，請再調整數值。")
+            return
         source_row = self.instruction.source_row if self.instruction else None
         values = self._dedupe_same_sheet_targets(values)
         signature = self._parameter_write_signature(values)
@@ -4386,6 +4602,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.log(f"已寫回場內實際進場價到試算表 {target}。")
 
     def _require_instruction(self) -> TradeInstruction:
+        if getattr(self, "_trade_settings_busy", False):
+            raise AutomationError("設定更新完成後，請再操作。")
         if self.instruction is None:
             raise AutomationError("請先讀取 Google 試算表，再執行這項操作。")
         return self._instruction_with_parameter_overrides(self.instruction)
@@ -4508,6 +4726,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             else self.external_platform.currentText()
         )
         role_text = "場內" if role == "internal" else "場外"
+        if platform not in PLATFORMS:
+            QMessageBox.warning(self, "請選擇平台", f"請先選擇{role_text}交易平台。")
+            return False
         current = str(
             self.store.data["platforms"].get(platform, {})
             .get("window_title", {}).get(role, "")
@@ -5000,6 +5221,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.store.save()
         self.profiles.save_profile(self.profiles.active_name, self.store.data)
     def switch_profile(self, name: str) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            return
         if self._profile_switching or not name:
             return
         previous = self.profiles.active_name
@@ -5020,6 +5243,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.critical(self, "方案", str(exc))
 
     def create_profile(self) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            return
         name, accepted = themed_input_text(self, "建立方案", "方案名稱：")
         name = name.strip()
         if not accepted:
@@ -5046,6 +5271,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.warning(self, "儲存方案", str(exc))
 
     def rename_profile(self) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            return
         old_name = self.profiles.active_name
         name, accepted = themed_input_text(
             self, "重新命名方案", "新名稱：", text=old_name
@@ -5068,6 +5295,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.warning(self, "重新命名方案", str(exc))
 
     def delete_profile(self) -> None:
+        if getattr(self, "_trade_settings_busy", False):
+            return
         name = self.profiles.active_name
         answer = QMessageBox.question(
             self,
@@ -5106,8 +5335,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         fast_control=getattr(self,"auto_fast_pair",None)
         if fast_control is not None:
             fast_control.blockSignals(True)
-        self.internal_platform.setCurrentText(ui["internal_platform"])
-        self.external_platform.setCurrentText(ui["external_platform"])
+        self.internal_platform.setCurrentIndex(self.internal_platform.findText(ui["internal_platform"]))
+        self.external_platform.setCurrentIndex(self.external_platform.findText(ui["external_platform"]))
         self.tv_draw_internal.setChecked(bool(ui.get("tv_draw_internal", False)))
         if badge_toggle is not None:
             badge_toggle.setChecked(
@@ -5146,6 +5375,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.auto_draw_tv_after_entry.isChecked()
         )
         self.instruction = None
+        self._show_trade_sheet_settings((self._trade_settings_context(), None, "請先讀取試算表。"))
         self._fill_waiting_for_sheet = None
         self._fill_confirmed_text.clear()
         self.ruler_sheet_values = None
