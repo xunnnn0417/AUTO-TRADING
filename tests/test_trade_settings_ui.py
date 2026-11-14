@@ -32,19 +32,26 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertTrue(self.w.trade_rule_checkboxes['E14'].isChecked())
         self.assertEqual(self.w.reader.writes,[])
 
-    def test_only_stage_text_is_centered_inside_the_whole_native_field(self):
+    def test_only_stage_text_and_chevron_are_centered_as_a_group(self):
         from PySide6.QtCore import Qt
         self.load_settings()
         draws=[]
+        lines=[]
         real_painter=gui.QStylePainter
         class RecordingPainter(real_painter):
             def drawText(self, rect, flags, text):
                 draws.append((rect,flags,text))
                 return super().drawText(rect,flags,text)
+            def drawLine(self, *args):
+                lines.append(args)
+                return super().drawLine(*args)
         with patch.object(gui,'QStylePainter',RecordingPainter):
             self.w.stage_selector.grab()
         rect,flags,text=draws[-1]
-        self.assertEqual(rect.center(),self.w.stage_selector.rect().center())
+        self.assertAlmostEqual((rect.left()+max(lines[-1][0],lines[-1][2]))/2,
+                               self.w.stage_selector.width()/2,delta=0.5)
+        self.assertAlmostEqual(min(lines[-2][0],lines[-2][2])-rect.right(),8,delta=1)
+        self.assertEqual(rect.center().y(),self.w.stage_selector.height()/2)
         self.assertTrue(flags & Qt.AlignHCenter)
         self.assertTrue(flags & Qt.AlignVCenter)
         self.assertEqual(text,'階段甲')

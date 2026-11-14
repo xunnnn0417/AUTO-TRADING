@@ -568,10 +568,10 @@ class ChevronCombo(QComboBox):
     model, popup, keyboard navigation, or selected text.
     """
     def paintEvent(self, event) -> None:
+        x = self.width() - 15
         if self.property("centerCurrentText"):
             # Paint the native frame, retaining the real, non-editable combo.
-            # Symmetric room for the chevron keeps the text centered in the
-            # whole field while preventing long labels from hitting the arrow.
+            # Center the label and chevron as one group, with an 8px gap.
             option = QStyleOptionComboBox()
             self.initStyleOption(option)
             text = self.currentText() if self.currentIndex() >= 0 else self.placeholderText()
@@ -579,11 +579,15 @@ class ChevronCombo(QComboBox):
             painter = QStylePainter(self)
             painter.drawComplexControl(QStyle.CC_ComboBox, option)
             painter.drawControl(QStyle.CE_ComboBoxLabel, option)
-            text_rect = self.rect().adjusted(24, 0, -24, 0)
+            text = self.fontMetrics().elidedText(text, Qt.ElideRight,
+                                                max(0, self.width() - 40))
+            text_width = self.fontMetrics().horizontalAdvance(text)
+            left = (self.width() - text_width - 16) / 2
+            text_rect = QRectF(left, 0, text_width, self.height())
+            x = left + text_width + 12
             group = QPalette.Active if self.isEnabled() else QPalette.Disabled
             painter.setPen(self.palette().color(group, QPalette.Text))
-            painter.drawText(text_rect, Qt.AlignCenter,
-                             self.fontMetrics().elidedText(text, Qt.ElideRight, text_rect.width()))
+            painter.drawText(text_rect, Qt.AlignCenter, text)
         else:
             super().paintEvent(event)
             painter = QPainter(self)
@@ -593,7 +597,6 @@ class ChevronCombo(QComboBox):
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        x = self.width() - 15
         y = self.height() / 2
         painter.drawLine(int(x - 4), int(y - 2), int(x), int(y + 2))
         painter.drawLine(int(x), int(y + 2), int(x + 4), int(y - 2))
