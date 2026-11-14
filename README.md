@@ -20,6 +20,8 @@ This tool reads your sheet and fills calibrated broker fields. When enabled by t
 - cTrader and MT5 window binding
 - cTrader, MT5, and TradingView calibration
 - Fill Internal, Fill External, and Fill Both helpers
+- Right-edge quick panel (enabled by default; toggle in 顯示設定), sharing the main window's inputs, warnings and account-progress ruler. Starting Fill Both from this panel collapses it and leaves it collapsed after completion, without reopening the main window. The home button opens the main window and collapses the panel.
+- Expandable scheduled high-impact economic calendar with local-time countdowns. Public Forex Factory weekly export; stale/offline data is marked. Breaking-news alerts are not connected.
 - TradingView position helper
 - ESC emergency stop
 

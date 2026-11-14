@@ -926,6 +926,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.operation_hint.adjustSize()
 
     def _hide_for_operation(self) -> None:
+        panel = getattr(self, "side_panel", None)
+        if panel is not None:
+            panel.hide()
         if not self.isHidden():
             self._operation_restore_geometry = self.geometry()
             self._operation_restore_maximized = self.isMaximized()
@@ -957,6 +960,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _restore_after_operation(self) -> None:
         self.operation_hint.hide()
+        panel = getattr(self, "side_panel", None)
+        if getattr(self, "_side_fill_active", False) is True:
+            # Side-origin fills keep the broker visible. The collapsed
+            # panel returns without activating or reopening the main UI.
+            self._operation_restore_geometry = None
+            self._operation_restore_maximized = False
+            self._operation_screen = None
+            if panel is not None and self.side_panel_checkbox.isChecked():
+                panel.show()
+                panel.dock()
+            return
         if self._calibration_dialog_active:
             self.hide()
             self._operation_restore_geometry = None
@@ -974,6 +988,46 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._operation_screen = None
         self.raise_()
         self.activateWindow()
+        if panel is not None and self.side_panel_checkbox.isChecked():
+            panel.show()
+            panel.dock()
+
+    def initialize_side_panel(self) -> None:
+        self.toggle_side_panel(self.side_panel_checkbox.isChecked())
+
+    def toggle_side_panel(self, enabled: bool) -> None:
+        from .side_panel import SideQuickPanel
+        if not hasattr(self, "side_panel"):
+            self.side_panel = None
+        self.side_panel_checkbox.blockSignals(True)
+        self.side_panel_checkbox.setChecked(enabled)
+        self.side_panel_checkbox.blockSignals(False)
+        if enabled:
+            if self.side_panel is None:
+                self.side_panel = SideQuickPanel(self)
+            self.side_panel.start()
+        elif self.side_panel is not None:
+            self.side_panel.suspend()
+        self.save_ui_state()
+
+    def fill_both_from_side_panel(self) -> None:
+        panel = getattr(self, "side_panel", None)
+        if (panel is None or not panel.fill_button.isEnabled()
+                or not self.can_update()):
+            return
+        self._side_fill_active = True
+        panel.set_collapsed(True)
+        try:
+            self._launch_fill(("internal", "external"))
+        finally:
+            if not self._active_tasks and not self._fill_waiting_for_sheet:
+                self._side_fill_active = False
+
+    def showEvent(self, event) -> None:
+        # Explicitly opening the main window returns subsequent operations
+        # to its normal foreground behavior.
+        self._side_fill_active = False
+        super().showEvent(event)
 
     def _minimize_after_operation(self) -> None:
         # Completed operations must return the helper to the foreground.
@@ -1123,6 +1177,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             lambda _: self._refresh_calibration_badges()
         )
         display_layout.addWidget(self.show_calibration_badges)
+        self.side_panel_checkbox = QCheckBox("顯示側邊快捷", display_container)
+        self.side_panel_checkbox.setChecked(
+            bool(self.store.data["ui"].get("side_panel_enabled", True))
+        )
+        self.side_panel_checkbox.toggled.connect(self.toggle_side_panel)
+        display_layout.addWidget(self.side_panel_checkbox)
         self.always_on_top = QCheckBox("保持最上層", display_container)
         self.always_on_top.setChecked(False)
         self.always_on_top.toggled.connect(self.set_always_on_top)
@@ -2169,10 +2229,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _show_duplicate_entry_decision(self, data: dict) -> None:
         """GUI-thread-only question, never an implicit send/retry."""
         request=data.get("request")
-        self.showNormal()
-        self._dock_top()
-        self.raise_()
-        self.activateWindow()
+        if getattr(self, "_side_fill_active", False) is not True:
+            self.showNormal()
+            self._dock_top()
+            self.raise_()
+            self.activateWindow()
         if not request:
             QMessageBox.warning(
                 self,"請人工確認持倉",
@@ -3858,9 +3919,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
 
     def fill_role(self, role: str) -> None:
+        self._side_fill_active = False
         self._launch_fill((role,))
 
     def fill_both(self) -> None:
+        self._side_fill_active = False
         self._launch_fill(("internal", "external"))
 
     def _preflight_duplicate_entry(
@@ -5224,6 +5287,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "internal_platform": self.internal_platform.currentText(),
                 "external_platform": self.external_platform.currentText(),
                 "tv_draw_internal": self.tv_draw_internal.isChecked(),
+                "side_panel_enabled": (
+                    self.side_panel_checkbox.isChecked()
+                    if hasattr(self, "side_panel_checkbox") else True
+                ),
                 "show_calibration_badges": (
                     self.show_calibration_badges.isChecked()
                     if hasattr(self, "show_calibration_badges")
@@ -5550,6 +5617,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if hasattr(self,"_refresh_calibration_badges"):
             self._refresh_calibration_badges()
 
+        sidebar_toggle = getattr(self, "side_panel_checkbox", None)
+        if sidebar_toggle is not None:
+            sidebar_toggle.blockSignals(True)
+            sidebar_toggle.setChecked(bool(ui.get("side_panel_enabled", True)))
+            sidebar_toggle.blockSignals(False)
+            if getattr(self, "side_panel", None) is not None:
+                if sidebar_toggle.isChecked():
+                    self.side_panel.start()
+                else:
+                    self.side_panel.suspend()
+
     def _refresh_profile_combo(self, selected: str) -> None:
         self._profile_switching = True
         self.profile_combo.set_names(self.profiles.names())
@@ -5572,6 +5650,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             event.ignore()
             return
         self.save_ui_state()
+        panel = getattr(self, "side_panel", None)
+        if panel is not None:
+            panel.close()
         self.emergency.close()
         event.accept()
 

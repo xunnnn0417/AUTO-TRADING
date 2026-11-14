@@ -56,6 +56,12 @@ class DuplicateDialogTests(unittest.TestCase):
         self.ui._start.assert_not_called()
         self.ui.showNormal.assert_called_once()
 
+    def test_side_origin_question_does_not_reopen_main(self):
+        self.ui._side_fill_active = True
+        self.decision(False)
+        self.ui.showNormal.assert_not_called()
+        self.ui._start.assert_not_called()
+
     def test_explicit_continue_resumes_safety_workflow(self):
         dialog = self.decision(True)
         self.assertEqual(
