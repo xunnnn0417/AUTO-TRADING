@@ -14,7 +14,7 @@ import test_compact_followup_controls as fixtures
 from test_fill_workflow_guards import sample
 from trading_helper import gui
 from trading_helper.side_panel import SideQuickPanel
-from trading_helper.calendar_events import CalendarEvent, UTC
+from trading_helper.calendar_events import CalendarEvent, UTC, SOURCE_URLS
 
 
 class SidePanelTests(unittest.TestCase):
@@ -142,7 +142,7 @@ class SidePanelTests(unittest.TestCase):
         write.assert_called_once()
         panel.calendar.events = [CalendarEvent(datetime.now(UTC) + timedelta(hours=1), 'EUR', '<b>Rate</b>')]
         panel.calendar.fetched_at = datetime.now(UTC)
-        panel.calendar.source_times = {key: datetime.now(UTC) for key in ('ff', 'bea', 'fed', 'ecb')}
+        panel.calendar.source_times = dict.fromkeys(SOURCE_URLS, datetime.now(UTC))
         panel.update_events()
         self.assertIn('1 小時', panel.events_button.text())
         self.assertEqual(panel.event_rows.textFormat(), Qt.PlainText)
@@ -172,6 +172,41 @@ class SidePanelTests(unittest.TestCase):
         panel.sync_from_main()
         self.assertTrue(panel.warnings['internal_balance'].isHidden())
         self.assertTrue(panel.warnings['expected_sl_combined'].isHidden())
+
+    def test_side_warning_collapses_until_dialog_returns_and_does_not_reopen_news(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        def explain():
+            self.assertTrue(panel.collapsed)
+            self.assertFalse(panel.event_flyout.isVisible())
+        with patch.object(self.w, '_show_expected_sl_warning', side_effect=explain):
+            QTest.mouseClick(panel.warnings['expected_sl_combined'], Qt.LeftButton)
+        self.assertFalse(panel.collapsed)
+        self.assertFalse(panel.events_button.isChecked())
+        # Respect disabling the sidebar while the dialog is open.
+        with patch.object(self.w, '_show_balance_warning', side_effect=lambda: self.w.toggle_side_panel(False)):
+            panel._show_warning('internal_balance')
+        self.assertFalse(panel.isVisible())
+
+    def test_source_status_is_one_line_and_details_are_available_on_demand(self):
+        panel = self.open_panel()
+        self.assertNotIn('\n', panel.event_status.text())
+        self.assertIn('來源', panel.event_status.text())
+        self.assertIn('Forex Factory', panel.event_status.toolTip())
+        self.assertLess(panel.event_status.sizeHint().height(), 35)
+
+    def test_chinese_market_news_precedes_far_away_schedule_in_summary(self):
+        from trading_helper.calendar_events import Announcement, SOURCE_URLS
+        panel = self.open_panel()
+        now = datetime.now(UTC)
+        panel.calendar.source_times = dict.fromkeys(SOURCE_URLS, now)
+        panel.calendar.events = [CalendarEvent(now + timedelta(days=10), 'USD', 'GDP')]
+        panel.calendar.news = [Announcement(now-timedelta(hours=1), '香港電台財經', '金價受美元走強影響')]
+        panel.update_events()
+        self.assertNotIn('10 天', panel.events_button.text())
+        self.assertIn('消息', panel.events_button.text())
+        self.assertIn('金價受美元走強影響', panel.market_rows.text())
+        self.assertIn('10', panel.event_rows.text())
 
     def test_side_fill_cancel_keeps_shared_sl_confirmation_and_no_io(self):
         panel = self.open_panel()

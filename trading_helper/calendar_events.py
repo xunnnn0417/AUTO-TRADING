@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -13,17 +14,27 @@ from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QObject, Signal, Slot
+from .headline_language import local_title, translate_title, valid_translation
 
 FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 BEA_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
 FED_URL = 'https://www.federalreserve.gov/feeds/press_monetary.xml'
 ECB_URL = 'https://www.ecb.europa.eu/rss/press.html'
+RTHK_FINANCE_URL = 'https://rthk.hk/rthk/news/rss/c_expressnews_cfinance.xml'
+RTHK_WORLD_URL = 'https://rthk.hk/rthk/news/rss/c_expressnews_cinternational.xml'
 UTC = timezone.utc
 MAX_BYTES = 1_000_000
-SOURCE_URLS = {'ff': FEED_URL, 'bea': BEA_URL, 'fed': FED_URL, 'ecb': ECB_URL}
-SOURCE_NAMES = {'ff': 'Forex Factory', 'bea': 'BEA', 'fed': 'Fed', 'ecb': 'ECB'}
+SOURCE_URLS = {'ff': FEED_URL, 'bea': BEA_URL, 'fed': FED_URL, 'ecb': ECB_URL,
+               'rthk_finance': RTHK_FINANCE_URL, 'rthk_world': RTHK_WORLD_URL}
+SOURCE_NAMES = {'ff': 'Forex Factory', 'bea': 'BEA', 'fed': 'Fed', 'ecb': 'ECB',
+                'rthk_finance': '香港電台財經', 'rthk_world': '香港電台國際'}
 SOURCE_TTLS = {'ff': timedelta(minutes=30), 'bea': timedelta(hours=6),
-               'fed': timedelta(minutes=15), 'ecb': timedelta(minutes=15)}
+               'fed': timedelta(minutes=15), 'ecb': timedelta(minutes=15),
+               'rthk_finance': timedelta(minutes=5), 'rthk_world': timedelta(minutes=5)}
+MARKET_TOPICS = re.compile(
+    '黃金|金價|貴金屬|美元|美匯|美債|國債|收益率|孳息|聯儲|聯準|鮑威爾|央行|利率|減息|加息|'
+    '通脹|通膨|物價|非農|就業|失業|零售|GDP|PCE|CPI|PPI|PMI|特朗普|川普|關稅|'
+    '制裁|戰爭|空襲|停火|導彈|核武|伊朗|以色列|烏克蘭|俄羅斯|霍爾木茲|中東|油價|金融危機', re.I)
 
 
 @dataclass(frozen=True, order=True)
@@ -96,7 +107,9 @@ def parse_events(rows: object) -> list[CalendarEvent]:
         raise ValueError('事件日曆格式不符')
     events = set()
     for row in rows:
-        if not isinstance(row, dict) or row.get('impact') != 'High':
+        if not isinstance(row, dict):
+            continue
+        if row.get('impact') != 'High' and not (row.get('impact') == 'Medium' and row.get('country') == 'USD'):
             continue
         title, currency = str(row.get('title', '')).strip(), str(row.get('country', '')).strip()
         if not title or len(title) > 180 or len(currency) != 3 or not currency.isalpha():
@@ -109,6 +122,10 @@ def parse_events(rows: object) -> list[CalendarEvent]:
             continue
         events.add(CalendarEvent(when.astimezone(UTC), currency.upper(), title))
     return sorted(events)
+
+
+def parse_market_news(raw: bytes, source: str) -> list[Announcement]:
+    return [item for item in parse_announcements(raw, source) if MARKET_TOPICS.search(item.title)]
 
 
 def countdown(when: datetime, now: datetime) -> str:
@@ -130,6 +147,7 @@ def countdown(when: datetime, now: datetime) -> str:
 class EconomicCalendar(QObject):
     changed = Signal()
     received = Signal(object)
+    translated = Signal(object)
 
     def __init__(self, path: Path, parent=None):
         super().__init__(parent)
@@ -137,7 +155,13 @@ class EconomicCalendar(QObject):
         self.events: list[CalendarEvent] = []
         self.news: list[Announcement] = []
         self._events_by_source = {'ff': [], 'bea': []}
-        self._news_by_source = {'fed': [], 'ecb': []}
+        self._news_by_source = {key: [] for key in SOURCE_URLS if key not in self._events_by_source}
+        self.translations = {}
+        self._translation_busy = False
+        self._translation_enabled = False
+        self._translation_attempts = set()
+        self._translation_day = ''
+        self._translation_chars = 0
         self.source_times: dict[str, datetime] = {}
         self.source_errors: dict[str, str] = {}
         self.fetched_at: datetime | None = None
@@ -146,12 +170,20 @@ class EconomicCalendar(QObject):
         self._busy = False
         self._closed = False
         self.received.connect(self._apply)
+        self.translated.connect(self._apply_translations)
         try:
             if path.stat().st_size <= MAX_BYTES:
                 payload = json.loads(path.read_text(encoding='utf-8'))
                 if not isinstance(payload, dict):
                     raise ValueError('事件快取格式不符')
                 if payload.get('version') == 2:
+                    translations = payload.get('translations', {})
+                    if not isinstance(translations, dict) or len(translations) > 500:
+                        translations = {}
+                    self.translations = {title: text for title, text in translations.items()
+                                         if len(title) <= 300 and valid_translation(title, text)}
+                    self._translation_day = str(payload.get('translation_day', ''))
+                    self._translation_chars = max(0, int(payload.get('translation_chars', 0)))
                     for key, rows in payload['sources'].items():
                         if key not in SOURCE_URLS or not isinstance(rows, list) or len(rows) > 1000:
                             continue
@@ -177,9 +209,11 @@ class EconomicCalendar(QObject):
         now = datetime.now(UTC)
         if self._closed or self._busy:
             return
+        self._translation_enabled = True
+        self._translate_missing()
         due = [key for key in SOURCE_URLS
                if (key not in self.source_times or not timedelta(0) <= now-self.source_times[key] < SOURCE_TTLS[key])
-               and (key not in self._last_attempt or now-self._last_attempt[key] >= timedelta(minutes=15))]
+               and (key not in self._last_attempt or now-self._last_attempt[key] >= min(SOURCE_TTLS[key], timedelta(minutes=15)))]
         if not due:
             return
         self._busy = True
@@ -197,6 +231,8 @@ class EconomicCalendar(QObject):
                 data = parse_events(json.loads(raw.decode('utf-8-sig')))
             elif key == 'bea':
                 data = parse_bea_schedule(json.loads(raw.decode('utf-8-sig')))
+            elif key.startswith('rthk_'):
+                data = parse_market_news(raw, SOURCE_NAMES[key])
             else:
                 data = parse_announcements(raw, SOURCE_NAMES[key])
             return key, data, datetime.now(UTC), ''
@@ -228,6 +264,57 @@ class EconomicCalendar(QObject):
         self._combine()
         self._save_cache()
         self.changed.emit()
+        if self._translation_enabled:
+            self._translate_missing()
+
+    def title(self, original):
+        return local_title(original) if local_title(original) != original else self.translations.get(original, original)
+
+    def _translate_missing(self):
+        if self._closed or self._translation_busy:
+            return
+        now = datetime.now(UTC)
+        day = now.date().isoformat()
+        if day != self._translation_day:
+            self._translation_day, self._translation_chars = day, 0
+            self._translation_attempts.clear()
+        candidates = [e.title for e in self.events if now < e.when <= now+timedelta(days=14)]
+        candidates += [e.title for e in self.news if now-timedelta(days=7) <= e.when <= now]
+        titles = []
+        for title in dict.fromkeys(candidates):
+            if (title in self.translations or title in self._translation_attempts or local_title(title) != title
+                    or re.search(r'[\u3400-\u9fff]', title) or len(title.encode('utf-8')) > 500):
+                continue
+            if len(titles) >= 8 or self._translation_chars+len(title) > 4000:
+                break
+            titles.append(title)
+            self._translation_chars += len(title)
+            self._translation_attempts.add(title)
+        if titles:
+            self._translation_busy = True
+            self._save_cache()
+            threading.Thread(target=self._translate_titles, args=(titles,), daemon=True).start()
+
+    def _translate_titles(self, titles):
+        result = {}
+        for title in titles:
+            if self._closed:
+                return
+            translated = translate_title(title)
+            if translated:
+                result[title] = translated
+        if not self._closed:
+            self.translated.emit(result)
+
+    @Slot(object)
+    def _apply_translations(self, result):
+        if self._closed:
+            return
+        self._translation_busy = False
+        self.translations.update(result)
+        self._save_cache()
+        self.changed.emit()
+        self._translate_missing()
 
     def _combine(self):
         self.events = sorted(set(e for rows in self._events_by_source.values() for e in rows))
@@ -255,6 +342,9 @@ class EconomicCalendar(QObject):
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps({
                 'version': 2,
+                'translations': dict(list(self.translations.items())[-500:]),
+                'translation_day': self._translation_day,
+                'translation_chars': self._translation_chars,
                 'times': {key: value.isoformat() for key, value in self.source_times.items()},
                 'sources': {key: [dict(when=e.when.isoformat(), title=e.title,
                                     **({'currency': e.currency} if isinstance(e, CalendarEvent) else {})) for e in rows]

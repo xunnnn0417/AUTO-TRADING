@@ -12,6 +12,53 @@ NOW = datetime(2026, 11, 15, tzinfo=timezone.utc)
 
 
 class EventSourceTests(unittest.TestCase):
+    def test_market_news_uses_aware_dates_and_relevant_chinese_topics(self):
+        raw = '''<rss><channel>
+          <item><title>伊朗稱霍爾木茲海峽運油輪遇襲</title><pubDate>Sun, 15 Nov 2026 09:00:00 +0800</pubDate></item>
+          <item><title>金價受美元及美債收益率影響</title><pubDate>Sun, 15 Nov 2026 10:00:00 +0800</pubDate></item>
+          <item><title>本地足球比賽結果</title><pubDate>Sun, 15 Nov 2026 10:00:00 +0800</pubDate></item>
+          <item><title>聯儲局講話</title><pubDate>2026-11-15 10:00:00</pubDate></item>
+        </channel></rss>'''.encode()
+        items = calendar.parse_market_news(raw, '香港電台國際')
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].when.hour, 2)
+        self.assertIn('伊朗', items[1].title)
+
+    def test_chinese_title_preserves_original_and_numbers_or_falls_back(self):
+        self.assertEqual(calendar.local_title('Non-Farm Employment Change'), '非農就業人數變化')
+        self.assertEqual(calendar.local_title('Unknown 2027'), 'Unknown 2027')
+        self.assertTrue(calendar.valid_translation('Fed schedule 2027', '聯準會 2027 年會議日程'))
+        self.assertFalse(calendar.valid_translation('Fed schedule 2027', '聯準會 2026 年會議日程'))
+        self.assertFalse(calendar.valid_translation('Fed schedule', 'QUERY LENGTH LIMIT EXCEEDED'))
+
+    def test_translation_is_cached_bounded_and_reused_without_retransmitting(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = calendar.EconomicCalendar(Path(folder)/'events.json')
+            now = datetime.now(timezone.utc)
+            service._apply([('fed', [calendar.Announcement(now, 'Fed', 'Fed schedule 2027')], now, '')])
+            with patch.object(calendar, 'translate_title', return_value='聯準會 2027 年會議日程') as translate:
+                service._translation_attempts.add('Fed schedule 2027')
+                service._translate_titles(['Fed schedule 2027'])
+            translate.assert_called_once()
+            restored = calendar.EconomicCalendar(service.path)
+            self.assertEqual(restored.title('Fed schedule 2027'), '聯準會 2027 年會議日程')
+            restored.news = [calendar.Announcement(now, 'Fed', 'Fed schedule 2027')]
+            with patch.object(calendar.threading, 'Thread') as thread:
+                restored._translate_missing()
+                thread.assert_not_called()
+            restored.events = [calendar.CalendarEvent(now.replace(year=now.year+1), 'USD', 'Unknown event')]
+            restored.news = [calendar.Announcement(now, 'Fed', 'Another new statement')]
+            restored._translation_day = now.date().isoformat()
+            restored._translation_chars = 4000
+            with patch.object(calendar.threading, 'Thread') as thread:
+                restored._translate_missing()
+                thread.assert_not_called()
+
+    def test_medium_usd_events_are_included_but_low_and_other_medium_are_not(self):
+        rows = [dict(title='Retail Sales', country=country, impact=impact, date='2026-11-16T13:30:00Z')
+                for country, impact in [('USD', 'Medium'), ('USD', 'Low'), ('EUR', 'Medium')]]
+        self.assertEqual(len(calendar.parse_events(rows)), 1)
+        self.assertEqual(calendar.parse_events(rows)[0].currency, 'USD')
     def test_old_week_cache_is_migrated_but_missing_sources_are_not_fresh(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/'events.json'
@@ -63,6 +110,8 @@ class EventSourceTests(unittest.TestCase):
                 calendar.BEA_URL: json.dumps({'Gross Domestic Product': {'release_dates': ['2026-11-25T13:30:00Z']}}).encode(),
                 calendar.FED_URL: b'<rss><channel><item><title>FOMC statement</title><pubDate>Thu, 12 Nov 2026 17:45:00 GMT</pubDate></item></channel></rss>',
                 calendar.ECB_URL: b'<rss><channel><item><title>Interest rate decision</title><pubDate>Fri, 13 Nov 2026 09:00:00 +0100</pubDate></item></channel></rss>',
+                calendar.RTHK_FINANCE_URL: '<rss><channel><item><title>金價上升</title><pubDate>Fri, 13 Nov 2026 09:00:00 +0800</pubDate></item></channel></rss>'.encode(),
+                calendar.RTHK_WORLD_URL: b'<rss><channel/></rss>',
             }
             def response(request, **kwargs):
                 if request.full_url == calendar.FEED_URL:
@@ -74,7 +123,7 @@ class EventSourceTests(unittest.TestCase):
                 service._fetch()
             self.assertIn(old, service.events)
             self.assertTrue(any(event.source == 'BEA' for event in service.events))
-            self.assertEqual({item.source for item in service.news}, {'Fed', 'ECB'})
+            self.assertEqual({item.source for item in service.news}, {'Fed', 'ECB', '香港電台財經'})
             self.assertIn('ff', service.source_errors)
             self.assertFalse(service.is_fresh(datetime.now(timezone.utc)))
             restored = calendar.EconomicCalendar(service.path)

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from trading_helper.calendar_events import CalendarEvent, EconomicCalendar, parse_events, countdown, MAX_BYTES
+from trading_helper.calendar_events import CalendarEvent, EconomicCalendar, parse_events, countdown, MAX_BYTES, SOURCE_URLS
 
 UTC = timezone.utc
 NOW = datetime(2026, 11, 15, 0, 0, tzinfo=UTC)
@@ -45,8 +45,8 @@ class CalendarTests(unittest.TestCase):
             rows = [dict(title='CPI y/y', country='USD', date='2026-11-16T13:30:00Z', impact='High')]
             service.events = parse_events(rows)
             service.fetched_at = NOW
-            service.source_times = {key: NOW for key in ('ff', 'bea', 'fed', 'ecb')}
-            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=14)))
+            service.source_times = dict.fromkeys(SOURCE_URLS, NOW)
+            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=4)))
             self.assertFalse(service.is_fresh(NOW + timedelta(hours=2)))
             service._save_cache()
             restored = EconomicCalendar(Path(folder) / 'calendar.json')

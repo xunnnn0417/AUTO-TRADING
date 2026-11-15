@@ -228,9 +228,9 @@ class SideQuickPanel(QWidget):
         heading.addWidget(close)
         flyout_layout.addLayout(heading)
         self.event_tabs = QTabWidget()
-        self.event_rows, self.history_rows, self.news_rows = (QLabel() for _ in range(3))
-        for title, label in zip(('即將公布', '近期公布', '央行公告'),
-                                (self.event_rows, self.history_rows, self.news_rows)):
+        self.market_rows, self.event_rows, self.history_rows, self.news_rows = (QLabel() for _ in range(4))
+        for title, label in zip(('市場消息', '即將公布', '近期公布', '央行公告'),
+                                (self.market_rows, self.event_rows, self.history_rows, self.news_rows)):
             label.setTextFormat(Qt.PlainText)
             label.setWordWrap(True)
             label.setAlignment(Qt.AlignTop)
@@ -240,11 +240,21 @@ class SideQuickPanel(QWidget):
             scroll.setWidget(label)
             self.event_tabs.addTab(scroll, title)
         flyout_layout.addWidget(self.event_tabs, 1)
-        self.event_status = QLabel()
-        self.event_status.setTextFormat(Qt.PlainText)
-        self.event_status.setWordWrap(True)
-        self.event_status.setProperty('muted', True)
+        self.event_status = QToolButton()
+        self.event_status.setAccessibleName('消息來源狀態')
+        self.event_status.setCheckable(True)
+        self.event_status.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.event_status.setArrowType(Qt.DownArrow)
         flyout_layout.addWidget(self.event_status)
+        self.source_details = QLabel()
+        self.source_details.setTextFormat(Qt.PlainText)
+        self.source_details.setWordWrap(True)
+        self.source_details.setProperty('muted', True)
+        self.source_details.hide()
+        self.event_status.toggled.connect(self.source_details.setVisible)
+        self.event_status.toggled.connect(lambda expanded: self.event_status.setArrowType(
+            Qt.UpArrow if expanded else Qt.DownArrow))
+        flyout_layout.addWidget(self.source_details)
         self.event_flyout.hide()
         self.calendar = EconomicCalendar(APP_DIR / 'diagnostics' / 'economic-calendar.json', self)
         self.calendar.changed.connect(self.update_events)
@@ -340,6 +350,18 @@ class SideQuickPanel(QWidget):
         self.app.raise_()
         self.app.activateWindow()
 
+    def _show_warning(self, key):
+        restore = self.isVisible() and not self.collapsed
+        self.set_collapsed(True)
+        try:
+            (self.app._show_expected_sl_warning if key == 'expected_sl_combined'
+             else self.app._show_balance_warning)()
+        finally:
+            if (restore and self.isVisible() and self.app.store.data['ui'].get('side_panel_enabled', True)
+                    and not self.app._active_tasks and not self.calendar._closed):
+                self.set_collapsed(False)
+                self.raise_()
+
     def _expand_events(self, expanded):
         self.events_button.setArrowType(Qt.RightArrow if expanded else Qt.LeftArrow)
         self.event_flyout.setVisible(expanded and not self.collapsed)
@@ -360,24 +382,44 @@ class SideQuickPanel(QWidget):
     def update_events(self):
         now = datetime.now(UTC)
         upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
-        if self.calendar.error or not self.calendar.is_fresh(now):
+        market = [n for n in self.calendar.news if n.source.startswith('香港電台')
+                  and now-timedelta(hours=72) <= n.when <= now]
+        stale = self.calendar.error or not self.calendar.is_fresh(now)
+        if market:
+            summary = f'重大事件 · 市場消息 {len(market)} 則' + (' · 待更新' if stale else '')
+        elif stale:
             summary = '重大事件 · 部分資料待更新'
-        elif upcoming:
+        elif upcoming and upcoming[0].when <= now+timedelta(hours=24):
             summary = '重大事件 · 已知排程 ' + countdown(upcoming[0].when, now)
         else:
-            summary = '重大事件 · 暫無近期排程'
+            summary = '重大事件 · 查看消息與排程'
         self.events_button.setText(summary)
+        def title(original):
+            shown = self.calendar.title(original)
+            return shown + ('〔機翻〕' if original in self.calendar.translations else '')
         def line(event):
-            return f'{event.when.astimezone():%m/%d %H:%M}  {event.currency} · {event.source}\n{event.title}'
+            return f'{event.when.astimezone():%m/%d %H:%M}  {event.currency} · {event.source}\n{title(event.title)}'
         self.event_rows.setText('\n\n'.join(map(line, upcoming[:20])) or
                                '目前載入資料沒有近期排程；請查看來源更新狀態。')
         recent = sorted((e for e in self.calendar.events if now-timedelta(days=7) <= e.when <= now), reverse=True)
         self.history_rows.setText('\n\n'.join('已公布 · '+line(e) for e in recent[:12]) or '近 7 天沒有已載入的公布紀錄。')
-        news = [n for n in self.calendar.news if now-timedelta(days=30) <= n.when <= now]
-        self.news_rows.setText('\n\n'.join(f'{n.when.astimezone():%m/%d %H:%M} · {n.source}\n{n.title}' for n in news[:12])
+        def news_line(item):
+            return f'{item.when.astimezone():%m/%d %H:%M} · {item.source}\n{title(item.title)}'
+        self.market_rows.setText('\n\n'.join(map(news_line, market[:24])) or
+            '近 72 小時尚無已載入的相關消息；不代表沒有事件，請查看來源狀態。')
+        news = [n for n in self.calendar.news if n.source in ('Fed', 'ECB')
+                and now-timedelta(days=30) <= n.when <= now]
+        self.news_rows.setText('\n\n'.join(map(news_line, news[:12]))
                                or '目前沒有近 30 天的已載入公告。')
-        self.event_status.setText('\n'.join(self.calendar.status_lines(now)) +
-            '\n本機時間 · 國際日曆為本週；GDP/PCE 含未來排程。\n央行公告不涵蓋所有突發新聞。')
+        self.news_rows.setToolTip('\n\n'.join(item.title for item in news[:12]))
+        self.event_rows.setToolTip('\n'.join(item.title for item in upcoming[:20]))
+        details = ('\n'.join(self.calendar.status_lines(now)) +
+            '\n本機時間。日曆含本週高影響及美元中影響事件，GDP/PCE 含未來排程。'
+            '\n中文消息依黃金、美元、利率、通膨及地緣事件標題篩選，可能漏報或延遲。'
+            '\n英文標題以 MyMemory 機翻；未完成或無法翻譯時保留原文。')
+        self.event_status.setText('ⓘ 來源狀態 · ' + ('部分待更新' if stale else '已更新'))
+        self.event_status.setToolTip(details)
+        self.source_details.setText(details)
 
     def set_collapsed(self, collapsed):
         was_collapsed = self.collapsed
@@ -522,8 +564,7 @@ class SideQuickPanel(QWidget):
         for key, badge in getattr(self, 'warnings', {}).items():
             if watched is badge and event.type() == QEvent.MouseButtonRelease:
                 if event.button() == Qt.LeftButton:
-                    (self.app._show_expected_sl_warning if key == 'expected_sl_combined'
-                     else self.app._show_balance_warning)()
+                    self._show_warning(key)
                     return True
             if watched is self.inputs[key] and event.type() == QEvent.Resize:
                 badge.move(max(0, watched.width() - 14), 1)

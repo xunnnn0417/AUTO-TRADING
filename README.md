@@ -21,7 +21,8 @@ This tool reads your sheet and fills calibrated broker fields. When enabled by t
 - cTrader, MT5, and TradingView calibration
 - Fill Internal, Fill External, and Fill Both helpers
 - Right-edge quick panel (enabled by default; toggle in 顯示設定), sharing the main window's inputs, warnings and account-progress ruler. Starting Fill Both from this panel collapses it and leaves it collapsed after completion, without reopening the main window. The home button opens the main window and collapses the panel.
-- The event flyout opens to the left without stretching the quick panel. It includes the public Forex Factory weekly calendar, official BEA GDP/PCE schedules and dated Fed/ECB announcements. Upcoming and recently published items are separated, with local-time countdowns and per-source freshness. This is not an exhaustive breaking-news feed.
+- The event flyout opens to the left without stretching the quick panel. It includes the public Forex Factory weekly calendar (high-impact events and medium-impact USD events), official BEA GDP/PCE schedules, Fed/ECB announcements, and relevant Chinese finance/world headlines from RTHK's public RSS. Market headlines, upcoming releases, recent releases and central-bank announcements have separate tabs. Source details expand from a compact status row; coverage is incomplete and feeds can be delayed.
+- English public headlines are translated in the background using the documented anonymous MyMemory GET API, with cached results and a local 4,000-character daily cap. Only public titles are sent; no account, spreadsheet or trading data is shared. Machine translations are labeled, numeric changes are rejected, and the original title remains available when translation fails or reaches its limit. News refreshes and translation do not block trading controls.
 - TradingView position helper
 - ESC emergency stop
 
