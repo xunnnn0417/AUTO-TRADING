@@ -26,7 +26,10 @@ class SidePanelTests(unittest.TestCase):
         cls.qtapp = QApplication.instance() or QApplication([])
 
     def open_panel(self):
-        with patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+        no_network = patch('trading_helper.side_panel.EconomicCalendar.refresh')
+        no_network.start()
+        self.addCleanup(no_network.stop)
+        with patch('trading_helper.side_panel.APP_DIR', self.w.store.path.parent):
             self.w.toggle_side_panel(True)
             self.qtapp.processEvents()
         return self.w.side_panel
@@ -139,6 +142,7 @@ class SidePanelTests(unittest.TestCase):
         write.assert_called_once()
         panel.calendar.events = [CalendarEvent(datetime.now(UTC) + timedelta(hours=1), 'EUR', '<b>Rate</b>')]
         panel.calendar.fetched_at = datetime.now(UTC)
+        panel.calendar.source_times = {key: datetime.now(UTC) for key in ('ff', 'bea', 'fed', 'ecb')}
         panel.update_events()
         self.assertIn('1 小時', panel.events_button.text())
         self.assertEqual(panel.event_rows.textFormat(), Qt.PlainText)
@@ -192,13 +196,25 @@ class SidePanelTests(unittest.TestCase):
         for _ in range(3):
             panel.events_button.click()
             self.qtapp.processEvents()
-            self.assertGreater(panel.height(), original)
+            self.assertEqual(panel.height(), original)
+            self.assertTrue(panel.event_flyout.isVisible())
+            self.assertLessEqual(panel.event_flyout.frameGeometry().right(), panel.frameGeometry().left())
             panel.events_button.click()
             self.qtapp.processEvents()
             self.assertEqual(panel.height(), original)
+            self.assertFalse(panel.event_flyout.isVisible())
             self.assertEqual((panel.fill_button.y(), panel.ruler.y()), (button_y, ruler_y))
+        panel.events_button.click()
+        panel.event_flyout.close()
+        self.assertFalse(panel.events_button.isChecked())
+        panel.events_button.click()
+        self.assertTrue(panel.event_flyout.isVisible())
+        self.w._hide_for_operation()
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(panel.events_button.isChecked())
+        self.w._restore_after_operation()
 
-    def test_flush_edge_and_bottom_clamp_preserve_collapsed_anchor(self):
+    def test_flush_edge_and_bottom_clamp_collapse_at_current_panel_top(self):
         panel = self.open_panel()
         panel.set_collapsed(True)
         area = panel.screen().availableGeometry()
@@ -209,13 +225,15 @@ class SidePanelTests(unittest.TestCase):
         panel.set_collapsed(False)
         self.qtapp.processEvents()
         self.assertEqual(panel.frameGeometry().bottom(), area.bottom())
+        opened_top = panel.y()
         panel.events_button.click()
         self.qtapp.processEvents()
         self.assertEqual(panel.frameGeometry().bottom(), area.bottom())
         panel.events_button.click()
         panel.set_collapsed(True)
         self.qtapp.processEvents()
-        self.assertEqual(panel.y(), anchor)
+        self.assertNotEqual(panel.y(), anchor)
+        self.assertEqual(panel.y(), opened_top)
         self.assertEqual(panel.frameGeometry().right(), area.right())
 
     def test_handle_long_press_floats_as_ball_and_release_snaps_without_opening(self):
@@ -243,6 +261,39 @@ class SidePanelTests(unittest.TestCase):
         self.assertEqual(self.w.store.data['ui']['side_panel_y'], panel.y())
         QTest.mouseClick(panel.handle, Qt.LeftButton)
         self.assertFalse(panel.collapsed)
+
+    def test_collapse_button_drags_only_vertically_and_short_click_collapses(self):
+        panel = self.open_panel()
+        button = panel.collapse_button
+        old = panel.pos()
+        QTest.mousePress(button, Qt.LeftButton)
+        destination = button.mapToGlobal(button.rect().center()) + QPoint(-70, 60)
+        event = QMouseEvent(QEvent.MouseMove, QPointF(button.mapFromGlobal(destination)), QPointF(destination),
+                            Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(button, event)
+        release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(button.mapFromGlobal(destination)),
+                              QPointF(destination), Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+        QApplication.sendEvent(button, release)
+        self.assertFalse(panel.collapsed)
+        self.assertEqual(panel.x(), old.x())
+        self.assertEqual(panel.y(), old.y() + 60)
+        self.assertTrue(panel.mask().isEmpty())
+        QTest.mouseClick(button, Qt.LeftButton)
+        self.assertTrue(panel.collapsed)
+
+    def test_progress_heading_is_closer_to_chart_than_action_and_main_is_unchanged(self):
+        panel = self.open_panel()
+        self.assertTrue(panel.ruler.compact)
+        self.assertFalse(self.w.account_ruler.compact)
+        heading = panel.progress_label
+        above = heading.y() - panel.fill_button.geometry().bottom()
+        below = panel.ruler.y() + 14 - heading.geometry().bottom()
+        self.assertLess(below, above)
+        self.assertGreaterEqual(below, 0)
+        width, starts = panel.ruler._label_positions([(30,()), (90,()), (180,()), (280,())],
+                                                    panel.ruler.width(), min_width=66)
+        self.assertGreaterEqual(starts[0], 0)
+        self.assertLessEqual(starts[-1]+width, panel.ruler.width())
 
     def test_disabling_while_holding_cancels_drag_and_can_be_reopened(self):
         panel = self.open_panel()

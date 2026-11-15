@@ -45,7 +45,8 @@ class CalendarTests(unittest.TestCase):
             rows = [dict(title='CPI y/y', country='USD', date='2026-11-16T13:30:00Z', impact='High')]
             service.events = parse_events(rows)
             service.fetched_at = NOW
-            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=29)))
+            service.source_times = {key: NOW for key in ('ff', 'bea', 'fed', 'ecb')}
+            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=14)))
             self.assertFalse(service.is_fresh(NOW + timedelta(hours=2)))
             service._save_cache()
             restored = EconomicCalendar(Path(folder) / 'calendar.json')

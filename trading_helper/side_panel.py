@@ -1,20 +1,29 @@
 """Floating quick controls: a view of the main window, never a second trader."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import QEvent, QRectF, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen, QRegion
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QToolButton, QVBoxLayout, QWidget,
+    QScrollArea, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .calendar_events import EconomicCalendar, UTC, countdown
 from .config import APP_DIR
 from .progress_ruler import AccountRuler
 from .ui_theme import themed_icon
+
+
+class EventFlyout(QFrame):
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(245, 243, 250, 70), 0.7))
+        painter.setBrush(QColor('#111116'))
+        painter.drawRoundedRect(QRectF(0.35, 0.35, self.width()-0.7, self.height()-0.7), 10, 10)
 
 
 class SideQuickPanel(QWidget):
@@ -36,6 +45,9 @@ class SideQuickPanel(QWidget):
         self._handle_press = None
         self._handle_pointer = None
         self._handle_dragging = False
+        self._collapse_press = None
+        self._collapse_moved = False
+        self.collapse_button = None
         self._hold_timer = QTimer(self)
         self._hold_timer.setSingleShot(True)
         self._hold_timer.setInterval(180)
@@ -43,7 +55,7 @@ class SideQuickPanel(QWidget):
         self._screen = app.screen() or QGuiApplication.primaryScreen()
         self._y = int(app.store.data['ui'].get('side_panel_y', 70))
         self.setStyleSheet('''
-            QWidget { color: #ece8f1; font-family: "Microsoft JhengHei UI"; font-size: 11px; }
+            QWidget { color: #ece8f1; font-family: "Segoe UI", "Microsoft JhengHei UI"; font-size: 11px; }
             QLabel { background: transparent; }
             QLabel[muted="true"] { color: #a6a0b2; font-size: 10px; }
             QLineEdit, QComboBox { background: #1c1b23; border: 1px solid #393642;
@@ -63,9 +75,13 @@ class SideQuickPanel(QWidget):
             QScrollBar:vertical { background: transparent; width: 5px; }
             QScrollBar::handle:vertical { background: #51495f; min-height: 20px; border-radius: 2px; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QFrame#eventFlyout { background: #111116; border: 1px solid #38353f; border-radius: 10px; }
+            QTabWidget::pane { border: 0; background: transparent; }
+            QTabBar::tab { background: transparent; color: #aaa2b6; padding: 7px 8px; border-bottom: 2px solid transparent; }
+            QTabBar::tab:selected { color: #f1edf7; border-bottom-color: #9a84e5; }
         ''')
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(14, 10, 14, 10)
         outer.setSpacing(0)
         self.handle = self._icon_button('panel-right-open', '展開側邊快捷')
         self.handle.setObjectName('sideHandle')
@@ -79,7 +95,7 @@ class SideQuickPanel(QWidget):
         outer.addWidget(self.body)
         root = QVBoxLayout(self.body)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(9)
+        root.setSpacing(10)
         header = QFrame(self.body)
         row = QHBoxLayout(header)
         row.setContentsMargins(0, 2, 0, 7)
@@ -94,9 +110,11 @@ class SideQuickPanel(QWidget):
         self.update_button = self._icon_button('refresh', '更新數值')
         self.update_button.clicked.connect(self.update_values)
         row.addWidget(self.update_button)
-        collapse = self._icon_button('panel-right-close', '收起側邊快捷')
-        collapse.clicked.connect(lambda: self.set_collapsed(True))
-        row.addWidget(collapse)
+        self.collapse_button = self._icon_button('panel-right-close', '收起側邊快捷')
+        self.collapse_button.setToolTip('按一下收起，按住可上下拖動')
+        self.collapse_button.installEventFilter(self)
+        self.collapse_button.clicked.connect(lambda: self.set_collapsed(True))
+        row.addWidget(self.collapse_button)
         root.addWidget(header)
         divider = QFrame()
         divider.setFixedHeight(1)
@@ -115,7 +133,7 @@ class SideQuickPanel(QWidget):
             label.setAlignment(Qt.AlignCenter)
             value = QLabel('—')
             value.setAlignment(Qt.AlignCenter)
-            value.setStyleSheet('font-size: 22px; font-weight: 400;')
+            value.setStyleSheet('font-size: 20px; font-weight: 400;')
             column.addWidget(label)
             column.addWidget(value)
             lots_row.addLayout(column, 1)
@@ -174,31 +192,60 @@ class SideQuickPanel(QWidget):
         actions.addWidget(home)
         root.addLayout(actions)
         progress = QLabel('帳號進度')
+        self.progress_label = progress
         progress.setAlignment(Qt.AlignCenter)
         progress_layout = QVBoxLayout()
-        progress_layout.setContentsMargins(0, 7, 0, 0)
+        progress_layout.setContentsMargins(0, 20, 0, 0)
         progress_layout.setSpacing(0)
         progress_layout.addWidget(progress)
-        self.ruler = AccountRuler()
+        self.ruler = AccountRuler(compact=True)
         progress_layout.addWidget(self.ruler)
         root.addLayout(progress_layout)
 
         self.events_button = QToolButton()
         self.events_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.events_button.setCheckable(True)
-        self.events_button.setArrowType(Qt.DownArrow)
+        self.events_button.setArrowType(Qt.LeftArrow)
+        self.events_button.setAccessibleName('重大事件')
         self.events_button.toggled.connect(self._expand_events)
         root.addWidget(self.events_button)
-        self.event_scroll = QScrollArea()
-        self.event_scroll.setWidgetResizable(True)
-        self.event_scroll.setFixedHeight(140)
-        self.event_rows = QLabel()
-        self.event_rows.setTextFormat(Qt.PlainText)
-        self.event_rows.setWordWrap(True)
-        self.event_rows.setAlignment(Qt.AlignTop)
-        self.event_scroll.setWidget(self.event_rows)
-        root.addWidget(self.event_scroll)
-        self.event_scroll.hide()
+        self.event_flyout = EventFlyout(self, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.event_flyout.setObjectName('eventFlyout')
+        self.event_flyout.setWindowTitle('重大事件')
+        self.event_flyout.setAttribute(Qt.WA_TranslucentBackground)
+        self.event_flyout.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.event_flyout.installEventFilter(self)
+        flyout_layout = QVBoxLayout(self.event_flyout)
+        flyout_layout.setContentsMargins(12, 10, 12, 12)
+        heading = QHBoxLayout()
+        heading.addWidget(QLabel('重大事件'), 1)
+        refresh = self._icon_button('refresh', '更新事件資料')
+        refresh.clicked.connect(lambda: self.calendar.refresh())
+        heading.addWidget(refresh)
+        close = type(app.chrome_close)('close', self.event_flyout)
+        close.setFixedSize(24, 24)
+        close.clicked.connect(lambda: self.events_button.setChecked(False))
+        heading.addWidget(close)
+        flyout_layout.addLayout(heading)
+        self.event_tabs = QTabWidget()
+        self.event_rows, self.history_rows, self.news_rows = (QLabel() for _ in range(3))
+        for title, label in zip(('即將公布', '近期公布', '央行公告'),
+                                (self.event_rows, self.history_rows, self.news_rows)):
+            label.setTextFormat(Qt.PlainText)
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignTop)
+            label.setStyleSheet('padding: 10px 2px; font-size: 11px;')
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(label)
+            self.event_tabs.addTab(scroll, title)
+        flyout_layout.addWidget(self.event_tabs, 1)
+        self.event_status = QLabel()
+        self.event_status.setTextFormat(Qt.PlainText)
+        self.event_status.setWordWrap(True)
+        self.event_status.setProperty('muted', True)
+        flyout_layout.addWidget(self.event_status)
+        self.event_flyout.hide()
         self.calendar = EconomicCalendar(APP_DIR / 'diagnostics' / 'economic-calendar.json', self)
         self.calendar.changed.connect(self.update_events)
         self.sync_timer = QTimer(self)
@@ -231,6 +278,7 @@ class SideQuickPanel(QWidget):
         self.calendar.refresh()
 
     def suspend(self):
+        self._cancel_collapse_drag()
         self._cancel_handle_drag()
         self.hide()
         self.sync_timer.stop()
@@ -293,38 +341,57 @@ class SideQuickPanel(QWidget):
         self.app.activateWindow()
 
     def _expand_events(self, expanded):
-        self.events_button.setArrowType(Qt.UpArrow if expanded else Qt.DownArrow)
-        self.event_scroll.setVisible(expanded)
-        self._fit_contents()
-        self.dock()
+        self.events_button.setArrowType(Qt.RightArrow if expanded else Qt.LeftArrow)
+        self.event_flyout.setVisible(expanded and not self.collapsed)
+        if expanded:
+            self._position_event_flyout()
+            self.calendar.refresh()
+
+    def _position_event_flyout(self):
+        if not self.event_flyout.isVisible() or self._screen is None:
+            return
+        area = self._screen.availableGeometry()
+        width = min(320, max(160, self.x() - area.left() - 8))
+        height = min(420, area.height() - 16)
+        self.event_flyout.setFixedSize(width, height)
+        self.event_flyout.move(max(area.left(), self.x() - width - 8),
+            max(area.top(), min(self.y()+self.height()-height, area.bottom()-height+1)))
 
     def update_events(self):
         now = datetime.now(UTC)
-        upcoming = [event for event in self.calendar.events if event.when > now]
+        upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
         if self.calendar.error or not self.calendar.is_fresh(now):
-            summary = '重大事件 · 資料待更新'
+            summary = '重大事件 · 部分資料待更新'
         elif upcoming:
-            summary = '重大事件 · ' + countdown(upcoming[0].when, now)
+            summary = '重大事件 · 已知排程 ' + countdown(upcoming[0].when, now)
         else:
-            summary = '本週已無後續高影響事件'
+            summary = '重大事件 · 暫無近期排程'
         self.events_button.setText(summary)
-        rows = [f'{event.when.astimezone():%m/%d %H:%M}  {event.currency}\n{event.title}'
-                for event in upcoming[:6]]
-        if not rows:
-            rows = ['目前日曆沒有後續事件，待來源更新。' if self.calendar.fetched_at else '正在讀取事件日曆…']
-        if self.calendar.error:
-            rows.insert(0, self.calendar.error + '（以下為快取資料）')
-        elif not self.calendar.is_fresh(now) and self.calendar.fetched_at:
-            rows.insert(0, '資料待更新，以下為快取資料。')
-        rows.append('已排程高影響事件 · 本機時間\n來源：Forex Factory\n突發快訊尚未接入。')
-        self.event_rows.setText('\n\n'.join(rows))
+        def line(event):
+            return f'{event.when.astimezone():%m/%d %H:%M}  {event.currency} · {event.source}\n{event.title}'
+        self.event_rows.setText('\n\n'.join(map(line, upcoming[:20])) or
+                               '目前載入資料沒有近期排程；請查看來源更新狀態。')
+        recent = sorted((e for e in self.calendar.events if now-timedelta(days=7) <= e.when <= now), reverse=True)
+        self.history_rows.setText('\n\n'.join('已公布 · '+line(e) for e in recent[:12]) or '近 7 天沒有已載入的公布紀錄。')
+        news = [n for n in self.calendar.news if now-timedelta(days=30) <= n.when <= now]
+        self.news_rows.setText('\n\n'.join(f'{n.when.astimezone():%m/%d %H:%M} · {n.source}\n{n.title}' for n in news[:12])
+                               or '目前沒有近 30 天的已載入公告。')
+        self.event_status.setText('\n'.join(self.calendar.status_lines(now)) +
+            '\n本機時間 · 國際日曆為本週；GDP/PCE 含未來排程。\n央行公告不涵蓋所有突發新聞。')
 
     def set_collapsed(self, collapsed):
+        was_collapsed = self.collapsed
+        if collapsed and not was_collapsed:
+            self._y = self.y()
+            self.app.store.data['ui']['side_panel_y'] = self._y
+            self.app.save_ui_state()
+        if collapsed:
+            self.events_button.setChecked(False)
         self.collapsed = collapsed
         self.clearMask()
         self.body.setVisible(not collapsed)
         self.handle.setVisible(collapsed)
-        self.layout().setContentsMargins(*((0, 0, 0, 0) if collapsed else (10, 8, 10, 8)))
+        self.layout().setContentsMargins(*((0, 0, 0, 0) if collapsed else (14, 10, 14, 10)))
         self._fit_contents()
         self.dock()
 
@@ -351,6 +418,7 @@ class SideQuickPanel(QWidget):
         area = self._screen.availableGeometry()
         self.move(area.right() - self.width() + 1,
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
+        self._position_event_flyout()
 
     def _begin_handle_drag(self):
         if self._handle_pointer is None or not self.collapsed:
@@ -401,7 +469,39 @@ class SideQuickPanel(QWidget):
         self.handle.setCursor(Qt.OpenHandCursor)
         self.set_collapsed(True)
 
+    def _cancel_collapse_drag(self):
+        if self._collapse_press is not None:
+            self._collapse_press = None
+            self._collapse_moved = False
+            self.collapse_button.releaseMouse()
+
     def eventFilter(self, watched, event):
+        if watched is getattr(self, 'event_flyout', None) and event.type() == QEvent.Close:
+            self.events_button.setChecked(False)
+        if watched is self.collapse_button:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._collapse_press = event.globalPosition().toPoint()
+                self._collapse_start_y = self.y()
+                self._collapse_moved = False
+                self.collapse_button.grabMouse()
+                return True
+            if event.type() == QEvent.MouseMove and self._collapse_press is not None:
+                delta = event.globalPosition().toPoint() - self._collapse_press
+                self._collapse_moved |= delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance()
+                if self._collapse_moved:
+                    self._y = self._collapse_start_y + delta.y()
+                    self.dock()
+                return True
+            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self._collapse_press is not None:
+                self._collapse_press = None
+                self.collapse_button.releaseMouse()
+                if self._collapse_moved:
+                    self._y = self.y()
+                    self.app.store.data['ui']['side_panel_y'] = self._y
+                    self.app.save_ui_state()
+                else:
+                    self.set_collapsed(True)
+                return True
         if watched is self.handle:
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 self._handle_press = self._handle_pointer = event.globalPosition().toPoint()
@@ -466,8 +566,16 @@ class SideQuickPanel(QWidget):
             painter.drawRoundedRect(rect, 10, 10)
 
     def closeEvent(self, event):
+        self._cancel_collapse_drag()
+        self.event_flyout.close()
         self._cancel_handle_drag()
         self.sync_timer.stop()
         self.event_timer.stop()
         self.calendar.close()
         super().closeEvent(event)
+
+    def hideEvent(self, event):
+        self._cancel_collapse_drag()
+        if hasattr(self, 'events_button'):
+            self.events_button.setChecked(False)
+        super().hideEvent(event)

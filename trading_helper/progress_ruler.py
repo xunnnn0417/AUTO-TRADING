@@ -238,8 +238,9 @@ class AccountRuler(QWidget):
     names/amounts attach to ONE geometric marker without misleading renaming.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, compact: bool = False):
         super().__init__(parent)
+        self.compact = compact
         self.state: RulerState | None = None
         self.placeholder = "等待試算表的帳號進度資料"
         self._hot_anchor: Decimal | None = None
@@ -249,7 +250,7 @@ class AccountRuler(QWidget):
         self.setMouseTracking(True)
         # Keep enough room for two labels at the SAME amount (for example
         # current balance == initial balance), without cropping the last row.
-        self.setMinimumHeight(206)
+        self.setMinimumHeight(186 if compact else 206)
 
     def set_state(self, state: RulerState | None, reason: str = "") -> None:
         self.state = state
@@ -280,13 +281,13 @@ class AccountRuler(QWidget):
         return f"{event} · {hint}"
 
     @staticmethod
-    def _label_positions(items: list[tuple[float, tuple]], width: int) -> tuple[float, list[float]]:
+    def _label_positions(items: list[tuple[float, tuple]], width: int, *, min_width=74) -> tuple[float, list[float]]:
         if not items:
             return 100, []
         n = len(items)
         pad = 5
         gap = 5
-        label_width = min(140, max(74, (width - 2 * pad - (n - 1) * gap) / n))
+        label_width = min(140, max(min_width, (width - 2 * pad - (n - 1) * gap) / n))
         out: list[float] = []
         for x, _ in items:
             intended = max(pad, min(width - pad - label_width, x - label_width / 2))
@@ -358,7 +359,7 @@ class AccountRuler(QWidget):
         goal = min(amounts["今天獲利目標"], amounts["帳號獲利目標"])
         balance = self.state.balance
         width = self.width()
-        axis = 89
+        axis = 82 if self.compact else 89
         p.setPen(QPen(QColor("#65616e"), 1.8))
         # Endpoints sit exactly on the outermost milestone dots: no tails.
         minimum_x = coordinates[groups[0][0]]
@@ -376,7 +377,7 @@ class AccountRuler(QWidget):
         lower.sort(key=lambda e: e[0])
 
         for lane, items in (("upper", upper), ("lower", lower)):
-            label_width, label_starts = self._label_positions(items, width)
+            label_width, label_starts = self._label_positions(items, width, min_width=66 if self.compact else 74)
             for (x, (anchor, nodes)), label_x in zip(items, label_starts):
                 active = self._hot_anchor == anchor
                 current = any(name == "當前餘額" for name, _ in nodes)
@@ -394,10 +395,10 @@ class AccountRuler(QWidget):
                 if lane == "upper":
                     # Two grouped goal rows need more space than ordinary
                     # labels, but every line remains SHORT at the tick.
-                    top_y = 2 if len(nodes) > 1 else 34
+                    top_y = (0 if len(nodes) > 1 else 14) if self.compact else (2 if len(nodes) > 1 else 34)
                     start, end = axis-11, axis-7
                 else:
-                    top_y = 140
+                    top_y = 128 if self.compact else 140
                     start, end = axis+7, axis+10
 
                 p.setPen(QPen(QColor("#ffffff") if active else (
@@ -474,7 +475,7 @@ class AccountRuler(QWidget):
             # Alternate sides of ONE ruler: win above, loss below.
             # Even when the profit segment is short, its caption stays on
             # the same scale with a four-pixel midpoint tick.
-            text_y = 102 if side == "loss" else 65
+            text_y = axis + 13 if side == "loss" else axis - 24
             label_left = max(3, min(width - label_w - 3,
                                     middle - label_w / 2))
             rect = QRectF(label_left, text_y, label_w, 16)
