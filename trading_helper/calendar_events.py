@@ -183,6 +183,7 @@ class EconomicCalendar(QObject):
         self.news: list[Announcement] = []
         self._events_by_source = {'ff': [], 'bea': []}
         self._news_by_source = {key: [] for key in SOURCE_URLS if key not in self._events_by_source}
+        self._preview_news = []
         self.translations = {}
         self._translation_busy = False
         self._translation_enabled = False
@@ -485,8 +486,17 @@ class EconomicCalendar(QObject):
 
     def _combine(self):
         self.events = sorted(set(e for rows in self._events_by_source.values() for e in rows))
-        self.news = sorted(set(e for rows in self._news_by_source.values() for e in rows), reverse=True)
+        self.news = sorted(set(e for rows in self._news_by_source.values() for e in rows)
+                           | set(self._preview_news), reverse=True)
         self.fetched_at = max(self.source_times.values(), default=None)
+
+    def preview_announcement(self):
+        """Inject only an in-memory headline into the normal notification path."""
+        item = Announcement(datetime.now(UTC), '測試消息', '【測試】臨時重大消息：黃金市場波動提醒')
+        self._preview_news = (self._preview_news + [item])[-5:]
+        self._combine()
+        self.changed.emit()
+        self.announcements.emit([item])
 
     def status_lines(self, now):
         lines = []

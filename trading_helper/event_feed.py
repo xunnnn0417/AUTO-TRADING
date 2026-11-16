@@ -20,6 +20,11 @@ class EventFeedView(QWidget):
         root.setSpacing(8)
         header = QHBoxLayout()
         header.addWidget(QLabel(title), 1)
+        self.test_alert_button = QToolButton()
+        self.test_alert_button.setText('測試重大消息')
+        self.test_alert_button.setToolTip('模擬一則消息，測試提醒與紅點；不會操作交易。')
+        self.test_alert_button.clicked.connect(self.test_announcement)
+        header.addWidget(self.test_alert_button)
         self.refresh_button = QToolButton()
         self.refresh_button.setIcon(themed_icon('refresh'))
         self.refresh_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -91,6 +96,10 @@ class EventFeedView(QWidget):
         self.bind()
         self.calendar.refresh(force=True)
 
+    def test_announcement(self):
+        self.bind()
+        self.calendar.preview_announcement()
+
     def showEvent(self, event):
         super().showEvent(event)
         self.event_status.setChecked(False)
@@ -120,7 +129,7 @@ class EventFeedView(QWidget):
                   for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
         recent += [(n.when, n.source, n.title) for n in self.calendar.news
                    if now-timedelta(hours=72) <= n.when <= now
-                   and (n.source.startswith('香港電台') or relevant_announcement(n.title))]
+                   and (n.source == '測試消息' or n.source.startswith('香港電台') or relevant_announcement(n.title))]
         recent = sorted(set(recent), reverse=True)[:24]
         self.news_rows.setText('\n\n'.join(f'{when.astimezone(TAIPEI):%m/%d %H:%M} · {source}\n{title(original)}'
             for when, source, original in recent) or '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')

@@ -173,3 +173,42 @@ class NewsAlertUiTests(unittest.TestCase):
         self.w.operation_hint.hide()
         self.w._show_pending_news_alert()
         self.assertTrue(self.w._news_alert_dialog.isVisible())
+
+    def test_preview_button_runs_real_alert_path_even_while_reading_news(self):
+        with patch.object(feeds.EconomicCalendar, 'refresh'):
+            self.w.switch_workspace('消息')
+        view = self.w.news_feed
+        service = view.calendar
+        service._save_cache()
+        before = service.path.read_bytes() if service.path.exists() else None
+        with patch.object(feeds, 'urlopen') as download:
+            view.test_alert_button.click()
+        download.assert_not_called()
+        dialog = self.w._news_alert_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertTrue(self.w.news_badge.isVisible())
+        self.assertIn('測試', dialog._primary_text.text())
+        self.assertIn('測試', view.news_rows.text())
+        self.assertEqual(service.path.read_bytes() if service.path.exists() else None, before)
+        self.assertFalse(service.path.with_name('news-poll.jsonl').exists())
+        dialog._buttons[0].click()
+        self.assertFalse(self.w.news_badge.isVisible())
+        service._combine()
+        self.assertIn('測試', view.news_rows.text())
+
+    def test_preview_uses_same_operation_deferral_and_remains_out_of_saved_sources(self):
+        with patch.object(feeds.EconomicCalendar, 'refresh'):
+            self.w.switch_workspace('消息')
+        self.w._active_tasks = 1
+        self.w.news_feed.test_alert_button.click()
+        self.assertIsNone(self.w._news_alert_dialog)
+        self.assertTrue(self.w.news_badge.isVisible())
+        self.w._active_tasks = 0
+        self.w._show_pending_news_alert()
+        self.assertTrue(self.w._news_alert_dialog.isVisible())
+        service = self.w.news_feed.calendar
+        now = datetime.now(feeds.UTC)
+        service._apply([('fed', [], now, '')])
+        saved = json.loads(service.path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['sources']['fed'], [])
+        self.assertNotIn('測試', json.dumps(saved, ensure_ascii=False))

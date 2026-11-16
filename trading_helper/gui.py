@@ -2104,7 +2104,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         return self._event_calendar
 
     def _queue_news_alerts(self, items) -> None:
-        if self.isVisible() and self.main_pages.currentWidget() is self.news_page:
+        if (self.isVisible() and self.main_pages.currentWidget() is self.news_page
+                and not any(item.source == '測試消息' for item in items)):
             return  # Already reading the shared feed.
         self._pending_news_alerts = list(dict.fromkeys(self._pending_news_alerts + list(items)))[-20:]
         if not self._pending_news_alerts:
