@@ -143,7 +143,17 @@ class SheetReader:
             mapped["point_size"] = defaults.get("point_size", "0.0001")
         if not mapped.get("price_digits"):
             mapped["price_digits"] = defaults.get("price_digits", "5")
-        return TradeInstruction.from_mapping(row_number, mapped)
+        return self._instruction_from_values(row_number, mapped)
+
+    @staticmethod
+    def _instruction_from_values(row_number, mapped):
+        try:
+            return TradeInstruction.from_mapping(row_number, mapped)
+        except ValidationError as exc:
+            # These are actual read-back values, for display only, never an order.
+            if not hasattr(exc, "display_values"):
+                exc.display_values = dict(mapped)
+            raise
 
     def _read_cells(
         self, rows: list[list[str]], config: dict[str, Any]
@@ -214,7 +224,7 @@ class SheetReader:
             mapped["point_size"] = defaults.get("point_size", "0.0001")
         if not mapped.get("price_digits"):
             mapped["price_digits"] = defaults.get("price_digits", "5")
-        return TradeInstruction.from_mapping(min(source_rows, default=1), mapped)
+        return self._instruction_from_values(min(source_rows, default=1), mapped)
 
     def _fetch_rows(self, config: dict[str, Any]) -> list[list[str]]:
         url = str(config.get("spreadsheet_url", "")).strip()

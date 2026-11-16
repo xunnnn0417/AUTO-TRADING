@@ -25,7 +25,8 @@ This tool reads your sheet and fills calibrated broker fields. When enabled by t
 - The account ruler keeps its original monetary scale and calculations. Initial/current balance labels use separate quarter-width slots even at equal balances, then move together by up to five percent of the view width toward the applicable loss/goal boundary. Losses swap the two labels; all label movement is clipped without moving the plotted monetary markers. The same renderer serves the main and side panels.
 - English public headlines are translated in the background using the documented anonymous MyMemory GET API, with cached results and a local 4,000-character daily cap. Only public titles are sent; no account, spreadsheet or trading data is shared. Machine translations are labeled, numeric changes are rejected, and the original title remains available when translation fails or reaches its limit. News refreshes and translation do not block trading controls.
 - TradingView position helper
-- 場內餘額超出試算表的帳號獲利目標／最大虧損範圍時，主畫面與側欄顯示驚嘆號並阻止填入，其他數值繼續顯示。餘額與預期 SL 警示都須成功讀回符合目前輸入的正常數值後才解除，僅修改輸入文字不會解除。
+- 餘額及預期 SL 的警示以更新後讀回的數值為準；輸入途中不新增警示，既有警示也不會僅因修改文字而解除。場內餘額超出帳號獲利目標／最大虧損範圍時，主畫面與側欄都會阻止填入。
+- 餘額、每日盈虧、預期 SL 與進場價更新後，即使表格出現警示或交易計算無效，仍保留已確認寫入的新值，以淡色顯示並阻止交易，不自動還原。未確認寫入／讀回時保留可編輯草稿，不冒充更新完成；其他已讀數值繼續顯示。
 - ESC emergency stop
 
 ## What Is Not Included

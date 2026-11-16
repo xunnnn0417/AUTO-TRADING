@@ -166,6 +166,9 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
 
         self.window.parameter_inputs["expected_sl_combined"].setText("-5.27")
+        self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
+        self.window.instruction.expected_sl_points = Decimal('-5.27')
+        self.window._refresh_expected_sl_warning()
         self.assertTrue(self.window.expected_sl_warning_badge.isVisible())
 
         self.window.parameter_inputs["expected_sl_combined"].setText("-5.57")

@@ -199,13 +199,13 @@ class RulerGui(unittest.TestCase):
         observed = []
         def stub(config, refs):
             observed.append((config["worksheet"], tuple(refs)))
-            if refs == ["A12"]:
-                return {"A12": ""}
+            if refs == ["A12", "A20", "E12"]:
+                return {key: "" for key in refs}
             return {key:sheet_values()[config["worksheet"]][key] for key in refs}
         w.reader.read_a1_values = stub
         w._read_sheet_task()
         self.assertEqual(
-            [v[0] for v in observed if v[1]!=("A12",)],
+            [v[0] for v in observed if v[1]!=("A12", "A20", "E12")],
             ["運算區", "主要計算區"]
         )
         self.assertEqual(w.store.data["sheet"]["worksheet"],"主要計算區")
