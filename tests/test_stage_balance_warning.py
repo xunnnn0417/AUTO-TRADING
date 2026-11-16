@@ -1,5 +1,7 @@
 """Stage persistence and balance warnings use isolated sheet and Qt fixtures."""
 import unittest
+from dataclasses import replace
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from trading_helper import gui
@@ -54,6 +56,54 @@ class StageBalanceWarningTests(unittest.TestCase):
             self.w.reader, self.w.store.data['sheet']), ''))
         self.w.instruction = self.w.reader.read(self.w.store.data['sheet'])
         self.w._show_instruction(self.w.instruction)
+
+    def test_balance_outside_sheet_limits_warns_and_blocks_all_fill_entries(self):
+        from test_progress_ruler import sheet_values
+        self.load()
+        self.w._show_ruler_sheet((sheet_values(), '', self.w.profiles.active_name,
+                                 self.w.store.data['sheet']['spreadsheet_url']))
+        for raw, detail in (('55000.01', '高於帳號獲利目標'), ('46,499.99', '低於最大虧損線'),
+                            ('~46000', '低於最大虧損線')):
+            with self.subTest(balance=raw):
+                self.w.parameter_inputs['internal_balance'].setText(raw)
+                self.assertTrue(self.w.balance_warning_badge.isVisible())
+                self.assertIn(detail, self.w.balance_warning_badge.toolTip())
+                original = self.w.data_labels['internal_lot'].text()
+                with patch.object(gui.QMessageBox, 'warning') as warning, \
+                     patch.object(self.w, '_start_fill_worker') as worker, \
+                     patch.object(self.w, '_write_trade_parameter_values') as write:
+                    self.w.fill_both()
+                    self.w.fill_role('internal')
+                    self.w.fill_role('external')
+                    self.assertEqual(warning.call_count, 3)
+                    self.assertIn(detail, warning.call_args.args[2])
+                    worker.assert_not_called()
+                    write.assert_not_called()
+                with self.assertRaises(gui.AutomationError):
+                    self.w._require_instruction()
+                self.assertEqual(self.w.data_labels['internal_lot'].text(), original)
+        self.assertEqual(self.w.reader.writes, [])
+
+    def test_range_warning_uses_loaded_values_and_valid_boundaries_do_not_warn(self):
+        from test_progress_ruler import sheet_values
+        self.load()
+        self.w.ruler_sheet_values = sheet_values()
+        for raw in ('46500', '50000', '55000'):
+            self.w.parameter_inputs['internal_balance'].setText(raw)
+            self.assertFalse(self.w._balance_warning_active())
+            self.assertFalse(self.w.balance_warning_badge.isVisible())
+        self.w.parameter_inputs['internal_balance'].clear()
+        self.w.instruction = replace(self.w.instruction, internal_balance=Decimal('56000'))
+        self.w._show_instruction(self.w.instruction)
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.w._clear_balance_warning(self.w._trade_settings_context())
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.w.instruction = replace(self.w.instruction, internal_balance=Decimal('50000'))
+        self.w._show_instruction(self.w.instruction)
+        self.assertFalse(self.w.balance_warning_badge.isVisible())
+        self.w.parameter_inputs['internal_balance'].setText('56000')
+        self.w._apply_profile_ui()
+        self.assertFalse(self.w._balance_warning_active())
 
     def change_stage(self):
         with patch.object(self.w, '_start') as start, patch.object(gui.time, 'sleep'):

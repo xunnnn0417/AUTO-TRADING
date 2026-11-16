@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Mapping
 
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 
@@ -313,6 +313,30 @@ class AccountRuler(QWidget):
             return inset + float((value - min_anchor) / span) * extent
         return groups, {anchor: x_for(anchor) for anchor, _ in groups}, x_for
 
+    def _balance_labels(self):
+        """Move both text slots together; monetary ticks keep their linear scale."""
+        if self.state is None:
+            return []
+        amounts = dict(self.state.markers)
+        initial = amounts["帳號初始餘額"]
+        current = ("當前餘額", self.state.balance)
+        historical = ("帳號初始餘額", initial)
+        ordered = (historical, current) if self.state.balance >= initial else (current, historical)
+        metrics = QFontMetrics(QFont("Microsoft JhengHei UI", 8, QFont.DemiBold))
+        width = min(max(1, self.width()/2-10), max(66, max(
+            metrics.horizontalAdvance(label) for label in
+            ("當前餘額", "初始餘額", money(initial), money(self.state.balance)))+10))
+        edge = width/2+5
+        positive = self.state.balance >= initial
+        distance = amounts["帳號獲利目標"]-initial if positive else initial-amounts["最大虧損"]
+        change = self.state.balance-initial if positive else initial-self.state.balance
+        ratio = float(min(Decimal(1), max(Decimal(0), change/distance))) if distance > 0 else float(change > 0)
+        travel = min(self.width()*.05, max(0, self.width()*.25-edge))
+        shift = ratio*travel*(1 if positive else -1)
+        top = 128 if self.compact else 140
+        return [(name, value, QRectF(self.width()*fraction+shift-width/2, top, width, 27))
+                for fraction, (name, value) in zip((.25, .75), ordered)]
+
     def mouseMoveEvent(self, event) -> None:
         px, py = event.position().x(), event.position().y()
         hovered = next(
@@ -366,75 +390,50 @@ class AccountRuler(QWidget):
         maximum_x = coordinates[groups[-1][0]]
         p.drawLine(int(minimum_x), axis, int(maximum_x), axis)
 
-        upper, lower = [], []
+        upper = []
         for anchor, nodes in groups:
-            record = coordinates[anchor], (anchor, nodes)
-            if any(name in ("當前餘額", "帳號初始餘額") for name, _ in nodes):
-                lower.append(record)
-            else:
-                upper.append(record)
+            labels = tuple((name, value) for name, value in nodes
+                           if name not in ("當前餘額", "帳號初始餘額"))
+            if labels:
+                upper.append((coordinates[anchor], (anchor, labels)))
+            x = coordinates[anchor]
+            active = self._hot_anchor == anchor
+            current = any(name == "當前餘額" for name, _ in nodes)
+            initial_only = len(nodes) == 1 and nodes[0][0] == "帳號初始餘額"
+            ink = QColor("#ffffff") if active else QColor("#b9b3c2")
+            p.setPen(QPen(ink, 1.2))
+            p.drawLine(int(x), axis-6, int(x), axis+6)
+            dot_size = 10 if active else (9 if current else (4 if initial_only else 6))
+            p.setPen(QPen(QColor("#ddd2ff") if current else ink, 1.0))
+            p.setBrush(QColor("#ffffff") if active else QColor(
+                "#7752ed" if current else "#67626f" if initial_only else "#b9b3c2"))
+            p.drawEllipse(QRectF(x-dot_size/2, axis-dot_size/2, dot_size, dot_size))
+            self._hit_regions.append((QRectF(x-11, axis-11, 22, 22), anchor))
         upper.sort(key=lambda e: e[0])
-        lower.sort(key=lambda e: e[0])
+        label_width, label_starts = self._label_positions(upper, width, min_width=66 if self.compact else 74)
+        for (x, (anchor, nodes)), label_x in zip(upper, label_starts):
+            active = self._hot_anchor == anchor
+            top_y = (0 if len(nodes) > 1 else 14) if self.compact else (2 if len(nodes) > 1 else 34)
+            p.setPen(QPen(QColor("#726b7e"), 1.05))
+            p.drawLine(int(x), axis-11, int(x), axis-7)
+            p.setFont(QFont("Microsoft JhengHei UI", 8, QFont.DemiBold if active else QFont.Normal))
+            for i, (name, value) in enumerate(nodes):
+                yy = top_y+i*27
+                p.setPen(QColor("#ffffff") if active else QColor("#b6b0c2"))
+                p.drawText(QRectF(label_x, yy, label_width, 13), Qt.AlignCenter, self._short_label(name))
+                p.setPen(QColor("#ffffff") if active else QColor("#ddd7e7"))
+                p.drawText(QRectF(label_x, yy+13, label_width, 14), Qt.AlignCenter, money(value))
+            self._hit_regions.append((QRectF(label_x-2, top_y-1, label_width+4, len(nodes)*27+2), anchor))
 
-        for lane, items in (("upper", upper), ("lower", lower)):
-            label_width, label_starts = self._label_positions(items, width, min_width=66 if self.compact else 74)
-            for (x, (anchor, nodes)), label_x in zip(items, label_starts):
-                active = self._hot_anchor == anchor
-                current = any(name == "當前餘額" for name, _ in nodes)
-                # Initial equity is historical context, not an action boundary.
-                # Keep shared nodes prominent if an actual limit overlaps it.
-                initial_only = (
-                    len(nodes) == 1 and nodes[0][0] == "帳號初始餘額"
-                )
-                # Colors convey hierarchy: selected text stays off-white;
-                # the saturated violet belongs to the current dot/line.
-                ink = QColor("#ffffff") if active else (
-                    QColor("#f1eef9") if current else (
-                        QColor("#908b9a") if initial_only else QColor("#b6b0c2")
-                    ))
-                if lane == "upper":
-                    # Two grouped goal rows need more space than ordinary
-                    # labels, but every line remains SHORT at the tick.
-                    top_y = (0 if len(nodes) > 1 else 14) if self.compact else (2 if len(nodes) > 1 else 34)
-                    start, end = axis-11, axis-7
-                else:
-                    top_y = 128 if self.compact else 140
-                    start, end = axis+7, axis+10
-
-                p.setPen(QPen(QColor("#ffffff") if active else (
-                    QColor("#57535f") if initial_only else QColor("#726b7e")),
-                              1.4 if active else (0.8 if initial_only else 1.05)))
-                p.drawLine(int(x), start, int(x), end)
-                p.setPen(QPen(ink, 1.8 if active else 1.2))
-                p.drawLine(int(x), axis-6, int(x), axis+6)
-                # A deeper, more saturated amethyst with a thin silver rim
-                # reads clearly on black. Hover changes the center to white.
-                dot_size = 10 if active else (9 if current else (4 if initial_only else 6))
-                if current:
-                    p.setPen(QPen(QColor("#ddd2ff"), 1.0))
-                p.setBrush(QColor("#ffffff") if active else (
-                    QColor("#7752ed") if current else (
-                        QColor("#67626f") if initial_only else QColor("#b9b3c2"))))
-                p.drawEllipse(QRectF(x-dot_size/2, axis-dot_size/2,
-                                     dot_size, dot_size))
-
-                p.setFont(QFont("Microsoft JhengHei UI", 8,
-                                QFont.DemiBold if active or current
-                                else QFont.Normal))
-                for i, (name, value) in enumerate(nodes):
-                    yy = top_y+i*27
-                    p.setPen(ink)
-                    p.drawText(QRectF(label_x, yy, label_width, 13),
-                               Qt.AlignCenter, self._short_label(name))
-                    p.setPen(QColor("#ffffff") if active else (
-                        QColor("#a9a3b1") if initial_only else QColor("#ddd7e7")))
-                    p.drawText(QRectF(label_x, yy+13, label_width, 14),
-                               Qt.AlignCenter, money(value))
-                self._hit_regions.append((
-                    QRectF(label_x-2, top_y-1, label_width+4,
-                           len(nodes)*27+2), anchor))
-                self._hit_regions.append((
-                    QRectF(x-11, axis-11, 22, 22), anchor))
+        for name, value, rect in self._balance_labels():
+            active = self._hot_anchor == value
+            current = name == "當前餘額"
+            p.setFont(QFont("Microsoft JhengHei UI", 8, QFont.DemiBold if active or current else QFont.Normal))
+            p.setPen(QColor("#ffffff") if active else QColor("#f1eef9" if current else "#908b9a"))
+            p.drawText(QRectF(rect.x(), rect.y(), rect.width(), 13), Qt.AlignCenter, self._short_label(name))
+            p.setPen(QColor("#ffffff") if active else QColor("#ddd7e7" if current else "#a9a3b1"))
+            p.drawText(QRectF(rect.x(), rect.y()+13, rect.width(), 14), Qt.AlignCenter, money(value))
+            self._hit_regions.append((rect.adjusted(-2, -1, 2, 1), value))
 
         # ONE continuous line, colored by the active risk/profit intervals.
         # Place captions immediately above/below this line, not on a second

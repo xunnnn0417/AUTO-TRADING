@@ -23,6 +23,7 @@ ECB_URL = 'https://www.ecb.europa.eu/rss/press.html'
 RTHK_FINANCE_URL = 'https://rthk.hk/rthk/news/rss/c_expressnews_cfinance.xml'
 RTHK_WORLD_URL = 'https://rthk.hk/rthk/news/rss/c_expressnews_cinternational.xml'
 UTC = timezone.utc
+TAIPEI = timezone(timedelta(hours=8))
 MAX_BYTES = 1_000_000
 SOURCE_URLS = {'ff': FEED_URL, 'bea': BEA_URL, 'fed': FED_URL, 'ecb': ECB_URL,
                'rthk_finance': RTHK_FINANCE_URL, 'rthk_world': RTHK_WORLD_URL}
@@ -128,6 +129,24 @@ def parse_market_news(raw: bytes, source: str) -> list[Announcement]:
     return [item for item in parse_announcements(raw, source) if MARKET_TOPICS.search(item.title)]
 
 
+def calendar_week(rows):
+    """Retain the loaded weekly period, including low-impact rows filtered from UI."""
+    dates = []
+    if not isinstance(rows, list) or len(rows) > 5000:
+        return None
+    for row in rows:
+        try:
+            dates.append(aware_date(str(row.get('date', ''))).astimezone(TAIPEI))
+        except (AttributeError, ValueError):
+            continue
+    if not dates:
+        return None
+    latest = max(dates)
+    begin = (latest-timedelta(days=latest.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = begin+timedelta(days=7)
+    return (begin, end) if all(begin <= when < end for when in dates) else None
+
+
 def countdown(when: datetime, now: datetime) -> str:
     seconds = (when - now).total_seconds()
     if seconds <= 0:
@@ -138,7 +157,7 @@ def countdown(when: datetime, now: datetime) -> str:
     days, remaining = divmod(minutes, 1440)
     hours, minutes = divmod(remaining, 60)
     if days:
-        return f'{days} 天 {hours} 小時後'
+        return f'{days} 天 {hours} 小時 {minutes} 分後'
     if hours:
         return f'{hours} 小時 {minutes} 分後'
     return f'{minutes} 分鐘後'
@@ -164,6 +183,7 @@ class EconomicCalendar(QObject):
         self._translation_chars = 0
         self.source_times: dict[str, datetime] = {}
         self.source_errors: dict[str, str] = {}
+        self._ff_coverage = None
         self.fetched_at: datetime | None = None
         self.error = ''
         self._last_attempt: dict[str, datetime] = {}
@@ -177,6 +197,11 @@ class EconomicCalendar(QObject):
                 if not isinstance(payload, dict):
                     raise ValueError('事件快取格式不符')
                 if payload.get('version') == 2:
+                    coverage = payload.get('ff_coverage')
+                    if isinstance(coverage, list) and len(coverage) == 2 and all(isinstance(v, str) for v in coverage):
+                        begin, end = map(aware_date, coverage)
+                        if timedelta(days=6) <= end-begin <= timedelta(days=8):
+                            self._ff_coverage = (begin, end)
                     translations = payload.get('translations', {})
                     if not isinstance(translations, dict) or len(translations) > 500:
                         translations = {}
@@ -205,6 +230,12 @@ class EconomicCalendar(QObject):
         return all(key in self.source_times and timedelta(0) <= now - self.source_times[key] < SOURCE_TTLS[key]
                    for key in SOURCE_URLS)
 
+    def covers_day(self, start, end, now):
+        fetched = self.source_times.get('ff')
+        return bool(self._ff_coverage and fetched and 'ff' not in self.source_errors
+                    and timedelta(0) <= now-fetched < SOURCE_TTLS['ff']
+                    and self._ff_coverage[0] <= start and end <= self._ff_coverage[1])
+
     def refresh(self) -> None:
         now = datetime.now(UTC)
         if self._closed or self._busy:
@@ -228,7 +259,9 @@ class EconomicCalendar(QObject):
             if len(raw) > MAX_BYTES:
                 raise ValueError('事件資料過大')
             if key == 'ff':
-                data = parse_events(json.loads(raw.decode('utf-8-sig')))
+                rows = json.loads(raw.decode('utf-8-sig'))
+                data = parse_events(rows)
+                return key, data, datetime.now(UTC), '', calendar_week(rows)
             elif key == 'bea':
                 data = parse_bea_schedule(json.loads(raw.decode('utf-8-sig')))
             elif key.startswith('rthk_'):
@@ -253,10 +286,13 @@ class EconomicCalendar(QObject):
         if not self._events_by_source['ff'] and self.events:
             self._events_by_source['ff'] = [e for e in self.events if e.source == 'Forex Factory']
         self._busy = False
-        for key, data, fetched_at, error in result:
+        for record in result:
+            key, data, fetched_at, error = record[:4]
             if error:
                 self.source_errors[key] = error
             else:
+                if key == 'ff':
+                    self._ff_coverage = record[4] if len(record) > 4 else None
                 self.source_errors.pop(key, None)
                 self.source_times[key] = fetched_at
                 (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
@@ -327,7 +363,7 @@ class EconomicCalendar(QObject):
             when = self.source_times.get(key)
             state = ('無法更新' if key in self.source_errors else
                      '待更新' if when is None or not timedelta(0) <= now-when < SOURCE_TTLS[key] else '已連線')
-            stamp = f' · {when.astimezone():%m/%d %H:%M}' if when else ''
+            stamp = f' · {when.astimezone(TAIPEI):%m/%d %H:%M}' if when else ''
             lines.append(name + '：' + state + stamp)
         return lines
 
@@ -342,6 +378,7 @@ class EconomicCalendar(QObject):
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps({
                 'version': 2,
+                'ff_coverage': [value.isoformat() for value in self._ff_coverage] if self._ff_coverage else None,
                 'translations': dict(list(self.translations.items())[-500:]),
                 'translation_day': self._translation_day,
                 'translation_chars': self._translation_chars,

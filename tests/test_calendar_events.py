@@ -35,7 +35,7 @@ class CalendarTests(unittest.TestCase):
 
     def test_countdown_never_claims_a_past_event_is_upcoming(self):
         self.assertEqual(countdown(NOW + timedelta(hours=2, minutes=15), NOW), '2 小時 15 分後')
-        self.assertEqual(countdown(NOW + timedelta(days=1, hours=2), NOW), '1 天 2 小時後')
+        self.assertEqual(countdown(NOW + timedelta(days=1, hours=2), NOW), '1 天 2 小時 0 分後')
         self.assertEqual(countdown(NOW + timedelta(seconds=15), NOW), '1 分鐘內')
         self.assertEqual(countdown(NOW - timedelta(seconds=1), NOW), '已發布')
 

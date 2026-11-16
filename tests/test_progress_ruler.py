@@ -478,11 +478,62 @@ class RulerGui(unittest.TestCase):
             rect for rect, anchor in ruler._hit_regions
             if anchor == D("50000") and rect.width() > 70
         ]
-        self.assertEqual(len(matches), 1)
-        self.assertLess(matches[0].bottom(), ruler.height())
+        self.assertEqual(len(matches), 2)
+        for rect in matches:
+            self.assertLess(rect.bottom(), ruler.height())
+        self.assertAlmostEqual(sorted(rect.center().x() for rect in matches)[0], ruler.width()*.25)
+        self.assertAlmostEqual(sorted(rect.center().x() for rect in matches)[1], ruler.width()*.75)
         grouped = dict(display_groups(ruler.state.markers))
         self.assertEqual({name for name, _ in grouped[D("50000")]},
                          {"帳號初始餘額", "當前餘額"})
+
+    def test_balance_labels_translate_together_and_only_swap_on_loss(self):
+        from trading_helper.progress_ruler import AccountRuler
+        for compact in (False, True):
+            ruler = AccountRuler(compact=compact)
+            ruler.resize(312 if compact else 600, ruler.minimumHeight())
+            for goal in ('55000', '51750'):
+                for balance in ('49000', '50000', '51000', '54000'):
+                    with self.subTest(compact=compact, goal=goal, balance=balance):
+                        data = sheet_values()
+                        data['運算區']['B9'] = goal
+                        state, error = calculate_ruler_from_sheet(data, balance=D(balance), daily_pnl=D('0'))
+                        self.assertFalse(error)
+                        ruler.set_state(state)
+                        labels = ruler._balance_labels()
+                        self.assertEqual(len(labels), 2)
+                        centers = [label[2].center().x() for label in labels]
+                        self.assertAlmostEqual(centers[1]-centers[0], ruler.width()*.5)
+                        direction = D(balance)-D('50000')
+                        self.assertGreaterEqual((centers[0]-ruler.width()*.25)*float(direction), 0)
+                        if not direction:
+                            self.assertAlmostEqual(centers[0], ruler.width()*.25)
+                        self.assertGreaterEqual(labels[0][2].left(), 5)
+                        self.assertLessEqual(labels[1][2].right(), ruler.width()-5)
+                        self.assertEqual(labels[1][0], '當前餘額' if D(balance)>=D('50000') else '帳號初始餘額')
+                        self.assertLessEqual(labels[0][2].right(), labels[1][2].left())
+                        # Positioning labels must not turn the scale into two independent half-scales.
+                        _, coordinates, x_for = ruler._geometry()
+                        low, high = min(coordinates), max(coordinates)
+                        expected = 37 + float((state.balance-low)/(high-low))*(ruler.width()-74)
+                        self.assertAlmostEqual(x_for(state.balance), expected)
+                        ruler.grab()
+
+    def test_balance_pair_moves_proportionally_and_stops_at_loss_or_goal(self):
+        from trading_helper.progress_ruler import AccountRuler
+        ruler = AccountRuler(compact=True)
+        ruler.resize(312, 186)
+        positions = {}
+        for balance in ('43000', '46500', '48250', '50000', '52500', '55000', '57000'):
+            state, _ = calculate_ruler_from_sheet(sheet_values(), balance=D(balance), daily_pnl=D('0'))
+            ruler.set_state(state)
+            positions[balance] = ruler._balance_labels()[0][2].center().x()
+        self.assertAlmostEqual(positions['43000'], positions['46500'])
+        self.assertAlmostEqual(positions['55000'], positions['57000'])
+        self.assertAlmostEqual(positions['46500'], ruler.width()*.20)
+        self.assertAlmostEqual(positions['55000'], ruler.width()*.30)
+        self.assertAlmostEqual(positions['48250'], (positions['46500']+positions['50000'])/2)
+        self.assertAlmostEqual(positions['52500'], (positions['55000']+positions['50000'])/2)
 
     def test_layout_c_keeps_label_lanes_separate_at_small_window(self):
         w = self.win

@@ -149,7 +149,7 @@ class SidePanelTests(unittest.TestCase):
         self.assertIn('<b>Rate</b>', panel.event_rows.text())
         panel.calendar.error = '暫時無法更新'
         panel.update_events()
-        self.assertIn('資料待更新', panel.events_button.text())
+        self.assertIn('待更新', panel.event_status.text())
         self.assertNotIn('jin10', panel.event_rows.text().lower())
 
     def test_placeholder_and_corner_warnings_share_main_conditions_and_actions(self):
@@ -195,7 +195,7 @@ class SidePanelTests(unittest.TestCase):
         self.assertIn('Forex Factory', panel.event_status.toolTip())
         self.assertLess(panel.event_status.sizeHint().height(), 35)
 
-    def test_chinese_market_news_precedes_far_away_schedule_in_summary(self):
+    def test_far_away_schedule_is_distinct_from_recent_chinese_news(self):
         from trading_helper.calendar_events import Announcement, SOURCE_URLS
         panel = self.open_panel()
         now = datetime.now(UTC)
@@ -204,9 +204,53 @@ class SidePanelTests(unittest.TestCase):
         panel.calendar.news = [Announcement(now-timedelta(hours=1), '香港電台財經', '金價受美元走強影響')]
         panel.update_events()
         self.assertNotIn('10 天', panel.events_button.text())
-        self.assertIn('消息', panel.events_button.text())
-        self.assertIn('金價受美元走強影響', panel.market_rows.text())
-        self.assertIn('10', panel.event_rows.text())
+        self.assertIn('下一場', panel.events_button.text())
+        self.assertIn('金價受美元走強影響', panel.news_rows.text())
+        self.assertIn('GDP', panel.event_rows.text())
+
+    def test_event_sources_start_collapsed_each_time_and_only_two_tabs_remain(self):
+        panel = self.open_panel()
+        self.assertEqual([panel.event_tabs.tabText(i) for i in range(panel.event_tabs.count())], ['即將發生', '已公布／新聞'])
+        panel.events_button.setChecked(True)
+        self.assertFalse(panel.event_status.isChecked())
+        panel.event_status.setChecked(True)
+        self.assertTrue(panel.source_details.isVisible())
+        panel.events_button.setChecked(False)
+        panel.events_button.setChecked(True)
+        self.assertFalse(panel.event_status.isChecked())
+        self.assertFalse(panel.source_details.isVisible())
+        self.assertIn('今日事件範圍', panel.events_button.toolTip())
+        self.assertNotIn('提醒交易日', panel.events_button.toolTip())
+
+    def test_single_line_event_summary_keeps_full_title_in_tooltip(self):
+        panel = self.open_panel()
+        now = datetime.now(UTC)
+        title = '美國消費者物價指數公布與政策影響' * 8
+        panel.calendar.events = [CalendarEvent(now+timedelta(minutes=1), 'USD', title)]
+        panel.update_events()
+        self.assertNotIn('\n', panel.events_button.text())
+        self.assertIn(title, panel.events_button.toolTip())
+        self.assertLess(panel.events_button.height(), 35)
+        self.assertIn('消息可能延遲或漏報', panel.source_details.text())
+        self.assertNotIn('GDP/PCE', panel.source_details.text())
+        self.assertLess(len(panel.source_details.text().splitlines()), 9)
+
+    def test_side_balance_draft_shares_range_badge_and_fill_guard(self):
+        from test_progress_ruler import sheet_values
+        panel = self.open_panel()
+        self.w.instruction = sample()
+        self.w._show_instruction(self.w.instruction)
+        self.w.ruler_sheet_values = sheet_values()
+        QTest.keyClicks(panel.inputs['internal_balance'], '56000')
+        panel.sync_from_main()
+        self.assertTrue(panel.warnings['internal_balance'].isVisible())
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.assertIn('高於帳號獲利目標', panel.warnings['internal_balance'].toolTip())
+        with patch.object(gui.QMessageBox, 'warning') as warning, \
+             patch.object(self.w, '_start_fill_worker') as worker:
+            panel.fill_button.click()
+        warning.assert_called_once()
+        worker.assert_not_called()
 
     def test_side_fill_cancel_keeps_shared_sl_confirmation_and_no_io(self):
         panel = self.open_panel()

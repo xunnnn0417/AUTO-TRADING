@@ -1496,6 +1496,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 else:
                     self.balance_warning_container = field_widget
                     badge = self.balance_warning_badge
+                    entry.textChanged.connect(self._refresh_balance_warning)
                 badge.setParent(field_widget)
                 badge.setFixedSize(12, 12)
                 field_widget.installEventFilter(self)
@@ -3286,6 +3287,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         """Read ONLY Enter-confirmed overrides; never trigger sheet IO."""
         if not hasattr(self, "account_ruler"):
             return
+        self._refresh_balance_warning()
         item = self.instruction
         display = self._display_trade_values if self._balance_warning_active() else None
         if item is None and display is None:
@@ -3395,10 +3397,41 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _balance_warning_active(self) -> bool:
         context = getattr(self, "_balance_warning_context", None)
-        return context is not None and context == self._trade_settings_context()
+        return (context is not None and context == self._trade_settings_context()
+                or bool(TradingHelperApp._balance_range_warning(self)))
+
+    def _balance_range_warning(self) -> str:
+        """Check the current draft against this profile's sheet thresholds, without IO."""
+        source = getattr(self, "ruler_sheet_values", None) or {}
+        limits = source.get("運算區", {})
+        floor, goal = decimal_value(limits.get("F7")), decimal_value(limits.get("B9"))
+        if floor is None or goal is None or floor < 0 or goal <= floor:
+            return ""
+        entry = getattr(self, "parameter_inputs", {}).get("internal_balance")
+        raw = entry.text().replace(",", "").strip().removeprefix("~") if entry else ""
+        item = getattr(self, "instruction", None)
+        preview = getattr(self, "_display_trade_values", None) or {}
+        balance = decimal_value(raw) if raw else (
+            item.internal_balance if item is not None else decimal_value(preview.get("internal_balance")))
+        if balance is None or not balance.is_finite():
+            return ""
+        if balance > goal:
+            return f"場內餘額高於帳號獲利目標 {money(goal)}。"
+        if balance < floor:
+            return f"場內餘額低於最大虧損線 {money(floor)}。"
+        return ""
+
+    def _refresh_balance_warning(self, *_args: object) -> None:
+        active = self._balance_warning_active()
+        self.balance_warning_badge.setVisible(active)
+        self.balance_warning_badge.setToolTip(
+            self._balance_range_warning()+"請確認並修改場內餘額，更新成功後再操作。")
+        if active:
+            self._position_parameter_warnings()
 
     def _show_balance_warning(self) -> None:
-        QMessageBox.warning(self, "請修改場內餘額", "請確認並修改場內餘額，更新成功後再操作。")
+        QMessageBox.warning(self, "請修改場內餘額",
+            self._balance_range_warning()+"請確認並修改場內餘額，更新成功後再操作。")
 
     def _show_trade_values_preview(self, payload: tuple) -> None:
         context, values = payload
@@ -3436,7 +3469,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _clear_balance_warning(self, context: tuple) -> None:
         if context == self._trade_settings_context():
             self._balance_warning_context = None
-            self.balance_warning_badge.hide()
+            self._refresh_balance_warning()
 
     def _set_balance_warning(self, context: tuple) -> None:
         if context != self._trade_settings_context():

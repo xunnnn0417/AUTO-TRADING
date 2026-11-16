@@ -4,14 +4,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen, QRegion
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QStyle, QStyleOptionToolButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .calendar_events import EconomicCalendar, UTC, countdown
+from .calendar_events import EconomicCalendar, TAIPEI, UTC
+from .event_summary import event_summary, relevant_announcement, trading_session
 from .config import APP_DIR
 from .progress_ruler import AccountRuler
 from .ui_theme import themed_icon
@@ -24,6 +25,35 @@ class EventFlyout(QFrame):
         painter.setPen(QPen(QColor(245, 243, 250, 70), 0.7))
         painter.setBrush(QColor('#111116'))
         painter.drawRoundedRect(QRectF(0.35, 0.35, self.width()-0.7, self.height()-0.7), 10, 10)
+
+
+class EventSummaryButton(QToolButton):
+    """One elided line; the tooltip retains the full event details."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(30)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        return QSize(100, 30)
+
+    def minimumSizeHint(self):
+        return QSize(40, 30)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        option.text = ''
+        option.arrowType = Qt.NoArrow
+        self.style().drawComplexControl(QStyle.CC_ToolButton, option, painter, self)
+        option.rect = QRect(3, (self.height()-12)//2, 12, 12)
+        self.style().drawPrimitive(QStyle.PE_IndicatorArrowRight if self.isChecked()
+                                  else QStyle.PE_IndicatorArrowLeft, option, painter, self)
+        painter.setPen(QColor('#ece8f1'))
+        rect = QRect(23, 0, max(1, self.width()-27), self.height())
+        painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft,
+                         self.fontMetrics().elidedText(self.text(), Qt.ElideRight, rect.width()))
 
 
 class SideQuickPanel(QWidget):
@@ -202,7 +232,7 @@ class SideQuickPanel(QWidget):
         progress_layout.addWidget(self.ruler)
         root.addLayout(progress_layout)
 
-        self.events_button = QToolButton()
+        self.events_button = EventSummaryButton()
         self.events_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.events_button.setCheckable(True)
         self.events_button.setArrowType(Qt.LeftArrow)
@@ -228,9 +258,8 @@ class SideQuickPanel(QWidget):
         heading.addWidget(close)
         flyout_layout.addLayout(heading)
         self.event_tabs = QTabWidget()
-        self.market_rows, self.event_rows, self.history_rows, self.news_rows = (QLabel() for _ in range(4))
-        for title, label in zip(('市場消息', '即將公布', '近期公布', '央行公告'),
-                                (self.market_rows, self.event_rows, self.history_rows, self.news_rows)):
+        self.event_rows, self.news_rows = (QLabel() for _ in range(2))
+        for title, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
             label.setTextFormat(Qt.PlainText)
             label.setWordWrap(True)
             label.setAlignment(Qt.AlignTop)
@@ -328,6 +357,8 @@ class SideQuickPanel(QWidget):
         ):
             badge = self.warnings[key]
             badge.setVisible(visible)
+            if key == 'internal_balance':
+                badge.setToolTip(app.balance_warning_badge.toolTip())
             badge.move(max(0, self.inputs[key].width() - 14), 1)
             badge.raise_()
 
@@ -366,6 +397,7 @@ class SideQuickPanel(QWidget):
         self.events_button.setArrowType(Qt.RightArrow if expanded else Qt.LeftArrow)
         self.event_flyout.setVisible(expanded and not self.collapsed)
         if expanded:
+            self.event_status.setChecked(False)
             self._position_event_flyout()
             self.calendar.refresh()
 
@@ -382,41 +414,36 @@ class SideQuickPanel(QWidget):
     def update_events(self):
         now = datetime.now(UTC)
         upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
-        market = [n for n in self.calendar.news if n.source.startswith('香港電台')
-                  and now-timedelta(hours=72) <= n.when <= now]
         stale = self.calendar.error or not self.calendar.is_fresh(now)
-        if market:
-            summary = f'重大事件 · 市場消息 {len(market)} 則' + (' · 待更新' if stale else '')
-        elif stale:
-            summary = '重大事件 · 部分資料待更新'
-        elif upcoming and upcoming[0].when <= now+timedelta(hours=24):
-            summary = '重大事件 · 已知排程 ' + countdown(upcoming[0].when, now)
-        else:
-            summary = '重大事件 · 查看消息與排程'
+        settings = self.app.store.data.get('ui', {}).get('trading_day_separator', {})
+        start, end = trading_session(now, settings)
+        summary = event_summary(upcoming+[e for e in self.calendar.events if start <= e.when <= now],
+                                now, settings, self.calendar.covers_day(start, end, now), self.calendar.title)
         self.events_button.setText(summary)
+        tooltip = (summary+f'\n今日事件範圍：{start:%m/%d %H:%M}–{end:%m/%d %H:%M}（台北，依切日設定）'
+                   '\n按一下查看詳情。'+ ('\n部分來源資料待更新。' if stale else ''))
+        for event in upcoming[:6]:
+            tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d %H:%M} · {event.currency} · {self.calendar.title(event.title)}'
+        self.events_button.setToolTip(tooltip)
         def title(original):
             shown = self.calendar.title(original)
             return shown + ('〔機翻〕' if original in self.calendar.translations else '')
         def line(event):
-            return f'{event.when.astimezone():%m/%d %H:%M}  {event.currency} · {event.source}\n{title(event.title)}'
+            return f'{event.when.astimezone(TAIPEI):%m/%d %H:%M}  {event.currency} · {event.source}\n{title(event.title)}'
         self.event_rows.setText('\n\n'.join(map(line, upcoming[:20])) or
                                '目前載入資料沒有近期排程；請查看來源更新狀態。')
-        recent = sorted((e for e in self.calendar.events if now-timedelta(days=7) <= e.when <= now), reverse=True)
-        self.history_rows.setText('\n\n'.join('已公布 · '+line(e) for e in recent[:12]) or '近 7 天沒有已載入的公布紀錄。')
-        def news_line(item):
-            return f'{item.when.astimezone():%m/%d %H:%M} · {item.source}\n{title(item.title)}'
-        self.market_rows.setText('\n\n'.join(map(news_line, market[:24])) or
-            '近 72 小時尚無已載入的相關消息；不代表沒有事件，請查看來源狀態。')
-        news = [n for n in self.calendar.news if n.source in ('Fed', 'ECB')
-                and now-timedelta(days=30) <= n.when <= now]
-        self.news_rows.setText('\n\n'.join(map(news_line, news[:12]))
-                               or '目前沒有近 30 天的已載入公告。')
-        self.news_rows.setToolTip('\n\n'.join(item.title for item in news[:12]))
+        recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title)
+                  for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
+        recent += [(n.when, n.source, n.title) for n in self.calendar.news
+                   if now-timedelta(hours=72) <= n.when <= now
+                   and (n.source.startswith('香港電台') or relevant_announcement(n.title))]
+        recent = sorted(set(recent), reverse=True)[:24]
+        self.news_rows.setText('\n\n'.join(f'{when.astimezone(TAIPEI):%m/%d %H:%M} · {source}\n{title(original)}'
+            for when, source, original in recent) or '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
+        self.news_rows.setToolTip('\n\n'.join(original for _, _, original in recent))
         self.event_rows.setToolTip('\n'.join(item.title for item in upcoming[:20]))
         details = ('\n'.join(self.calendar.status_lines(now)) +
-            '\n本機時間。日曆含本週高影響及美元中影響事件，GDP/PCE 含未來排程。'
-            '\n中文消息依黃金、美元、利率、通膨及地緣事件標題篩選，可能漏報或延遲。'
-            '\n英文標題以 MyMemory 機翻；未完成或無法翻譯時保留原文。')
+            '\n台北時間；英文可能機翻，消息可能延遲或漏報。')
         self.event_status.setText('ⓘ 來源狀態 · ' + ('部分待更新' if stale else '已更新'))
         self.event_status.setToolTip(details)
         self.source_details.setText(details)

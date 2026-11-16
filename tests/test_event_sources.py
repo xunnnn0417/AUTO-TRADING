@@ -12,6 +12,27 @@ NOW = datetime(2026, 11, 15, tzinfo=timezone.utc)
 
 
 class EventSourceTests(unittest.TestCase):
+    def test_loaded_week_is_preserved_but_stale_wrong_week_or_failed_source_cannot_claim_no_events(self):
+        from datetime import timedelta
+        from trading_helper.event_summary import trading_session
+        now = datetime(2026, 11, 16, 4, tzinfo=timezone.utc)
+        rows = [dict(title='Low event', impact='Low', country='JPY', date='2026-11-16T02:00:00Z')]
+        coverage = calendar.calendar_week(rows)
+        self.assertIsNotNone(coverage)
+        with tempfile.TemporaryDirectory() as folder:
+            service = calendar.EconomicCalendar(Path(folder)/'events.json')
+            service._apply([('ff', calendar.parse_events(rows), now, '', coverage)])
+            start, end = trading_session(now, {})
+            self.assertTrue(service.covers_day(start, end, now))
+            restored = calendar.EconomicCalendar(service.path)
+            self.assertTrue(restored.covers_day(start, end, now))
+            self.assertFalse(restored.covers_day(start, end, now+timedelta(hours=1)))
+            self.assertFalse(restored.covers_day(start+timedelta(days=7), end+timedelta(days=7), now))
+            restored._apply([('ff', None, None, 'offline')])
+            self.assertFalse(restored.covers_day(start, end, now))
+        self.assertIsNone(calendar.calendar_week([]))
+        self.assertIsNone(calendar.calendar_week([dict(date='bad')]))
+
     def test_market_news_uses_aware_dates_and_relevant_chinese_topics(self):
         raw = '''<rss><channel>
           <item><title>伊朗稱霍爾木茲海峽運油輪遇襲</title><pubDate>Sun, 15 Nov 2026 09:00:00 +0800</pubDate></item>
