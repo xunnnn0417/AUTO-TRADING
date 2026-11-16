@@ -67,8 +67,8 @@ class SidebarRestoreTests(unittest.TestCase):
         self.assertTrue(service.refresh_timer.isActive())
         service.source_times = dict.fromkeys(calendar.SOURCE_URLS, datetime.now(calendar.UTC))
         service.start()
-        self.assertGreater(service.refresh_timer.interval(), 59_000)
-        self.assertLessEqual(service.refresh_timer.interval(), 60_000)
+        self.assertGreater(service.refresh_timer.interval(), 29_000)
+        self.assertLessEqual(service.refresh_timer.interval(), 30_000)
         with patch.object(service, 'refresh') as refresh:
             service.refresh_timer.timeout.emit()
             refresh.assert_called_once_with()
@@ -117,7 +117,7 @@ class FeedPollingTests(unittest.TestCase):
         self.service = calendar.EconomicCalendar(Path(temp.name)/'events.json')
         self.addCleanup(self.service.close)
 
-    def test_news_poll_every_minute_but_calendars_remain_slow(self):
+    def test_news_poll_every_30_seconds_but_calendars_remain_slow(self):
         service = self.service
         now = datetime.now(calendar.UTC)
         service.source_times = dict.fromkeys(calendar.SOURCE_URLS, now-timedelta(seconds=61))
@@ -128,11 +128,11 @@ class FeedPollingTests(unittest.TestCase):
         self.assertEqual(calendar.SOURCE_TTLS['ff'], timedelta(minutes=30))
         self.assertEqual(calendar.SOURCE_TTLS['bea'], timedelta(hours=6))
 
-    def test_response_time_does_not_make_minute_poll_skip_a_whole_cycle(self):
+    def test_response_time_does_not_make_30_second_poll_skip_a_whole_cycle(self):
         service = self.service
         now = datetime.now(calendar.UTC)
-        service.source_times = dict.fromkeys(calendar.SOURCE_URLS, now-timedelta(seconds=58))
-        service._last_attempt = dict.fromkeys(calendar.SOURCE_URLS, now-timedelta(seconds=60))
+        service.source_times = dict.fromkeys(calendar.SOURCE_URLS, now-timedelta(seconds=28))
+        service._last_attempt = dict.fromkeys(calendar.SOURCE_URLS, now-timedelta(seconds=30))
         with patch.object(calendar.threading, 'Thread') as thread:
             service.refresh()
         self.assertEqual(set(thread.call_args.kwargs['args'][0]),
@@ -187,7 +187,7 @@ class FeedPollingTests(unittest.TestCase):
         service.source_times = dict.fromkeys(calendar.SOURCE_URLS, now)
         service.source_times['rthk_world'] = now-timedelta(seconds=61)
         gate, entered = threading.Event(), threading.Event()
-        def slow_read(key):
+        def slow_read(key, **kwargs):
             entered.set()
             gate.wait(2)
             return key, [], now, ''

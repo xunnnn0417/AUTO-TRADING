@@ -46,7 +46,7 @@ class CalendarTests(unittest.TestCase):
             service.events = parse_events(rows)
             service.fetched_at = NOW
             service.source_times = dict.fromkeys(SOURCE_URLS, NOW)
-            self.assertTrue(service.is_fresh(NOW + timedelta(seconds=30)))
+            self.assertTrue(service.is_fresh(NOW + timedelta(seconds=29)))
             self.assertFalse(service.is_fresh(NOW + timedelta(hours=2)))
             service._save_cache()
             restored = EconomicCalendar(Path(folder) / 'calendar.json')

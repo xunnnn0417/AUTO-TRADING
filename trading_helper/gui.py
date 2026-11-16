@@ -931,6 +931,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.operation_hint.adjustSize()
 
     def _hide_for_operation(self) -> None:
+        news_dialog = getattr(self, '_news_alert_dialog', None)
+        if news_dialog is not None and news_dialog.isVisible():
+            self._pending_news_alerts = list(dict.fromkeys(
+                self._news_popup_items + self._pending_news_alerts))[-20:]
+            news_dialog.close()
+            self._news_alert_timer.start()
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.hide()
@@ -1001,6 +1007,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             panel.dock()
 
     def initialize_side_panel(self) -> None:
+        self._get_event_calendar()  # Alerts also run when the sidebar is disabled.
         self.toggle_side_panel(self.side_panel_checkbox.isChecked())
 
     def toggle_side_panel(self, enabled: bool) -> None:
@@ -1078,6 +1085,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             nav.clicked.connect(lambda _checked=False, name=title: self.switch_workspace(name))
             top_row.addWidget(nav)
             self.page_nav[title] = nav
+        self.news_badge = QLabel(self.page_nav['消息'])
+        self.news_badge.setObjectName('unreadNewsDot')
+        self.news_badge.setFixedSize(6, 6)
+        self.news_badge.setStyleSheet('background:#ff516b; border:0; border-radius:3px;')
+        self.news_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.news_badge.setAccessibleName('有新的重大消息')
+        self.page_nav['消息'].installEventFilter(self)
+        self.news_badge.hide()
+        self._pending_news_alerts = []
+        self._news_alert_dialog = None
+        self._news_alert_timer = QTimer(self)
+        self._news_alert_timer.setInterval(1000)
+        self._news_alert_timer.timeout.connect(lambda: self._show_pending_news_alert())
         top_row.addSpacing(5)
         label_profile = QLabel("目前方案")
         label_profile.setObjectName("moduleKicker")
@@ -2079,8 +2099,77 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             from .calendar_events import EconomicCalendar
             self._event_calendar = EconomicCalendar(
                 self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+            self._event_calendar.announcements.connect(self._queue_news_alerts)
             self._event_calendar.start()
         return self._event_calendar
+
+    def _queue_news_alerts(self, items) -> None:
+        if self.isVisible() and self.main_pages.currentWidget() is self.news_page:
+            return  # Already reading the shared feed.
+        self._pending_news_alerts = list(dict.fromkeys(self._pending_news_alerts + list(items)))[-20:]
+        if not self._pending_news_alerts:
+            return
+        self.news_badge.move(max(0, self.page_nav['消息'].width()-8), 2)
+        self.news_badge.show()
+        self.news_badge.raise_()
+        self._news_alert_timer.start()
+        self._show_pending_news_alert()
+
+    def _show_pending_news_alert(self) -> None:
+        if not self._pending_news_alerts:
+            self._news_alert_timer.stop()
+            return
+        if (self._active_tasks or self._parameter_write_active or self._trade_settings_busy
+                or self._update_in_progress or self._calibration_dialog_active
+                or self._fill_waiting_for_sheet or self.operation_hint.isVisible()
+                or QApplication.activeModalWidget() is not None):
+            return
+        if self._news_alert_dialog is not None and self._news_alert_dialog.isVisible():
+            return
+        from .calendar_events import TAIPEI
+        items, self._pending_news_alerts = self._pending_news_alerts, []
+        self._news_popup_items = items
+        self._news_alert_timer.stop()
+        if self._news_alert_dialog is not None:
+            self._news_alert_dialog.deleteLater()
+        dialog = QMessageBox(self)
+        self._news_alert_dialog = dialog
+        dialog.setWindowTitle('重大消息提醒')
+        dialog.setMaximumWidth(520)
+        dialog.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog._primary_text.setTextFormat(Qt.PlainText)
+        service = self._get_event_calendar()
+        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source}\n{service.title(item.title)}'
+                 for item in items[:3]]
+        extra = f'\n另有 {len(items)-3} 則，請查看消息。' if len(items) > 3 else ''
+        dialog.setText('以下消息可能影響黃金短期波動：\n\n'+'\n\n'.join(lines)+extra)
+        dialog.setInformativeText('消息可能延遲或漏報；不會自動更動交易。')
+        view = dialog.addButton('查看消息', QMessageBox.ActionRole)
+        dialog.addButton('知道了', QMessageBox.AcceptRole)
+        def finished(_result):
+            if dialog.clickedButton() is view:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+                self.switch_workspace('消息')
+            if self._pending_news_alerts:
+                self._news_alert_timer.start()
+        dialog.finished.connect(finished)
+        dialog.adjustSize()
+        panel = getattr(self, 'side_panel', None)
+        screen = panel.screen() if panel is not None and panel.isVisible() else self.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            anchor = panel.geometry() if panel is not None and panel.isVisible() else self.geometry()
+            x = anchor.left()-dialog.width()-10 if panel is not None and panel.isVisible() else anchor.center().x()-dialog.width()//2
+            y = anchor.top() if panel is not None and panel.isVisible() else anchor.center().y()-dialog.height()//2
+            dialog.move(max(area.left(), min(x, area.right()-dialog.width()+1)),
+                        max(area.top(), min(y, area.bottom()-dialog.height()+1)))
+        dialog.show()
+        dialog.raise_()
 
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
@@ -2088,6 +2177,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if name not in names:
             return
         self.main_pages.setCurrentIndex(names[name])
+        if name == '消息':
+            self.news_badge.hide()
+            self._pending_news_alerts.clear()
+            self._news_alert_timer.stop()
+            if self._news_alert_dialog is not None:
+                self._news_alert_dialog.close()
         for key, button in self.page_nav.items():
             button.blockSignals(True)
             button.setChecked(key == name)
@@ -2359,6 +2454,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         box.setFixedHeight(height)
 
     def eventFilter(self, watched, event) -> bool:
+        if (watched is getattr(self, 'page_nav', {}).get('消息')
+                and hasattr(self, 'news_badge') and event.type() in (QEvent.Resize, QEvent.Show)):
+            self.news_badge.move(max(0, watched.width()-8), 2)
         if (watched is getattr(self, "balance_warning_badge", None)
                 and event.type() == QEvent.MouseButtonRelease
                 and event.button() == Qt.LeftButton):
@@ -5514,6 +5612,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             event.ignore()
             return
         self.save_ui_state()
+        self._pending_news_alerts.clear()
+        self._news_alert_timer.stop()
+        if self._news_alert_dialog is not None:
+            self._news_alert_dialog.close()
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.close()
