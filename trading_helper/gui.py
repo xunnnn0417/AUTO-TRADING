@@ -834,6 +834,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._parameter_write_active = False
         self._trade_settings = None
         self._balance_warning_context = None
+        self._balance_range_warning_latch = None
+        self._expected_sl_warning_latch = None
         self._display_trade_values = None
         self._trade_settings_busy = False
         self._parameter_write_pending = False
@@ -3163,14 +3165,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.manual_entry_price = None
         self.signals.entry_price_reset.emit()
         self.signals.instruction.emit(item)
-        self._read_ruler_sheet(settings_config, settings_context)
+        self._read_ruler_sheet(settings_config, settings_context, verified_instruction=item)
         self.log(
             f"已讀取第 {item.source_row} 列：{item.symbol}，"
             f"場內{direction_text(item.internal_direction)}／"
             f"場外{direction_text(item.external_direction)}。"
         )
 
-    def _read_ruler_sheet(self, sheet_config: dict, context: tuple) -> None:
+    def _read_ruler_sheet(self, sheet_config: dict, context: tuple,
+                         *, verified_instruction: TradeInstruction | None = None) -> None:
         # Read-only supplementary cells from two tabs in the SAME workbook.
         # Failure here never prevents normal trading information from loading.
         ruler_values: dict[str, dict[str, str]] = {}
@@ -3192,6 +3195,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             ruler_error,
             context[0],
             sheet_config.get("spreadsheet_url", ""),
+            (context, verified_instruction),
         ))
 
     def _show_instruction(self, item: TradeInstruction) -> None:
@@ -3243,11 +3247,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _show_ruler_sheet(self, payload: tuple) -> None:
         """Apply cross-tab values on UI thread only for the matching profile."""
-        values, error, profile_name, sheet_url = payload
+        values, error, profile_name, sheet_url, *verified = payload
         if profile_name != self.profiles.active_name or sheet_url != self.store.data["sheet"].get("spreadsheet_url", ""):
+            return
+        if verified and verified[0][0] != self._trade_settings_context():
             return
         self.ruler_sheet_values = values
         self.ruler_sheet_status = error or ""
+        if verified and verified[0][1] is not None:
+            self._clear_verified_input_warnings(verified[0][1])
+            self._refresh_expected_sl_warning()
         self._refresh_ruler()
 
     def _confirm_ruler_field(self, key: str, *, repaint: bool = True) -> None:
@@ -3363,6 +3372,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         return str(points if points is not None else percent)
 
     def _expected_sl_warning_values(self) -> tuple[Decimal, Decimal] | None:
+        values = self._current_expected_sl_warning_values()
+        context = self._trade_settings_context()
+        pending = getattr(self, "_expected_sl_warning_latch", None)
+        if values is not None:
+            if pending is None or pending[0] != context:
+                self._parameter_write_last_signature = None
+            self._expected_sl_warning_latch = (context, values)
+            return values
+        return pending[1] if pending is not None and pending[0] == context else None
+
+    def _current_expected_sl_warning_values(self) -> tuple[Decimal, Decimal] | None:
         """Return original and adjusted SL distances when the latter is tighter."""
         if self.instruction is None or self.instruction.original_sl_points is None:
             return None
@@ -3398,7 +3418,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _balance_warning_active(self) -> bool:
         context = getattr(self, "_balance_warning_context", None)
         return (context is not None and context == self._trade_settings_context()
-                or bool(TradingHelperApp._balance_range_warning(self)))
+                or bool(TradingHelperApp._balance_range_warning_detail(self)))
+
+    def _balance_range_warning_detail(self) -> str:
+        current = TradingHelperApp._balance_range_warning(self)
+        pending = getattr(self, "_balance_range_warning_latch", None)
+        return current or (pending[1] if pending is not None
+                          and pending[0] == self._trade_settings_context() else "")
 
     def _balance_range_warning(self) -> str:
         """Check the current draft against this profile's sheet thresholds, without IO."""
@@ -3422,16 +3448,48 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         return ""
 
     def _refresh_balance_warning(self, *_args: object) -> None:
+        reason = self._balance_range_warning()
+        if reason:
+            context = self._trade_settings_context()
+            pending = self._balance_range_warning_latch
+            if pending is None or pending[0] != context:
+                self._parameter_write_last_signature = None
+            self._balance_range_warning_latch = (context, reason)
         active = self._balance_warning_active()
         self.balance_warning_badge.setVisible(active)
         self.balance_warning_badge.setToolTip(
-            self._balance_range_warning()+"請確認並修改場內餘額，更新成功後再操作。")
+            self._balance_range_warning_detail()+"請確認並修改場內餘額，更新成功後再操作。")
         if active:
             self._position_parameter_warnings()
 
     def _show_balance_warning(self) -> None:
         QMessageBox.warning(self, "請修改場內餘額",
-            self._balance_range_warning()+"請確認並修改場內餘額，更新成功後再操作。")
+            self._balance_range_warning_detail()+"請確認並修改場內餘額，更新成功後再操作。")
+
+    def _clear_verified_input_warnings(self, item: TradeInstruction) -> None:
+        """Only a successful sheet read, matching the current draft, releases a latch."""
+        context = self._trade_settings_context()
+        raw = self.parameter_inputs["internal_balance"].text().replace(",", "").strip().removeprefix("~")
+        limits = (self.ruler_sheet_values or {}).get("運算區", {})
+        floor, goal = decimal_value(limits.get("F7")), decimal_value(limits.get("B9"))
+        pending = self._balance_range_warning_latch
+        if (pending is not None and pending[0] == context and item.internal_balance is not None
+                and floor is not None and goal is not None and 0 <= floor < goal
+                and floor <= item.internal_balance <= goal
+                and (not raw or decimal_value(raw) == item.internal_balance)):
+            self._balance_range_warning_latch = None
+        pending = self._expected_sl_warning_latch
+        if pending is None or pending[0] != context:
+            return
+        raw = self.parameter_inputs["expected_sl_combined"].text().replace(",", "").strip()
+        try:
+            draft = self._parse_expected_sl_combined(raw)[0] if raw else item.expected_sl_points
+        except (AutomationError, InvalidOperation, ValueError):
+            return
+        if draft == item.expected_sl_points and (
+                item.original_sl_points is None or item.expected_sl_points is None
+                or abs(item.expected_sl_points) >= abs(item.original_sl_points)):
+            self._expected_sl_warning_latch = None
 
     def _show_trade_values_preview(self, payload: tuple) -> None:
         context, values = payload
@@ -3475,6 +3533,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if context != self._trade_settings_context():
             return
         self._balance_warning_context = context
+        self._expected_sl_warning_latch = None
         self._display_trade_values = None
         self.instruction = None
         self._fill_waiting_for_sheet = None
@@ -5625,6 +5684,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         self.instruction = None
         self._balance_warning_context = None
+        self._balance_range_warning_latch = None
+        self._expected_sl_warning_latch = None
         self._display_trade_values = None
         self.balance_warning_badge.hide()
         self._show_trade_sheet_settings((self._trade_settings_context(), None, "請先讀取試算表。"))

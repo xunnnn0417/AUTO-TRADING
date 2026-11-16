@@ -171,6 +171,12 @@ class SidePanelTests(unittest.TestCase):
         self.w.parameter_inputs['expected_sl_combined'].setText('-15')
         panel.sync_from_main()
         self.assertTrue(panel.warnings['internal_balance'].isHidden())
+        self.assertFalse(panel.warnings['expected_sl_combined'].isHidden())
+        self.w.reader.read = lambda _: replace(self.w.instruction, expected_sl_points=Decimal('-15'))
+        self.w.reader.read_a1_values = lambda config, cells: {cell: '' for cell in cells}
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        panel.sync_from_main()
         self.assertTrue(panel.warnings['expected_sl_combined'].isHidden())
 
     def test_side_warning_collapses_until_dialog_returns_and_does_not_reopen_news(self):
@@ -251,6 +257,12 @@ class SidePanelTests(unittest.TestCase):
             panel.fill_button.click()
         warning.assert_called_once()
         worker.assert_not_called()
+        panel.set_collapsed(False)
+        panel.inputs['internal_balance'].selectAll()
+        QTest.keyClicks(panel.inputs['internal_balance'], '50000')
+        panel.sync_from_main()
+        self.assertTrue(panel.warnings['internal_balance'].isVisible())
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
 
     def test_side_fill_cancel_keeps_shared_sl_confirmation_and_no_io(self):
         panel = self.open_panel()
