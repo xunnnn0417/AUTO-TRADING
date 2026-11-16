@@ -543,6 +543,7 @@ class UiSignals(QObject):
     balance_warning = Signal(object)
     balance_warning_cleared = Signal(object)
     trade_values_preview = Signal(object)
+    sheet_validation = Signal(object)
     trade_settings_finished = Signal()
     operation_started = Signal()
     operation_finished = Signal()
@@ -834,6 +835,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._parameter_write_active = False
         self._trade_settings = None
         self._balance_warning_context = None
+        self._balance_range_warning_latch = None
+        self._expected_sl_warning_latch = None
+        self._sheet_validation_warning = None
         self._display_trade_values = None
         self._trade_settings_busy = False
         self._parameter_write_pending = False
@@ -865,6 +869,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.balance_warning.connect(self._set_balance_warning)
         self.signals.balance_warning_cleared.connect(self._clear_balance_warning)
         self.signals.trade_values_preview.connect(self._show_trade_values_preview)
+        self.signals.sheet_validation.connect(self._show_sheet_validation)
         self.signals.trade_settings_finished.connect(self._finish_trade_settings_write)
         self.signals.operation_started.connect(self._hide_for_operation)
         self.signals.operation_finished.connect(self._restore_after_operation)
@@ -926,6 +931,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.operation_hint.adjustSize()
 
     def _hide_for_operation(self) -> None:
+        panel = getattr(self, "side_panel", None)
+        if panel is not None:
+            panel.hide()
         if not self.isHidden():
             self._operation_restore_geometry = self.geometry()
             self._operation_restore_maximized = self.isMaximized()
@@ -957,6 +965,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _restore_after_operation(self) -> None:
         self.operation_hint.hide()
+        panel = getattr(self, "side_panel", None)
+        if getattr(self, "_side_fill_active", False) is True:
+            # Side-origin fills keep the broker visible. The collapsed
+            # panel returns without activating or reopening the main UI.
+            self._operation_restore_geometry = None
+            self._operation_restore_maximized = False
+            self._operation_screen = None
+            if panel is not None and self.side_panel_checkbox.isChecked():
+                panel.show()
+                panel.dock()
+            return
         if self._calibration_dialog_active:
             self.hide()
             self._operation_restore_geometry = None
@@ -974,6 +993,46 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._operation_screen = None
         self.raise_()
         self.activateWindow()
+        if panel is not None and self.side_panel_checkbox.isChecked():
+            panel.show()
+            panel.dock()
+
+    def initialize_side_panel(self) -> None:
+        self.toggle_side_panel(self.side_panel_checkbox.isChecked())
+
+    def toggle_side_panel(self, enabled: bool) -> None:
+        from .side_panel import SideQuickPanel
+        if not hasattr(self, "side_panel"):
+            self.side_panel = None
+        self.side_panel_checkbox.blockSignals(True)
+        self.side_panel_checkbox.setChecked(enabled)
+        self.side_panel_checkbox.blockSignals(False)
+        if enabled:
+            if self.side_panel is None:
+                self.side_panel = SideQuickPanel(self)
+            self.side_panel.start()
+        elif self.side_panel is not None:
+            self.side_panel.suspend()
+        self.save_ui_state()
+
+    def fill_both_from_side_panel(self) -> None:
+        panel = getattr(self, "side_panel", None)
+        if (panel is None or not panel.fill_button.isEnabled()
+                or not self.can_update()):
+            return
+        self._side_fill_active = True
+        panel.set_collapsed(True)
+        try:
+            self._launch_fill(("internal", "external"))
+        finally:
+            if not self._active_tasks and not self._fill_waiting_for_sheet:
+                self._side_fill_active = False
+
+    def showEvent(self, event) -> None:
+        # Explicitly opening the main window returns subsequent operations
+        # to its normal foreground behavior.
+        self._side_fill_active = False
+        super().showEvent(event)
 
     def _minimize_after_operation(self) -> None:
         # Completed operations must return the helper to the foreground.
@@ -1008,9 +1067,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         top_row.addWidget(title)
         top_row.addSpacing(6)
         self.page_nav: dict[str, QPushButton] = {}
-        for title in ("交易", "編輯", "紀錄"):
+        for title in ("交易", "編輯", "紀錄", "消息"):
             nav = QPushButton(title)
-            nav.setObjectName("nav" + {"交易":"Trade","編輯":"Edit","紀錄":"Records"}[title])
+            nav.setObjectName("nav" + {"交易":"Trade","編輯":"Edit","紀錄":"Records","消息":"News"}[title])
             nav.setCheckable(True)
             nav.setChecked(title == "交易")
             nav.clicked.connect(lambda _checked=False, name=title: self.switch_workspace(name))
@@ -1123,6 +1182,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             lambda _: self._refresh_calibration_badges()
         )
         display_layout.addWidget(self.show_calibration_badges)
+        self.side_panel_checkbox = QCheckBox("顯示側邊快捷", display_container)
+        self.side_panel_checkbox.setChecked(
+            bool(self.store.data["ui"].get("side_panel_enabled", True))
+        )
+        self.side_panel_checkbox.toggled.connect(self.toggle_side_panel)
+        display_layout.addWidget(self.side_panel_checkbox)
         self.always_on_top = QCheckBox("保持最上層", display_container)
         self.always_on_top.setChecked(False)
         self.always_on_top.toggled.connect(self.set_always_on_top)
@@ -1833,6 +1898,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.activity_log_box = log_box
         self.main_pages.addWidget(self.records_page)
         self.records_page.installEventFilter(self)
+
+        from .event_feed import EventFeedView
+        self.news_page = QWidget()
+        self.news_page.setObjectName('newsWorkspace')
+        news_layout = QVBoxLayout(self.news_page)
+        news_layout.setContentsMargins(20, 12, 20, 16)
+        self.news_feed = EventFeedView(self._get_event_calendar, self.news_page)
+        news_layout.addWidget(self.news_feed)
+        self.main_pages.addWidget(self.news_page)
         QTimer.singleShot(0, self._update_activity_log_height)
 
         # Two-column trading view: references on the left, editable inputs
@@ -2067,9 +2141,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ).strip()
         return bool(account)
 
+    def _get_event_calendar(self):
+        # One lazy, app-owned service also works with the sidebar disabled.
+        if getattr(self, '_event_calendar', None) is None:
+            from .calendar_events import EconomicCalendar
+            self._event_calendar = EconomicCalendar(
+                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+        return self._event_calendar
+
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
-        names = {"交易": 0, "編輯": 1, "紀錄": 2}
+        names = {"交易": 0, "編輯": 1, "紀錄": 2, "消息": 3}
         if name not in names:
             return
         self.main_pages.setCurrentIndex(names[name])
@@ -2161,7 +2243,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             QMessageBox.information(self, "請先完成方案設定", message)
             return
         self.log(message)
-        if message == str(InvalidInternalTakeProfit()):
+        if message == str(InvalidInternalTakeProfit()) or message.startswith("交易數值需調整："):
             QMessageBox.warning(self, "請調整交易數值", message)
         else:
             QMessageBox.critical(self, "操作未完成", summarize_interruption_reason(message))
@@ -2169,10 +2251,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _show_duplicate_entry_decision(self, data: dict) -> None:
         """GUI-thread-only question, never an implicit send/retry."""
         request=data.get("request")
-        self.showNormal()
-        self._dock_top()
-        self.raise_()
-        self.activateWindow()
+        if getattr(self, "_side_fill_active", False) is not True:
+            self.showNormal()
+            self._dock_top()
+            self.raise_()
+            self.activateWindow()
         if not request:
             QMessageBox.warning(
                 self,"請人工確認持倉",
@@ -3078,10 +3161,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 break
             except ValidationError as exc:
                 if attempt >= retries:
-                    if isinstance(exc, InvalidInternalTakeProfit):
+                    if hasattr(exc, "display_values"):
                         self.instruction = None
                         self.signals.balance_warning.emit(settings_context)
-                        self.signals.trade_values_preview.emit((settings_context, exc.display_values))
+                        self.signals.trade_values_preview.emit((settings_context, exc.display_values,
+                            "" if isinstance(exc, InvalidInternalTakeProfit) else str(exc)))
                         self._read_ruler_sheet(settings_config, settings_context)
                     raise
                 self.log("試算表公式尚未更新完成，稍後重讀。")
@@ -3093,22 +3177,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.balance_warning_cleared.emit(settings_context)
         self.instruction = item
         try:
-            note_values = self.reader.read_a1_values(self.store.data["sheet"], ["A12"])
+            note_values = self.reader.read_a1_values(self.store.data["sheet"], ["A12", "A20", "E12"])
             self.signals.sheet_note.emit(note_values.get("A12", ""))
+            warnings = [str(note_values.get(cell, "")).strip() for cell in ("A20", "E12")]
+            reason = "；".join(message for message in warnings if message)
+            self.signals.sheet_validation.emit((settings_context, reason))
+            if reason:
+                self.signals.error.emit("交易數值需調整："+reason+"\n數值已保留，請調整並更新後再操作。")
         except ValidationError as exc:
             self.signals.sheet_note.emit("")
             self.log(f"未讀取 A12 備註：{exc}")
         self.manual_entry_price = None
         self.signals.entry_price_reset.emit()
         self.signals.instruction.emit(item)
-        self._read_ruler_sheet(settings_config, settings_context)
+        self._read_ruler_sheet(settings_config, settings_context, verified_instruction=item)
         self.log(
             f"已讀取第 {item.source_row} 列：{item.symbol}，"
             f"場內{direction_text(item.internal_direction)}／"
             f"場外{direction_text(item.external_direction)}。"
         )
 
-    def _read_ruler_sheet(self, sheet_config: dict, context: tuple) -> None:
+    def _read_ruler_sheet(self, sheet_config: dict, context: tuple,
+                         *, verified_instruction: TradeInstruction | None = None) -> None:
         # Read-only supplementary cells from two tabs in the SAME workbook.
         # Failure here never prevents normal trading information from loading.
         ruler_values: dict[str, dict[str, str]] = {}
@@ -3130,6 +3220,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             ruler_error,
             context[0],
             sheet_config.get("spreadsheet_url", ""),
+            (context, verified_instruction),
         ))
 
     def _show_instruction(self, item: TradeInstruction) -> None:
@@ -3181,11 +3272,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _show_ruler_sheet(self, payload: tuple) -> None:
         """Apply cross-tab values on UI thread only for the matching profile."""
-        values, error, profile_name, sheet_url = payload
+        values, error, profile_name, sheet_url, *verified = payload
         if profile_name != self.profiles.active_name or sheet_url != self.store.data["sheet"].get("spreadsheet_url", ""):
+            return
+        if verified and verified[0][0] != self._trade_settings_context():
             return
         self.ruler_sheet_values = values
         self.ruler_sheet_status = error or ""
+        if verified and verified[0][1] is not None:
+            self._clear_verified_input_warnings(verified[0][1])
+            self._refresh_expected_sl_warning()
         self._refresh_ruler()
 
     def _confirm_ruler_field(self, key: str, *, repaint: bool = True) -> None:
@@ -3225,6 +3321,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         """Read ONLY Enter-confirmed overrides; never trigger sheet IO."""
         if not hasattr(self, "account_ruler"):
             return
+        self._refresh_balance_warning()
         item = self.instruction
         display = self._display_trade_values if self._balance_warning_active() else None
         if item is None and display is None:
@@ -3300,19 +3397,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         return str(points if points is not None else percent)
 
     def _expected_sl_warning_values(self) -> tuple[Decimal, Decimal] | None:
+        values = self._current_expected_sl_warning_values()
+        context = self._trade_settings_context()
+        pending = getattr(self, "_expected_sl_warning_latch", None)
+        if values is not None:
+            if pending is None or pending[0] != context:
+                self._parameter_write_last_signature = None
+            self._expected_sl_warning_latch = (context, values)
+            return values
+        return pending[1] if pending is not None and pending[0] == context else None
+
+    def _current_expected_sl_warning_values(self, item: TradeInstruction | None = None) -> tuple[Decimal, Decimal] | None:
         """Return original and adjusted SL distances when the latter is tighter."""
-        if self.instruction is None or self.instruction.original_sl_points is None:
+        item = item if item is not None else self.instruction
+        if item is None or item.original_sl_points is None:
             return None
-        original = self.instruction.original_sl_points
-        raw = self.parameter_inputs["expected_sl_combined"].text().strip()
-        try:
-            adjusted = (
-                self._parse_expected_sl_combined(raw)[0]
-                if raw
-                else self.instruction.expected_sl_points
-            )
-        except (AutomationError, InvalidOperation, ValueError):
-            return None
+        original, adjusted = item.original_sl_points, item.expected_sl_points
         if adjusted is None or abs(adjusted) >= abs(original) or abs(original) == 0:
             return None
         return original, adjusted
@@ -3334,15 +3434,101 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _balance_warning_active(self) -> bool:
         context = getattr(self, "_balance_warning_context", None)
-        return context is not None and context == self._trade_settings_context()
+        return (context is not None and context == self._trade_settings_context()
+                or bool(TradingHelperApp._balance_range_warning_detail(self)))
+
+    def _balance_range_warning_detail(self) -> str:
+        sheet_warning = getattr(self, "_sheet_validation_warning", None)
+        if sheet_warning is not None and sheet_warning[0] == self._trade_settings_context():
+            return sheet_warning[1]
+        current = TradingHelperApp._balance_range_warning(self)
+        pending = getattr(self, "_balance_range_warning_latch", None)
+        return current or (pending[1] if pending is not None
+                          and pending[0] == self._trade_settings_context() else "")
+
+    def _balance_range_warning(self) -> str:
+        """Check confirmed sheet values; incomplete input drafts never add a warning."""
+        source = getattr(self, "ruler_sheet_values", None) or {}
+        limits = source.get("運算區", {})
+        floor, goal = decimal_value(limits.get("F7")), decimal_value(limits.get("B9"))
+        if floor is None or goal is None or floor < 0 or goal <= floor:
+            return ""
+        item = getattr(self, "instruction", None)
+        preview = getattr(self, "_display_trade_values", None) or {}
+        balance = item.internal_balance if item is not None else decimal_value(preview.get("internal_balance"))
+        if balance is None or not balance.is_finite():
+            return ""
+        if balance > goal:
+            return f"場內餘額高於帳號獲利目標 {money(goal)}。"
+        if balance < floor:
+            return f"場內餘額低於最大虧損線 {money(floor)}。"
+        return ""
+
+    def _refresh_balance_warning(self, *_args: object) -> None:
+        reason = self._balance_range_warning()
+        if reason:
+            context = self._trade_settings_context()
+            pending = self._balance_range_warning_latch
+            if pending is None or pending[0] != context:
+                self._parameter_write_last_signature = None
+            self._balance_range_warning_latch = (context, reason)
+        active = self._balance_warning_active()
+        self.balance_warning_badge.setVisible(active)
+        self.balance_warning_badge.setToolTip(
+            self._balance_range_warning_detail()+"請確認並修改場內餘額，更新成功後再操作。")
+        if active:
+            self._position_parameter_warnings()
 
     def _show_balance_warning(self) -> None:
-        QMessageBox.warning(self, "請修改場內餘額", "請確認並修改場內餘額，更新成功後再操作。")
+        sheet_warning = self._sheet_validation_warning
+        if sheet_warning is not None and sheet_warning[0] == self._trade_settings_context():
+            QMessageBox.warning(self, "請調整交易數值", sheet_warning[1]+"\n數值已保留，請調整並更新後再操作。")
+            return
+        QMessageBox.warning(self, "請修改場內餘額",
+            self._balance_range_warning_detail()+"請確認並修改場內餘額，更新成功後再操作。")
+
+    def _clear_verified_input_warnings(self, item: TradeInstruction) -> None:
+        """Only a successful sheet read, matching the current draft, releases a latch."""
+        context = self._trade_settings_context()
+        raw = self.parameter_inputs["internal_balance"].text().replace(",", "").strip().removeprefix("~")
+        limits = (self.ruler_sheet_values or {}).get("運算區", {})
+        floor, goal = decimal_value(limits.get("F7")), decimal_value(limits.get("B9"))
+        pending = self._balance_range_warning_latch
+        if (pending is not None and pending[0] == context and item.internal_balance is not None
+                and floor is not None and goal is not None and 0 <= floor < goal
+                and floor <= item.internal_balance <= goal
+                and (not raw or decimal_value(raw) == item.internal_balance)):
+            self._balance_range_warning_latch = None
+        pending = self._expected_sl_warning_latch
+        if pending is None or pending[0] != context:
+            return
+        raw = self.parameter_inputs["expected_sl_combined"].text().replace(",", "").strip()
+        try:
+            draft = self._parse_expected_sl_combined(raw)[0] if raw else item.expected_sl_points
+        except (AutomationError, InvalidOperation, ValueError):
+            return
+        if draft == item.expected_sl_points and (
+                item.original_sl_points is None or item.expected_sl_points is None
+                or abs(item.expected_sl_points) >= abs(item.original_sl_points)):
+            self._expected_sl_warning_latch = None
+
+    def _show_sheet_validation(self, payload: tuple) -> None:
+        context, reason = payload
+        if context != self._trade_settings_context():
+            return
+        self._sheet_validation_warning = (context, reason) if reason else None
+        if reason:
+            self._fill_waiting_for_sheet = None
+            self._fill_confirmed_text.clear()
+            self._parameter_write_last_signature = None
+        self._refresh_balance_warning()
 
     def _show_trade_values_preview(self, payload: tuple) -> None:
-        context, values = payload
+        context, values, *reason = payload
         if context != self._trade_settings_context() or not self._balance_warning_active():
             return
+        if reason and reason[0]:
+            self._show_sheet_validation((context, reason[0]))
         self._display_trade_values = dict(values)
 
         def number(field: str) -> str:
@@ -3365,6 +3551,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.internal_direction_input.blockSignals(True)
             self.internal_direction_input.setCurrentIndex(0 if direction == "BUY" else 1)
             self.internal_direction_input.blockSignals(False)
+        else:
+            for key in ("sheet_direction", "internal_direction", "external_direction"):
+                self.data_labels[key].setText("—")
         for field in ("internal_balance", "daily_pnl", "internal_entry_price"):
             self.parameter_inputs[field].setPlaceholderText(number(field))
         self.parameter_inputs["expected_sl_combined"].setPlaceholderText(
@@ -3375,12 +3564,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _clear_balance_warning(self, context: tuple) -> None:
         if context == self._trade_settings_context():
             self._balance_warning_context = None
-            self.balance_warning_badge.hide()
+            self._refresh_balance_warning()
 
     def _set_balance_warning(self, context: tuple) -> None:
         if context != self._trade_settings_context():
             return
         self._balance_warning_context = context
+        self._expected_sl_warning_latch = None
         self._display_trade_values = None
         self.instruction = None
         self._fill_waiting_for_sheet = None
@@ -3657,7 +3847,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 return
 
         if roles == ("internal", "external"):
-            warning_values = self._expected_sl_warning_values()
+            warning_values = self._current_expected_sl_warning_values(candidate) or self._expected_sl_warning_values()
             if warning_values is not None:
                 original, adjusted = warning_values
                 action = (
@@ -3858,9 +4048,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
 
     def fill_role(self, role: str) -> None:
+        self._side_fill_active = False
         self._launch_fill((role,))
 
     def fill_both(self) -> None:
+        self._side_fill_active = False
         self._launch_fill(("internal", "external"))
 
     def _preflight_duplicate_entry(
@@ -4475,6 +4667,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
             targets = [field_targets[field] for field in values]
             self.log(f"已寫回{label}到試算表：{', '.join(targets)}。")
+            readback = self.reader.read_field_values(self.store.data["sheet"], list(values), source_row=source_row)
+            for field, expected in values.items():
+                actual = str(readback.get(field_targets[field], "")).strip()
+                if actual != str(expected).strip() and not (
+                        decimal_value(actual) is not None and decimal_value(actual) == decimal_value(expected)):
+                    raise ValidationError("更新結果尚未確認，請重新讀取；本次未自動還原數值。")
             warning_values = self.reader.read_a1_values(
                 self.store.data["sheet"],
                 ["A20", "E12"],
@@ -4485,22 +4683,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if str(value).strip()
             }
             if warnings:
-                self.reader.write_a1_values(self.store.data["sheet"], previous_values)
-                self.log("A20/E12 出現警示文字，已取消剛剛的調整並還原原值。")
-                details = "\n".join(
-                    f"{cell}: {message}" for cell, message in warnings.items()
-                )
-                self.signals.error.emit(
-                    f"表格警示，已取消剛剛的調整：\n{details}"
-                )
-                self._read_sheet_task(retries=0)
-                return
+                self.signals.sheet_validation.emit((self._trade_settings_context(), "；".join(warnings.values())))
+                self.log("表格有警示；已保留讀回確認的新值，停止後續交易操作。")
             if "daily_pnl" in values:
                 target = field_targets.get("daily_pnl", "")
                 old_value = previous_values.get(target, "")
                 self._record_daily_pnl_history(old_value, values["daily_pnl"])
             if not self._parameter_write_pending:
-                self._read_sheet_task(retries=0)
+                try:
+                    self._read_sheet_task(retries=0)
+                except ValidationError as exc:
+                    if reset_inputs and hasattr(exc, "display_values"):
+                        self.signals.parameter_inputs_reset.emit(list(values))
+                    raise
             if reset_inputs and not self._parameter_write_pending:
                 self.signals.parameter_inputs_reset.emit(list(values))
             if busy:
@@ -4516,6 +4711,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         def wrapped_task() -> None:
             try:
                 task()
+            except Exception as exc:
+                if not hasattr(exc, "display_values"):
+                    self.signals.sheet_validation.emit((self._trade_settings_context(),
+                        "更新結果尚未確認，請重新讀取試算表。"))
+                raise
             finally:
                 if busy:
                     should_retry = self._parameter_write_pending
@@ -5224,6 +5424,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 "internal_platform": self.internal_platform.currentText(),
                 "external_platform": self.external_platform.currentText(),
                 "tv_draw_internal": self.tv_draw_internal.isChecked(),
+                "side_panel_enabled": (
+                    self.side_panel_checkbox.isChecked()
+                    if hasattr(self, "side_panel_checkbox") else True
+                ),
                 "show_calibration_badges": (
                     self.show_calibration_badges.isChecked()
                     if hasattr(self, "show_calibration_badges")
@@ -5525,6 +5729,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         self.instruction = None
         self._balance_warning_context = None
+        self._balance_range_warning_latch = None
+        self._expected_sl_warning_latch = None
+        self._sheet_validation_warning = None
         self._display_trade_values = None
         self.balance_warning_badge.hide()
         self._show_trade_sheet_settings((self._trade_settings_context(), None, "請先讀取試算表。"))
@@ -5550,6 +5757,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if hasattr(self,"_refresh_calibration_badges"):
             self._refresh_calibration_badges()
 
+        sidebar_toggle = getattr(self, "side_panel_checkbox", None)
+        if sidebar_toggle is not None:
+            sidebar_toggle.blockSignals(True)
+            sidebar_toggle.setChecked(bool(ui.get("side_panel_enabled", True)))
+            sidebar_toggle.blockSignals(False)
+            if getattr(self, "side_panel", None) is not None:
+                if sidebar_toggle.isChecked():
+                    self.side_panel.start()
+                else:
+                    self.side_panel.suspend()
+
     def _refresh_profile_combo(self, selected: str) -> None:
         self._profile_switching = True
         self.profile_combo.set_names(self.profiles.names())
@@ -5572,6 +5790,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             event.ignore()
             return
         self.save_ui_state()
+        panel = getattr(self, "side_panel", None)
+        if panel is not None:
+            panel.close()
+        calendar = getattr(self, '_event_calendar', None)
+        if calendar is not None:
+            calendar.close()
         self.emergency.close()
         event.accept()
 
@@ -6579,10 +6803,8 @@ class CalibrationDialog(ThemedDialog):
             if self._inventory_save_preview is state:
                 self._inventory_save_preview = None
             self._inventory_scan_context = None
-            if state["saved"]:
-                # Only after the settings transaction succeeded do we close
-                # the parent calibration dialog as requested.
-                self.accept()
+            # Saving, closing or dismissing results keeps this calibration
+            # page and its selected stage available for the next capture.
 
     def _update_inventory_save_button(self, state: dict[str, Any]) -> None:
         enabled = (
@@ -6661,8 +6883,7 @@ class CalibrationDialog(ThemedDialog):
                 f"已人工確認並儲存 {self.platform} {len(points)} 個校準項目："
                 + ", ".join(points)
             )
-            # Finish the nested preview modal immediately after a SUCCESSFUL
-            # atomic save; the outer dialog closes when exec() returns.
+            # Finish only the nested result; keep the calibration page open.
             details.accept()
         except Exception as exc:
             state["status"].setText("未儲存；請檢查錯誤後重新掃描。")

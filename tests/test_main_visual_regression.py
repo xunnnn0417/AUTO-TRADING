@@ -157,7 +157,7 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertIn("保證金限額", message)
         self.assertIn("無法確認即時保證金限額", message)
 
-    def test_expected_sl_warning_hides_when_distance_is_not_reduced(self):
+    def test_expected_sl_warning_stays_after_editing_back_until_readback(self):
         self.window.instruction = SimpleNamespace(
             original_sl_points=Decimal("-5.57"),
             expected_sl_points=Decimal("-5.57"),
@@ -166,10 +166,13 @@ class MainVisualRegressionTests(unittest.TestCase):
         self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
 
         self.window.parameter_inputs["expected_sl_combined"].setText("-5.27")
+        self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
+        self.window.instruction.expected_sl_points = Decimal('-5.27')
+        self.window._refresh_expected_sl_warning()
         self.assertTrue(self.window.expected_sl_warning_badge.isVisible())
 
         self.window.parameter_inputs["expected_sl_combined"].setText("-5.57")
-        self.assertFalse(self.window.expected_sl_warning_badge.isVisible())
+        self.assertTrue(self.window.expected_sl_warning_badge.isVisible())
 
     def test_all_old_ui_controls_stay_accessible(self):
         self.assertEqual(
@@ -230,7 +233,7 @@ class MainVisualRegressionTests(unittest.TestCase):
 
     def test_trade_page_has_no_scrollbar_and_records_are_separate(self):
         from PySide6.QtWidgets import QScrollArea
-        self.assertEqual(self.window.main_pages.count(),3)
+        self.assertEqual(self.window.main_pages.count(),4)
         self.assertIs(self.window.main_pages.widget(0),self.window.trade_page)
         self.assertFalse(self.window.trade_page.findChildren(QScrollArea))
         self.window.switch_workspace("交易")

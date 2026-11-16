@@ -1,5 +1,7 @@
 """Stage persistence and balance warnings use isolated sheet and Qt fixtures."""
 import unittest
+from dataclasses import replace
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from trading_helper import gui
@@ -54,6 +56,196 @@ class StageBalanceWarningTests(unittest.TestCase):
             self.w.reader, self.w.store.data['sheet']), ''))
         self.w.instruction = self.w.reader.read(self.w.store.data['sheet'])
         self.w._show_instruction(self.w.instruction)
+
+    def load_limits(self):
+        from test_progress_ruler import sheet_values
+        self.w.ruler_sheet_values = sheet_values()
+        self.w.reader.read_a1_values = lambda config, cells: {
+            cell: sheet_values().get(config.get('worksheet'), {}).get(cell, '') for cell in cells}
+        self.w._refresh_ruler()
+
+    def test_balance_outside_sheet_limits_warns_and_blocks_all_fill_entries(self):
+        from test_progress_ruler import sheet_values
+        self.load()
+        self.w._show_ruler_sheet((sheet_values(), '', self.w.profiles.active_name,
+                                 self.w.store.data['sheet']['spreadsheet_url']))
+        for raw, detail in (('55000.01', '高於帳號獲利目標'), ('46,499.99', '低於最大虧損線'),
+                            ('~46000', '低於最大虧損線')):
+            with self.subTest(balance=raw):
+                self.w.parameter_inputs['internal_balance'].setText(raw)
+                self.w.instruction = replace(self.w.instruction, internal_balance=Decimal(raw.replace(',', '').removeprefix('~')))
+                self.w._show_instruction(self.w.instruction)
+                self.assertTrue(self.w.balance_warning_badge.isVisible())
+                self.assertIn(detail, self.w.balance_warning_badge.toolTip())
+                original = self.w.data_labels['internal_lot'].text()
+                with patch.object(gui.QMessageBox, 'warning') as warning, \
+                     patch.object(self.w, '_start_fill_worker') as worker, \
+                     patch.object(self.w, '_write_trade_parameter_values') as write:
+                    self.w.fill_both()
+                    self.w.fill_role('internal')
+                    self.w.fill_role('external')
+                    self.assertEqual(warning.call_count, 3)
+                    self.assertIn(detail, warning.call_args.args[2])
+                    worker.assert_not_called()
+                    write.assert_not_called()
+                with self.assertRaises(gui.AutomationError):
+                    self.w._require_instruction()
+                self.assertEqual(self.w.data_labels['internal_lot'].text(), original)
+        self.assertEqual(self.w.reader.writes, [])
+
+    def test_range_warning_uses_loaded_values_and_valid_boundaries_do_not_warn(self):
+        self.load()
+        self.load_limits()
+        for raw in ('46500', '50000', '55000'):
+            self.w.parameter_inputs['internal_balance'].setText(raw)
+            self.assertFalse(self.w._balance_warning_active())
+            self.assertFalse(self.w.balance_warning_badge.isVisible())
+        self.w.parameter_inputs['internal_balance'].clear()
+        self.w.instruction = replace(self.w.instruction, internal_balance=Decimal('56000'))
+        self.w._show_instruction(self.w.instruction)
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.w._clear_balance_warning(self.w._trade_settings_context())
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.w.instruction = replace(self.w.instruction, internal_balance=Decimal('50000'))
+        self.w._show_instruction(self.w.instruction)
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        self.assertFalse(self.w.balance_warning_badge.isVisible())
+        self.w.parameter_inputs['internal_balance'].setText('56000')
+        self.w._apply_profile_ui()
+        self.assertFalse(self.w._balance_warning_active())
+
+    def test_editing_range_back_to_normal_requires_verified_update_even_for_old_value(self):
+        self.load()
+        self.load_limits()
+        self.w._parameter_write_last_signature = self.w._parameter_write_signature({'internal_balance': '50000'})
+        self.w.reader.balance = '56000'
+        self.w._read_sheet_task()
+        self.w.parameter_inputs['internal_balance'].setText('50000')
+        self.assertTrue(self.w.balance_warning_badge.isVisible())
+        with patch.object(gui.QMessageBox, 'warning'), patch.object(self.w, '_start_fill_worker') as fill:
+            self.w.fill_both()
+            fill.assert_not_called()
+        with patch.object(self.w, '_start') as start:
+            self.w.update_all_trade_parameters()
+            start.assert_called_once()
+            start.call_args.args[1]()
+        self.qtapp.processEvents()
+        self.assertEqual(self.w.reader.writes, [{'C6': '50000'}])
+        self.assertFalse(self.w._balance_warning_active())
+        self.assertFalse(self.w.balance_warning_badge.isVisible())
+        self.assertIsNotNone(self.w.instruction)
+
+    def test_failed_or_incomplete_read_does_not_release_range_warning(self):
+        self.load()
+        self.load_limits()
+        self.w.reader.balance = '46000'
+        self.w._read_sheet_task()
+        self.w.parameter_inputs['internal_balance'].setText('54000')
+        self.w.reader.read = MagicMock(side_effect=ValidationError('暫時無法讀取'))
+        with self.assertRaises(ValidationError):
+            self.w._read_sheet_task()
+        self.assertTrue(self.w._balance_warning_active())
+        self.w.reader.read = lambda _: replace(self.w.instruction, internal_balance=Decimal('54000'))
+        self.w.reader.read_a1_values = MagicMock(side_effect=ValidationError('無法讀取門檻'))
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        self.assertTrue(self.w._balance_warning_active())
+
+    def test_previous_worksheet_readback_cannot_release_new_warning(self):
+        self.load()
+        self.load_limits()
+        old_context = self.w._trade_settings_context()
+        self.w.store.data['sheet']['worksheet'] = '另一工作表'
+        self.w.reader.balance = '56000'
+        self.w._read_sheet_task()
+        self.w.parameter_inputs['internal_balance'].setText('50000')
+        self.w._show_ruler_sheet((self.w.ruler_sheet_values, '', self.w.profiles.active_name,
+            self.w.store.data['sheet']['spreadsheet_url'], (old_context, self.w.instruction)))
+        self.assertTrue(self.w._balance_warning_active())
+
+    def test_expected_sl_warning_requires_matching_normal_readback_and_profile_isolation(self):
+        self.load()
+        self.load_limits()
+        self.w.instruction = replace(self.w.instruction, original_sl_points=Decimal('-12'),
+                                     expected_sl_points=Decimal('-12'))
+        self.w._show_instruction(self.w.instruction)
+        entry = self.w.parameter_inputs['expected_sl_combined']
+        entry.setText('-8')
+        self.assertFalse(self.w.expected_sl_warning_badge.isVisible())
+        self.w.instruction = replace(self.w.instruction, expected_sl_points=Decimal('-8'))
+        self.w._show_instruction(self.w.instruction)
+        entry.setText('-12')
+        self.assertTrue(self.w.expected_sl_warning_badge.isVisible())
+        self.assertEqual(self.w._expected_sl_warning_values(), (Decimal('-12'), Decimal('-8')))
+        self.w.reader.read = lambda _: replace(self.w.instruction, expected_sl_points=Decimal('-13'))
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        self.assertTrue(self.w.expected_sl_warning_badge.isVisible())
+        self.w.reader.read = lambda _: replace(self.w.instruction, expected_sl_points=Decimal('-12'))
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        self.assertFalse(self.w.expected_sl_warning_badge.isVisible())
+        entry.setText('-8')
+        self.w.instruction = replace(self.w.instruction, expected_sl_points=Decimal('-8'))
+        self.w._show_instruction(self.w.instruction)
+        self.assertTrue(self.w.expected_sl_warning_badge.isVisible())
+        self.w._apply_profile_ui()
+        self.assertIsNone(self.w._expected_sl_warning_values())
+
+    def test_partial_and_outside_balance_drafts_never_add_warning_before_update(self):
+        self.load()
+        self.load_limits()
+        for raw in ('', '5', '55', '550', '5500', '56000', '46000'):
+            self.w.parameter_inputs['internal_balance'].setText(raw)
+            self.w._refresh_ruler()
+            self.assertFalse(self.w.balance_warning_badge.isVisible(), raw)
+            self.assertFalse(self.w._balance_warning_active(), raw)
+        self.assertEqual(self.w.reader.writes, [])
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].placeholderText(), '50000')
+
+    def test_sheet_warning_keeps_confirmed_new_balance_and_blocks_fill_until_corrected(self):
+        self.load()
+        self.load_limits()
+        read = self.w.reader.read_a1_values
+        self.w.reader.read_a1_values = lambda config, cells: {
+            **read(config, cells), **({'A20': '請調整餘額'} if self.w.reader.balance == '55000' and 'A20' in cells else {})}
+        self.w.parameter_inputs['internal_balance'].setText('55000')
+        with patch.object(self.w, '_start') as start, patch.object(gui.QMessageBox, 'warning'):
+            self.w.update_all_trade_parameters()
+            start.call_args.args[1]()
+        self.qtapp.processEvents()
+        self.assertEqual(self.w.reader.balance, '55000')
+        self.assertEqual(self.w.reader.writes, [{'C6': '55000'}])
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].text(), '')
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].placeholderText(), '55000')
+        self.assertTrue(self.w._balance_warning_active())
+        with patch.object(gui.QMessageBox, 'warning'), patch.object(self.w, '_start_fill_worker') as fill:
+            self.w.fill_both()
+            fill.assert_not_called()
+        self.w.parameter_inputs['internal_balance'].setText('54000')
+        with patch.object(self.w, '_start') as start:
+            self.w.update_all_trade_parameters()
+            start.call_args.args[1]()
+        self.qtapp.processEvents()
+        self.assertFalse(self.w._balance_warning_active())
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].placeholderText(), '54000')
+
+    def test_confirmed_write_with_invalid_calculation_becomes_placeholder_without_rollback(self):
+        self.load()
+        self.change_stage()
+        self.w.parameter_inputs['internal_balance'].setText('50000')
+        with patch.object(self.w, '_start') as start:
+            self.w.update_all_trade_parameters()
+            with self.assertRaises(InvalidInternalTakeProfit):
+                start.call_args.args[1]()
+        self.qtapp.processEvents()
+        self.assertEqual(self.w.reader.balance, '50000')
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].text(), '')
+        self.assertEqual(self.w.parameter_inputs['internal_balance'].placeholderText(), '50000')
+        self.assertEqual(self.w.stage_selector.currentText(), '真金階段')
+        self.assertTrue(self.w._balance_warning_active())
 
     def change_stage(self):
         with patch.object(self.w, '_start') as start, patch.object(gui.time, 'sleep'):

@@ -70,6 +70,7 @@ def main() -> None:
         sys.exit(0)
     app = TradingHelperApp()
     app.show()
+    QTimer.singleShot(100, app.initialize_side_panel)
     updater = UpdateController(app, APP_BASE)
     qt._update_controller = updater
     QTimer.singleShot(1200, updater.start)
