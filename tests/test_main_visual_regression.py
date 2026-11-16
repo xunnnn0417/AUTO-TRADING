@@ -233,7 +233,7 @@ class MainVisualRegressionTests(unittest.TestCase):
 
     def test_trade_page_has_no_scrollbar_and_records_are_separate(self):
         from PySide6.QtWidgets import QScrollArea
-        self.assertEqual(self.window.main_pages.count(),3)
+        self.assertEqual(self.window.main_pages.count(),4)
         self.assertIs(self.window.main_pages.widget(0),self.window.trade_page)
         self.assertFalse(self.window.trade_page.findChildren(QScrollArea))
         self.window.switch_workspace("交易")

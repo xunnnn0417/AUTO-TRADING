@@ -236,19 +236,20 @@ class EconomicCalendar(QObject):
                     and timedelta(0) <= now-fetched < SOURCE_TTLS['ff']
                     and self._ff_coverage[0] <= start and end <= self._ff_coverage[1])
 
-    def refresh(self) -> None:
+    def refresh(self, *, force: bool = False) -> None:
         now = datetime.now(UTC)
         if self._closed or self._busy:
             return
         self._translation_enabled = True
         self._translate_missing()
         due = [key for key in SOURCE_URLS
-               if (key not in self.source_times or not timedelta(0) <= now-self.source_times[key] < SOURCE_TTLS[key])
-               and (key not in self._last_attempt or now-self._last_attempt[key] >= min(SOURCE_TTLS[key], timedelta(minutes=15)))]
+               if force or ((key not in self.source_times or not timedelta(0) <= now-self.source_times[key] < SOURCE_TTLS[key])
+               and (key not in self._last_attempt or now-self._last_attempt[key] >= min(SOURCE_TTLS[key], timedelta(minutes=15))))]
         if not due:
             return
         self._busy = True
         self._last_attempt.update({key: now for key in due})
+        self.changed.emit()
         threading.Thread(target=self._fetch, args=(due,), daemon=True).start()
 
     def _read_source(self, key):
@@ -363,7 +364,7 @@ class EconomicCalendar(QObject):
             when = self.source_times.get(key)
             state = ('無法更新' if key in self.source_errors else
                      '待更新' if when is None or not timedelta(0) <= now-when < SOURCE_TTLS[key] else '已連線')
-            stamp = f' · {when.astimezone(TAIPEI):%m/%d %H:%M}' if when else ''
+            stamp = f' · {when.astimezone(TAIPEI):%m/%d %H:%M:%S}' if when else ''
             lines.append(name + '：' + state + stamp)
         return lines
 

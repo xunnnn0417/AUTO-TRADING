@@ -114,6 +114,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         self.assertIsNone(self.dialog._inventory_scan_context)
 
     def test_full_save_saves_all_previewed_candidates_and_preserves_others(self):
+        self.dialog.show()
         def inspect(instance):
             state=self.dialog._inventory_save_preview
             self._preview(instance,self.report)
@@ -127,7 +128,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
             return 0
         with patch.object(gui.QDialog,"exec",inspect):
             self.dialog._finish_inventory(self.report)
-        self.assertEqual(QDialog.result(self.dialog), QDialog.Accepted)
+        self.assertTrue(self.dialog.isVisible())
         updated=json.loads(self.parent.store.path.read_text(encoding="utf-8"))
         self.assertEqual(updated["platforms"]["cTrader"]["points"]["lot_input"]["x_px"],450)
         self.assertEqual(updated["platforms"]["cTrader"]["points"]["tp_input"]["x_px"],999)
@@ -135,6 +136,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
         self.assertEqual(updated["platforms"]["MT5"]["points"]["lot_input"]["x_px"],333)
 
     def test_visual_low_confidence_candidate_saves_after_successful_preview(self):
+        self.dialog.show()
         # The complete candidate set can be saved only after yellow preview.
         self.report.candidates["sl_input"]=Candidate(
             "sl_input",(610,350,730,370),
@@ -155,7 +157,7 @@ class ConfirmSaveQtTests(unittest.TestCase):
             return 0
         with patch.object(gui.QDialog,"exec",inspect):
             self.dialog._finish_inventory(self.report)
-        self.assertEqual(QDialog.result(self.dialog),QDialog.Accepted)
+        self.assertTrue(self.dialog.isVisible())
 
     def test_moved_candidates_are_rejected_without_writing(self):
         original=self.parent.store.path.read_bytes()

@@ -5,16 +5,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QSignalBlocker, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPalette, QPen, QRegion
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPalette, QPen, QRegion
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSizePolicy, QStyle, QStyleOptionToolButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .calendar_events import EconomicCalendar, TAIPEI, UTC
-from .event_summary import event_summary, relevant_announcement, trading_session
-from .config import APP_DIR
-from .progress_ruler import AccountRuler
+from .calendar_events import TAIPEI, UTC
+from .event_summary import event_summary, trading_session
+from .progress_ruler import AccountRuler, money
 from .ui_theme import themed_icon
 
 
@@ -54,6 +53,25 @@ class EventSummaryButton(QToolButton):
         rect = QRect(23, 0, max(1, self.width()-27), self.height())
         painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft,
                          self.fontMetrics().elidedText(self.text(), Qt.ElideRight, rect.width()))
+
+
+class WarningFlyout(QFrame):
+    """Nonmodal explanation beside the sidebar; never a trade confirmation."""
+    tip_y = 30
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        shape = QPainterPath()
+        shape.addRoundedRect(QRectF(.35, .35, self.width()-8.7, self.height()-.7), 9, 9)
+        tip = QPainterPath()
+        tip.moveTo(self.width()-9, self.tip_y-5)
+        tip.lineTo(self.width()-.35, self.tip_y)
+        tip.lineTo(self.width()-9, self.tip_y+5)
+        tip.closeSubpath()
+        painter.setPen(QPen(QColor(245, 243, 250, 70), .7))
+        painter.setBrush(QColor('#17171e'))
+        painter.drawPath(shape.united(tip))
 
 
 class SideQuickPanel(QWidget):
@@ -247,45 +265,46 @@ class SideQuickPanel(QWidget):
         self.event_flyout.installEventFilter(self)
         flyout_layout = QVBoxLayout(self.event_flyout)
         flyout_layout.setContentsMargins(12, 10, 12, 12)
-        heading = QHBoxLayout()
-        heading.addWidget(QLabel('重大事件'), 1)
-        refresh = self._icon_button('refresh', '更新事件資料')
-        refresh.clicked.connect(lambda: self.calendar.refresh())
-        heading.addWidget(refresh)
-        close = type(app.chrome_close)('close', self.event_flyout)
-        close.setFixedSize(24, 24)
-        close.clicked.connect(lambda: self.events_button.setChecked(False))
-        heading.addWidget(close)
-        flyout_layout.addLayout(heading)
-        self.event_tabs = QTabWidget()
-        self.event_rows, self.news_rows = (QLabel() for _ in range(2))
-        for title, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
-            label.setTextFormat(Qt.PlainText)
-            label.setWordWrap(True)
-            label.setAlignment(Qt.AlignTop)
-            label.setStyleSheet('padding: 10px 2px; font-size: 11px;')
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(label)
-            self.event_tabs.addTab(scroll, title)
-        flyout_layout.addWidget(self.event_tabs, 1)
-        self.event_status = QToolButton()
-        self.event_status.setAccessibleName('消息來源狀態')
-        self.event_status.setCheckable(True)
-        self.event_status.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.event_status.setArrowType(Qt.DownArrow)
-        flyout_layout.addWidget(self.event_status)
-        self.source_details = QLabel()
-        self.source_details.setTextFormat(Qt.PlainText)
-        self.source_details.setWordWrap(True)
-        self.source_details.setProperty('muted', True)
-        self.source_details.hide()
-        self.event_status.toggled.connect(self.source_details.setVisible)
-        self.event_status.toggled.connect(lambda expanded: self.event_status.setArrowType(
-            Qt.UpArrow if expanded else Qt.DownArrow))
-        flyout_layout.addWidget(self.source_details)
+        from .event_feed import EventFeedView
+        self.calendar = app._get_event_calendar()
+        self.event_view = EventFeedView(lambda: self.calendar, self.event_flyout,
+                                        title='重大事件', close=self.events_button.setChecked)
+        flyout_layout.addWidget(self.event_view)
+        # Shared view attributes retained for the sidebar's preview controls.
+        for name in ('event_tabs', 'event_rows', 'news_rows', 'event_status', 'source_details'):
+            setattr(self, name, getattr(self.event_view, name))
         self.event_flyout.hide()
-        self.calendar = EconomicCalendar(APP_DIR / 'diagnostics' / 'economic-calendar.json', self)
+        self._warning_key = None
+        self._warning_context = None
+        self.warning_flyout = WarningFlyout(self, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.warning_flyout.setWindowTitle('側欄提醒說明')
+        self.warning_flyout.setWindowModality(Qt.NonModal)
+        self.warning_flyout.setAttribute(Qt.WA_TranslucentBackground)
+        self.warning_flyout.setFocusPolicy(Qt.StrongFocus)
+        warning_layout = QVBoxLayout(self.warning_flyout)
+        warning_layout.setContentsMargins(13, 9, 21, 13)
+        warning_layout.setSpacing(10)
+        warning_header = QHBoxLayout()
+        self.warning_title = QLabel()
+        self.warning_title.setTextFormat(Qt.PlainText)
+        warning_header.addWidget(self.warning_title, 1)
+        warning_close = type(app.chrome_close)('close', self.warning_flyout)
+        warning_close.setFixedSize(24, 24)
+        warning_close.setAccessibleName('關閉提醒說明')
+        warning_close.clicked.connect(self._hide_warning)
+        warning_header.addWidget(warning_close)
+        warning_layout.addLayout(warning_header)
+        self.warning_numbers = QLabel()
+        self.warning_numbers.setTextFormat(Qt.PlainText)
+        self.warning_numbers.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        warning_layout.addWidget(self.warning_numbers)
+        self.warning_text = QLabel()
+        self.warning_text.setTextFormat(Qt.PlainText)
+        self.warning_text.setWordWrap(True)
+        self.warning_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        warning_layout.addWidget(self.warning_text)
+        self.warning_flyout.hide()
+        QApplication.instance().installEventFilter(self)
         self.calendar.changed.connect(self.update_events)
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(300)
@@ -361,6 +380,13 @@ class SideQuickPanel(QWidget):
                 badge.setToolTip(app.balance_warning_badge.toolTip())
             badge.move(max(0, self.inputs[key].width() - 14), 1)
             badge.raise_()
+        if self._warning_key is not None:
+            if (busy or self._warning_context != app._trade_settings_context()
+                    or not self.warnings[self._warning_key].isVisible()):
+                self._hide_warning()
+            else:
+                self._update_warning_content(self._warning_key)
+                self._position_warning_flyout()
 
     def update_values(self):
         if not self.update_button.isEnabled():
@@ -382,21 +408,66 @@ class SideQuickPanel(QWidget):
         self.app.activateWindow()
 
     def _show_warning(self, key):
-        restore = self.isVisible() and not self.collapsed
-        self.set_collapsed(True)
-        try:
-            (self.app._show_expected_sl_warning if key == 'expected_sl_combined'
-             else self.app._show_balance_warning)()
-        finally:
-            if (restore and self.isVisible() and self.app.store.data['ui'].get('side_panel_enabled', True)
-                    and not self.app._active_tasks and not self.calendar._closed):
-                self.set_collapsed(False)
-                self.raise_()
+        if self._warning_key == key and self.warning_flyout.isVisible():
+            self._hide_warning()
+            return
+        if self.collapsed or not self.isVisible() or not self._update_warning_content(key):
+            return
+        self.events_button.setChecked(False)
+        self._warning_key = key
+        self._warning_context = self.app._trade_settings_context()
+        self._position_warning_flyout()
+        self.warning_flyout.show()
+        self.warning_flyout.raise_()
+        self.warning_flyout.activateWindow()
+        self.warning_flyout.setFocus(Qt.OtherFocusReason)
+
+    def _update_warning_content(self, key):
+        if key == 'expected_sl_combined':
+            values = self.app._expected_sl_warning_values()
+            if values is None:
+                return False
+            original, adjusted = values
+            title = '預期 SL 提醒'
+            numbers = f'原始 SL：{original} 點\n預期 SL：{adjusted} 點'
+            message = '手數可能增加，請先確認保證金比例相關規則。'
+        else:
+            if not self.app._balance_warning_active():
+                return False
+            title = '場內餘額提醒'
+            balance, _ = self.app._cash_reference_values()
+            numbers = '' if balance is None else '場內餘額：'+money(balance)
+            reason = self.app._balance_range_warning_detail()
+            message = reason+'\n請確認並修改數值，更新後再操作。'
+        for label, text in ((self.warning_title, title), (self.warning_numbers, numbers), (self.warning_text, message)):
+            if label.text() != text:
+                label.setText(text)
+        self.warning_numbers.setVisible(bool(numbers))
+        return True
+
+    def _position_warning_flyout(self):
+        if self._warning_key is None or self._screen is None:
+            return
+        area = self._screen.availableGeometry()
+        popup = self.warning_flyout
+        popup.setFixedWidth(min(268, max(160, self.x()-area.left()-8), area.width()))
+        popup.adjustSize()
+        anchor = self.warnings[self._warning_key].mapToGlobal(
+            self.warnings[self._warning_key].rect().center())
+        y = max(area.top(), min(anchor.y()-popup.height()//2, area.bottom()-popup.height()+1))
+        popup.move(max(area.left(), self.x()-popup.width()-8), y)
+        popup.tip_y = max(16, min(popup.height()-16, anchor.y()-y))
+        popup.update()
+
+    def _hide_warning(self):
+        self._warning_key = None
+        self.warning_flyout.hide()
 
     def _expand_events(self, expanded):
         self.events_button.setArrowType(Qt.RightArrow if expanded else Qt.LeftArrow)
         self.event_flyout.setVisible(expanded and not self.collapsed)
         if expanded:
+            self._hide_warning()
             self.event_status.setChecked(False)
             self._position_event_flyout()
             self.calendar.refresh()
@@ -425,28 +496,7 @@ class SideQuickPanel(QWidget):
         for event in upcoming[:6]:
             tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d %H:%M} · {event.currency} · {self.calendar.title(event.title)}'
         self.events_button.setToolTip(tooltip)
-        def title(original):
-            shown = self.calendar.title(original)
-            return shown + ('〔機翻〕' if original in self.calendar.translations else '')
-        def line(event):
-            return f'{event.when.astimezone(TAIPEI):%m/%d %H:%M}  {event.currency} · {event.source}\n{title(event.title)}'
-        self.event_rows.setText('\n\n'.join(map(line, upcoming[:20])) or
-                               '目前載入資料沒有近期排程；請查看來源更新狀態。')
-        recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title)
-                  for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
-        recent += [(n.when, n.source, n.title) for n in self.calendar.news
-                   if now-timedelta(hours=72) <= n.when <= now
-                   and (n.source.startswith('香港電台') or relevant_announcement(n.title))]
-        recent = sorted(set(recent), reverse=True)[:24]
-        self.news_rows.setText('\n\n'.join(f'{when.astimezone(TAIPEI):%m/%d %H:%M} · {source}\n{title(original)}'
-            for when, source, original in recent) or '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
-        self.news_rows.setToolTip('\n\n'.join(original for _, _, original in recent))
-        self.event_rows.setToolTip('\n'.join(item.title for item in upcoming[:20]))
-        details = ('\n'.join(self.calendar.status_lines(now)) +
-            '\n台北時間；英文可能機翻，消息可能延遲或漏報。')
-        self.event_status.setText('ⓘ 來源狀態 · ' + ('部分待更新' if stale else '已更新'))
-        self.event_status.setToolTip(details)
-        self.source_details.setText(details)
+        self.event_view.update_events()
 
     def set_collapsed(self, collapsed):
         was_collapsed = self.collapsed
@@ -455,6 +505,7 @@ class SideQuickPanel(QWidget):
             self.app.store.data['ui']['side_panel_y'] = self._y
             self.app.save_ui_state()
         if collapsed:
+            self._hide_warning()
             self.events_button.setChecked(False)
         self.collapsed = collapsed
         self.clearMask()
@@ -488,6 +539,7 @@ class SideQuickPanel(QWidget):
         self.move(area.right() - self.width() + 1,
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
         self._position_event_flyout()
+        self._position_warning_flyout()
 
     def _begin_handle_drag(self):
         if self._handle_pointer is None or not self.collapsed:
@@ -545,6 +597,19 @@ class SideQuickPanel(QWidget):
             self.collapse_button.releaseMouse()
 
     def eventFilter(self, watched, event):
+        popup = getattr(self, 'warning_flyout', None)
+        if popup is not None and popup.isVisible():
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self._hide_warning()
+                return True
+            if event.type() == QEvent.ApplicationDeactivate:
+                self._hide_warning()
+            elif event.type() == QEvent.MouseButtonPress:
+                point = event.globalPosition().toPoint()
+                on_badge = any(badge.isVisible() and QRect(badge.mapToGlobal(QPoint()), badge.size()).contains(point)
+                               for badge in self.warnings.values())
+                if not popup.frameGeometry().contains(point) and not on_badge:
+                    self._hide_warning()
         if watched is getattr(self, 'event_flyout', None) and event.type() == QEvent.Close:
             self.events_button.setChecked(False)
         if watched is self.collapse_button:
@@ -634,15 +699,18 @@ class SideQuickPanel(QWidget):
             painter.drawRoundedRect(rect, 10, 10)
 
     def closeEvent(self, event):
+        self._hide_warning()
+        QApplication.instance().removeEventFilter(self)
         self._cancel_collapse_drag()
         self.event_flyout.close()
         self._cancel_handle_drag()
         self.sync_timer.stop()
         self.event_timer.stop()
-        self.calendar.close()
         super().closeEvent(event)
 
     def hideEvent(self, event):
+        if hasattr(self, 'warning_flyout'):
+            self._hide_warning()
         self._cancel_collapse_drag()
         if hasattr(self, 'events_button'):
             self.events_button.setChecked(False)

@@ -934,7 +934,8 @@ QMainWindow#tradingHelperMain QWidget#appSurface {
 MAIN_THEME += """
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews {
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
@@ -947,13 +948,15 @@ QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords {
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade:hover,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit:hover,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:hover {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:hover,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews:hover {
     background: #211f23;
     color: #e4dfe8;
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade:checked,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit:checked,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews:checked {
     background: transparent;
     color: #f0edf3;
     border-bottom: 2px solid #ae96bd;
@@ -1393,7 +1396,8 @@ QMainWindow#tradingHelperMain QFrame#compactTitleBar QLabel#moduleKicker {
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews {
     color: #9b9da6;
     background: transparent;
     border: 0;
@@ -1405,14 +1409,16 @@ QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords {
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade:checked,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit:checked,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews:checked {
     background: transparent;
     color: #f0f0f5;
     border-bottom: 2px solid #7179d9;
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade:hover,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit:hover,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:hover {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:hover,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews:hover {
     color: #eeeff4;
     background: #1b1c22;
 }
@@ -1685,7 +1691,8 @@ QMainWindow#tradingHelperMain QFrame#compactTitleBar QLabel#appTitle {
 }
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navTrade:checked,
 QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navEdit:checked,
-QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked {
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navRecords:checked,
+QMainWindow#tradingHelperMain QFrame#compactTitleBar QPushButton#navNews:checked {
     color: #ffffff;
     border-bottom: 2px solid #9e87ff;
 }

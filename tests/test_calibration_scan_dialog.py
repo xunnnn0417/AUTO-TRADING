@@ -252,6 +252,38 @@ class P2CalibrationDialogTests(unittest.TestCase):
         dialog.close()
         parent.close()
 
+    def test_result_save_close_and_x_keep_calibration_stage_open(self):
+        for platform in ('cTrader', 'MT5', 'TradingView'):
+            for action in ('save', 'close', 'x'):
+                with self.subTest(platform=platform, action=action):
+                    parent = QMainWindow()
+                    dialog = CalibrationDialog(parent, platform)
+                    tabs = dialog.findChild(QTabWidget)
+                    tabs.setCurrentIndex(tabs.count()-1)
+                    selected = tabs.currentIndex()
+                    dialog.show()
+                    report = ScanReport(platform, (('lot_input', '手數'),))
+                    report.candidates['lot_input'] = Candidate('lot_input', (10, 20, 40, 50), 'UIA')
+                    def result_action(details):
+                        if action == 'save':
+                            # The unchanged atomic save path has already succeeded.
+                            dialog._inventory_save_preview['saved'] = True
+                            details.accept()
+                        elif action == 'close':
+                            next(b for b in details.findChildren(QPushButton)
+                                 if b.text() == '關閉結果（不儲存）').click()
+                        else:
+                            details.close()
+                        return 0
+                    with patch.object(QDialog, 'exec', result_action):
+                        dialog._finish_inventory(report)
+                    self.assertTrue(dialog.isVisible())
+                    self.assertEqual(tabs.currentIndex(), selected)
+                    self.assertIsNone(dialog._inventory_save_preview)
+                    dialog._hover_outline.close()
+                    dialog.close()
+                    parent.close()
+
     def test_same_simple_calibration_structure_across_platforms(self):
         for platform, expected_tabs, expected_items in (
             ("cTrader", 3, 16),

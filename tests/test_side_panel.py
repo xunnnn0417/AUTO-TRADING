@@ -26,12 +26,11 @@ class SidePanelTests(unittest.TestCase):
         cls.qtapp = QApplication.instance() or QApplication([])
 
     def open_panel(self):
-        no_network = patch('trading_helper.side_panel.EconomicCalendar.refresh')
+        no_network = patch('trading_helper.calendar_events.EconomicCalendar.refresh')
         no_network.start()
         self.addCleanup(no_network.stop)
-        with patch('trading_helper.side_panel.APP_DIR', self.w.store.path.parent):
-            self.w.toggle_side_panel(True)
-            self.qtapp.processEvents()
+        self.w.toggle_side_panel(True)
+        self.qtapp.processEvents()
         return self.w.side_panel
 
     def test_shared_drafts_placeholders_and_enter_use_existing_update_flow(self):
@@ -125,19 +124,19 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel.isVisible())
         self.assertFalse(panel.event_timer.isActive())
         self.assertFalse(self.w.store.data['ui']['side_panel_enabled'])
-        with patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
             self.w.initialize_side_panel()
         self.assertFalse(panel.isVisible())
 
     def test_update_uses_existing_write_or_read_and_event_content_is_plain(self):
         panel = self.open_panel()
         with patch.object(self.w, 'read_sheet') as read, \
-             patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+             patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
             panel.update_button.click()
         read.assert_called_once()
         self.w.parameter_inputs['internal_balance'].setText('51000')
         with patch.object(self.w, '_write_trade_parameter_values') as write, \
-             patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+             patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
             panel.update_button.click()
         write.assert_called_once()
         panel.calendar.events = [CalendarEvent(datetime.now(UTC) + timedelta(hours=1), 'EUR', '<b>Rate</b>')]
@@ -162,7 +161,9 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel.warnings['expected_sl_combined'].isHidden())
         with patch.object(self.w, '_show_expected_sl_warning') as explain:
             QTest.mouseClick(panel.warnings['expected_sl_combined'], Qt.LeftButton)
-        explain.assert_called_once()
+        explain.assert_not_called()
+        self.assertTrue(panel.warning_flyout.isVisible())
+        self.assertIn('-8.92', panel.warning_numbers.text())
         self.w._balance_warning_context = self.w._trade_settings_context()
         panel.sync_from_main()
         self.assertFalse(panel.warnings['internal_balance'].isHidden())
@@ -179,20 +180,79 @@ class SidePanelTests(unittest.TestCase):
         panel.sync_from_main()
         self.assertTrue(panel.warnings['expected_sl_combined'].isHidden())
 
-    def test_side_warning_collapses_until_dialog_returns_and_does_not_reopen_news(self):
+    def warning_panel(self):
         panel = self.open_panel()
+        self.w.instruction = replace(sample(), original_sl_points=Decimal('-12'),
+                                     expected_sl_points=Decimal('-8.92'))
+        self.w._show_instruction(self.w.instruction)
+        self.w._balance_warning_context = self.w._trade_settings_context()
+        panel.sync_from_main()
+        return panel
+
+    def test_side_warning_is_nonmodal_toggles_switches_and_keeps_main_hidden(self):
+        panel = self.warning_panel()
+        self.w.hide()
         panel.events_button.setChecked(True)
-        def explain():
-            self.assertTrue(panel.collapsed)
-            self.assertFalse(panel.event_flyout.isVisible())
-        with patch.object(self.w, '_show_expected_sl_warning', side_effect=explain):
-            QTest.mouseClick(panel.warnings['expected_sl_combined'], Qt.LeftButton)
+        QTest.mouseClick(panel.warnings['expected_sl_combined'], Qt.LeftButton)
+        self.qtapp.processEvents()
+        self.assertTrue(panel.warning_flyout.isVisible())
         self.assertFalse(panel.collapsed)
-        self.assertFalse(panel.events_button.isChecked())
-        # Respect disabling the sidebar while the dialog is open.
-        with patch.object(self.w, '_show_balance_warning', side_effect=lambda: self.w.toggle_side_panel(False)):
-            panel._show_warning('internal_balance')
-        self.assertFalse(panel.isVisible())
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(self.w.isVisible())
+        self.assertIsNone(QApplication.activeModalWidget())
+        self.assertEqual(panel.warning_text.textFormat(), Qt.PlainText)
+        self.assertLessEqual(panel.warning_flyout.frameGeometry().right(), panel.x())
+        QTest.mouseClick(panel.warnings['internal_balance'], Qt.LeftButton)
+        self.assertEqual(panel.warning_title.text(), '場內餘額提醒')
+        self.assertTrue(panel.warning_flyout.isVisible())
+        QTest.mouseClick(panel.warnings['internal_balance'], Qt.LeftButton)
+        self.assertFalse(panel.warning_flyout.isVisible())
+        panel._show_warning('expected_sl_combined')
+        QTest.keyClick(panel.warning_flyout, Qt.Key_Escape)
+        self.assertFalse(panel.warning_flyout.isVisible())
+        self.assertFalse(panel.collapsed)
+
+    def test_warning_outside_click_passes_through_and_lifecycle_dismisses(self):
+        panel = self.warning_panel()
+        panel._show_warning('expected_sl_combined')
+        QTest.mouseClick(panel.inputs['daily_pnl'], Qt.LeftButton)
+        QTest.keyClicks(panel.inputs['daily_pnl'], '123')
+        self.assertFalse(panel.warning_flyout.isVisible())
+        self.assertEqual(self.w.parameter_inputs['daily_pnl'].text(), '123')
+        panel._show_warning('expected_sl_combined')
+        self.w._active_tasks = 1
+        panel.sync_from_main()
+        self.assertFalse(panel.warning_flyout.isVisible())
+        self.w._active_tasks = 0
+        panel.sync_from_main()
+        panel._show_warning('expected_sl_combined')
+        panel.set_collapsed(True)
+        self.assertFalse(panel.warning_flyout.isVisible())
+        panel.set_collapsed(False)
+        panel._show_warning('expected_sl_combined')
+        self.w.toggle_side_panel(False)
+        self.assertFalse(panel.warning_flyout.isVisible())
+
+    def test_warning_clamps_to_screen_and_disappears_when_context_or_warning_changes(self):
+        panel = self.warning_panel()
+        area = panel.screen().availableGeometry()
+        for y in (area.top(), area.bottom()):
+            panel._y = y
+            panel.dock()
+            panel._show_warning('expected_sl_combined')
+            self.assertTrue(area.contains(panel.warning_flyout.frameGeometry()))
+            panel._hide_warning()
+        panel._show_warning('expected_sl_combined')
+        with patch.object(self.w, '_trade_settings_context', return_value=('different',)):
+            panel.sync_from_main()
+        self.assertFalse(panel.warning_flyout.isVisible())
+        panel._show_warning('expected_sl_combined')
+        self.w.reader.read = lambda _: replace(self.w.instruction, expected_sl_points=Decimal('-15'))
+        self.w.reader.read_a1_values = lambda config, cells: {cell: '' for cell in cells}
+        self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        panel.sync_from_main()
+        self.assertFalse(panel.warning_flyout.isVisible())
 
     def test_source_status_is_one_line_and_details_are_available_on_demand(self):
         panel = self.open_panel()
@@ -399,7 +459,7 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel._hold_timer.isActive())
         self.assertIsNone(panel._handle_press)
         self.assertFalse(panel._handle_dragging)
-        with patch('trading_helper.side_panel.EconomicCalendar.refresh'):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
             self.w.toggle_side_panel(True)
         self.assertTrue(panel.mask().isEmpty())
         QTest.mouseClick(panel.handle, Qt.LeftButton)

@@ -1067,9 +1067,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         top_row.addWidget(title)
         top_row.addSpacing(6)
         self.page_nav: dict[str, QPushButton] = {}
-        for title in ("交易", "編輯", "紀錄"):
+        for title in ("交易", "編輯", "紀錄", "消息"):
             nav = QPushButton(title)
-            nav.setObjectName("nav" + {"交易":"Trade","編輯":"Edit","紀錄":"Records"}[title])
+            nav.setObjectName("nav" + {"交易":"Trade","編輯":"Edit","紀錄":"Records","消息":"News"}[title])
             nav.setCheckable(True)
             nav.setChecked(title == "交易")
             nav.clicked.connect(lambda _checked=False, name=title: self.switch_workspace(name))
@@ -1898,6 +1898,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.activity_log_box = log_box
         self.main_pages.addWidget(self.records_page)
         self.records_page.installEventFilter(self)
+
+        from .event_feed import EventFeedView
+        self.news_page = QWidget()
+        self.news_page.setObjectName('newsWorkspace')
+        news_layout = QVBoxLayout(self.news_page)
+        news_layout.setContentsMargins(20, 12, 20, 16)
+        self.news_feed = EventFeedView(self._get_event_calendar, self.news_page)
+        news_layout.addWidget(self.news_feed)
+        self.main_pages.addWidget(self.news_page)
         QTimer.singleShot(0, self._update_activity_log_height)
 
         # Two-column trading view: references on the left, editable inputs
@@ -2132,9 +2141,17 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         ).strip()
         return bool(account)
 
+    def _get_event_calendar(self):
+        # One lazy, app-owned service also works with the sidebar disabled.
+        if getattr(self, '_event_calendar', None) is None:
+            from .calendar_events import EconomicCalendar
+            self._event_calendar = EconomicCalendar(
+                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+        return self._event_calendar
+
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
-        names = {"交易": 0, "編輯": 1, "紀錄": 2}
+        names = {"交易": 0, "編輯": 1, "紀錄": 2, "消息": 3}
         if name not in names:
             return
         self.main_pages.setCurrentIndex(names[name])
@@ -5776,6 +5793,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.close()
+        calendar = getattr(self, '_event_calendar', None)
+        if calendar is not None:
+            calendar.close()
         self.emergency.close()
         event.accept()
 
@@ -6783,10 +6803,8 @@ class CalibrationDialog(ThemedDialog):
             if self._inventory_save_preview is state:
                 self._inventory_save_preview = None
             self._inventory_scan_context = None
-            if state["saved"]:
-                # Only after the settings transaction succeeded do we close
-                # the parent calibration dialog as requested.
-                self.accept()
+            # Saving, closing or dismissing results keeps this calibration
+            # page and its selected stage available for the next capture.
 
     def _update_inventory_save_button(self, state: dict[str, Any]) -> None:
         enabled = (
@@ -6865,8 +6883,7 @@ class CalibrationDialog(ThemedDialog):
                 f"已人工確認並儲存 {self.platform} {len(points)} 個校準項目："
                 + ", ".join(points)
             )
-            # Finish the nested preview modal immediately after a SUCCESSFUL
-            # atomic save; the outer dialog closes when exec() returns.
+            # Finish only the nested result; keep the calibration page open.
             details.accept()
         except Exception as exc:
             state["status"].setText("未儲存；請檢查錯誤後重新掃描。")

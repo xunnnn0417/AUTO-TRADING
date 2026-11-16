@@ -27,6 +27,9 @@ class ThreeWorkspaceTests(unittest.TestCase):
         cls.qtapp=QApplication.instance() or QApplication([])
 
     def setUp(self):
+        no_network=patch('trading_helper.calendar_events.EconomicCalendar.refresh')
+        no_network.start()
+        self.addCleanup(no_network.stop)
         tmp=tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         folder=Path(tmp.name)
@@ -47,13 +50,13 @@ class ThreeWorkspaceTests(unittest.TestCase):
         self.win.switch_workspace(name)
         self.qtapp.processEvents()
 
-    def test_only_three_workspaces_and_one_active(self):
+    def test_four_workspaces_and_one_active(self):
         w=self.win
         self.assertIsInstance(w.main_pages,QStackedWidget)
-        self.assertEqual(w.main_pages.count(),3)
+        self.assertEqual(w.main_pages.count(),4)
         self.assertEqual(w.main_pages.currentIndex(),0)
-        self.assertEqual(set(w.page_nav),{"交易","編輯","紀錄"})
-        for index,name in enumerate(("交易","編輯","紀錄")):
+        self.assertEqual(set(w.page_nav),{"交易","編輯","紀錄","消息"})
+        for index,name in enumerate(("交易","編輯","紀錄","消息")):
             self.page(name)
             self.assertEqual(w.main_pages.currentIndex(),index)
             self.assertTrue(w.page_nav[name].isChecked())
@@ -64,7 +67,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
         self.page("交易")
         w=self.win
         self.assertFalse(w.trade_page.findChildren(QScrollArea))
-        self.assertFalse(w.main_pages.findChildren(QScrollArea))
+        self.assertFalse(w.edit_page.findChildren(QScrollArea))
         self.assertTrue(w.auto_entry_on_fill_both.isVisible())
         self.assertFalse(w.auto_entry_on_fill_both.isChecked())
         self.assertTrue(w.internal_platform.isVisible())

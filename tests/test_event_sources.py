@@ -12,6 +12,35 @@ NOW = datetime(2026, 11, 15, tzinfo=timezone.utc)
 
 
 class EventSourceTests(unittest.TestCase):
+    def test_manual_refresh_bypasses_fresh_cache_and_backoff_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service = calendar.EconomicCalendar(Path(folder)/'events.json')
+            now = datetime.now(timezone.utc)
+            service.source_times = dict.fromkeys(calendar.SOURCE_URLS, now)
+            service._last_attempt = dict.fromkeys(calendar.SOURCE_URLS, now)
+            busy_states = []
+            service.changed.connect(lambda: busy_states.append(service._busy))
+            with patch.object(calendar.threading, 'Thread') as thread, \
+                 patch.object(service, '_translate_missing'):
+                service.refresh()
+                thread.assert_not_called()
+                service.refresh(force=True)
+                self.assertEqual(busy_states, [True])
+                self.assertEqual(thread.call_args.kwargs['args'], (list(calendar.SOURCE_URLS),))
+                self.assertEqual(thread.call_count, 1)
+                service.refresh(force=True)
+                self.assertEqual(thread.call_count, 1)
+            # Failed sources retain data and last successful time; success advances only its source.
+            later = datetime.now(timezone.utc)
+            with patch.object(service, '_translate_missing'):
+                service._apply([('ff', None, None, 'offline'), ('fed', [], later, '')])
+            self.assertEqual(service.source_times['ff'], now)
+            self.assertEqual(service.source_times['fed'], later)
+            self.assertIn(later.astimezone(calendar.TAIPEI).strftime('%m/%d %H:%M:%S'), '\n'.join(service.status_lines(later)))
+            self.assertIn('ff', service.source_errors)
+            self.assertEqual(busy_states, [True, False])
+            service.close()
+
     def test_loaded_week_is_preserved_but_stale_wrong_week_or_failed_source_cannot_claim_no_events(self):
         from datetime import timedelta
         from trading_helper.event_summary import trading_session

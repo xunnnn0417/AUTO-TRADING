@@ -607,7 +607,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertEqual(len(self.w.data_labels),11)
         self.assertEqual(len(self.w.parameter_inputs),4)
         from PySide6.QtWidgets import QScrollArea, QGroupBox, QWidget
-        self.assertFalse(self.w.main_pages.findChildren(QScrollArea))
+        self.assertFalse(self.w.trade_page.findChildren(QScrollArea))
         self.assertIsNotNone(self.w.trade_page.findChild(QGroupBox,"dataCard"))
         self.assertIsNotNone(self.w.trade_page.findChild(QWidget,"platformSelectorRow"))
         self.assertIsNotNone(self.w.trade_page.findChild(QWidget,"sheetDataValues"))
