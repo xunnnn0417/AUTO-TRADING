@@ -103,7 +103,7 @@ from .config import (
     ConfigStore, DEFAULT_CONFIG, ProfileStore, ctrader_mode_for_profile,
     set_ctrader_mode_for_profile,
 )
-from .test_mode import effective_test_symbol, test_symbol_scope
+from .test_mode import effective_test_symbol
 from .models import InvalidInternalTakeProfit, TradeInstruction, ValidationError
 from .automation import REQUIRED_POINTS
 from .sheets import (
@@ -981,6 +981,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._operation_restore_geometry = None
             self._operation_restore_maximized = False
             self._operation_screen = None
+            if panel is not None and self.side_panel_checkbox.isChecked():
+                panel.show()
+                panel.dock()
             return
         if self._operation_restore_maximized:
             self.showMaximized()
@@ -1192,6 +1195,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.always_on_top.setChecked(False)
         self.always_on_top.toggled.connect(self.set_always_on_top)
         display_layout.addWidget(self.always_on_top)
+        for option in (self.tv_draw_internal, self.show_calibration_badges,
+                       self.side_panel_checkbox, self.always_on_top):
+            install_checkmark_only_indicator(option)
         display_action = QWidgetAction(display_menu)
         display_action.setDefaultWidget(display_container)
         display_menu.addAction(display_action)
@@ -1679,86 +1685,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             choice.toggled.connect(lambda checked, target=cell: self._confirm_trade_rule(target, checked))
             self.trade_rule_checkboxes[cell] = choice
             automation_layout.addWidget(choice)
-        self.test_controls = QWidget(automation_row)
-        self.test_controls.setObjectName("testControls")
-        test_layout = QHBoxLayout(self.test_controls)
-        test_layout.setContentsMargins(0, 0, 0, 0)
-        test_layout.setSpacing(4)
-        test_layout.addWidget(QLabel("—"))
-        test_layout.addWidget(QLabel("測試項目"))
-        self.test_asset_checkboxes: dict[str, QCheckBox] = {}
-        self.test_scenario_checkboxes: dict[str, QCheckBox] = {}
-        for symbol, label in (("BTCUSD", "BTC"), ("ETHUSD", "ETH")):
-            choice = QCheckBox(label)
-            choice.setObjectName(f"test_asset_{symbol.lower()}")
-            choice.setToolTip(
-                f"假日測試使用 {symbol}；不選就沿用試算表商品（例如 GOLD）。"
-                "BTC 與 ETH 一次選一個。"
-            )
-            choice.toggled.connect(
-                lambda checked, current=choice, group=self.test_asset_checkboxes:
-                    self._exclusive_optional_checkbox(group, current, checked)
-            )
-            self.test_asset_checkboxes[symbol] = choice
-        for action, label in (
-            ("reentry:internal", "內重"),
-            ("close:internal", "內平"),
-            ("reentry:external", "外重"),
-            ("close:external", "外平"),
-        ):
-            choice = QCheckBox(label)
-            choice.setObjectName("test_scenario_" + action.replace(":", "_"))
-            full_label = {
-                "reentry:internal": "場內重新進場",
-                "close:internal": "場內關單",
-                "reentry:external": "場外重新進場",
-                "close:external": "場外關單",
-            }[action]
-            choice.setToolTip(
-                f"{full_label}完整流程測試；四種情境一次只能選一種。"
-                "取消勾選則不注入故障。"
-            )
-            choice.toggled.connect(
-                lambda checked, current=choice, group=self.test_scenario_checkboxes:
-                    self._exclusive_optional_checkbox(group, current, checked)
-            )
-            self.test_scenario_checkboxes[action] = choice
-        self.test_delay_checkbox = QCheckBox("15 秒延遲")
-        self.test_delay_checkbox.setObjectName("test_recovery_delay")
-        self.test_delay_checkbox.setToolTip(
-            "僅情境測試使用：發現單邊缺單後等待超過 15 秒，"
-            "驗證逾時處理。等待期間仍可按 Esc 或右鍵停止。"
-            "場內快平仍會立即處理場外，不延遲保護動作。"
-        )
         for option in (
             self.auto_entry_on_fill_both, self.auto_fast_pair,
-            self.auto_sync_sl_tp_after_entry,
-            self.auto_draw_tv_after_entry,
-            *self.test_asset_checkboxes.values(),
-            *self.test_scenario_checkboxes.values(),
-            self.test_delay_checkbox,
+            self.auto_sync_sl_tp_after_entry, self.auto_draw_tv_after_entry,
         ):
             option.setStyleSheet("font-size: 10px; spacing: 3px;")
             install_checkmark_only_indicator(option)
-        for option in (
-            *self.test_asset_checkboxes.values(),
-            *self.test_scenario_checkboxes.values(),
-            self.test_delay_checkbox,
-        ):
-            option.setStyleSheet("font-size: 9px; spacing: 2px;")
-        for choice in self.test_asset_checkboxes.values():
-            test_layout.addWidget(choice)
-        self.test_asset_checkboxes["BTCUSD"].hide()
-        separator = QLabel("情境")
-        separator.setObjectName("testScenarioSeparator")
-        test_layout.addWidget(separator)
-        for choice in self.test_scenario_checkboxes.values():
-            test_layout.addWidget(choice)
-        test_layout.addWidget(self.test_delay_checkbox)
-        automation_layout.addWidget(self.test_controls)
-        # Accepted recovery tests remain available in code, but the normal
-        # release hides the entire section. No selection is restored on launch.
-        self.test_controls.hide()
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
@@ -2147,6 +2079,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             from .calendar_events import EconomicCalendar
             self._event_calendar = EconomicCalendar(
                 self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+            self._event_calendar.start()
         return self._event_calendar
 
     def switch_workspace(self, name: str) -> None:
@@ -2491,17 +2424,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _maybe_adjust_repeated_expected_sl(
         self, instruction: TradeInstruction, *, roles: tuple[str, ...],
-        dirty: tuple[str, ...] | list[str], test_action: str,
+        dirty: tuple[str, ...] | list[str],
     ) -> tuple[TradeInstruction, bool]:
         """Ask before repeating an unchanged expected stop before filling."""
         auto_entry = getattr(self, "auto_entry_on_fill_both", None)
         if (
             roles != ("internal", "external")
             or "expected_sl_combined" in dirty
-            or (
-                not test_action
-                and (auto_entry is None or not auto_entry.isChecked())
-            )
+            or auto_entry is None or not auto_entry.isChecked()
             or instruction.expected_sl_points is None
             or instruction.original_sl_points is None
         ):
@@ -2666,18 +2596,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         item=request.get("item")
         internal_platform=str(request.get("internal_platform") or "")
         external_platform=str(request.get("external_platform") or "")
-        selected_symbol=TradingHelperApp._selected_test_symbol(
-            self,("internal","external")
-        )
-        if selected_symbol is None:
-            for test_action,option in getattr(
-                self,"test_scenario_checkboxes",{}
-            ).items():
-                if option.isChecked() and test_action.startswith("weekend:"):
-                    selected_symbol=test_action.split(":",1)[1]
-                    break
-        if selected_symbol is None and item is not None:
-            selected_symbol=item.symbol
+        selected_symbol=item.symbol if item is not None else None
         account_ids=request.get("account_ids")
         receipt=getattr(self,"_auto_entry_receipt",None)
         try:
@@ -2730,46 +2649,45 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             port,journal,self.emergency.guard,self.log,
             timing_store=getattr(self,"phase_timing_store",None),
         )
-        with test_symbol_scope(request.get("symbol")):
-            if action=="close":
-                role=request["confirmed_role"]
-                closed=flow.run_single_leg_close_test(
-                    item,internal_platform,external_platform,
-                    request["profile_name"],request["sheet_url"],
-                    role=role,
-                    expected_ticket=request["confirmed_ticket"],
-                    expected_account_ids=request["account_ids"],
-                    require_other_empty=True,
-                    operation="user",
-                )
-                title="已平倉並確認兩邊皆無持倉"
-                message=(
-                    f"已確認關閉 {role} 的訂單 {closed.ticket}。"
-                    "兩邊帳戶目前都沒有該次配對持倉。"
-                )
-            else:
-                role=(
-                    "external" if request["confirmed_role"]=="internal"
-                    else "internal"
-                )
-                internal,external=flow.run_single_leg_test(
-                    item,internal_platform,external_platform,
-                    request["profile_name"],request["sheet_url"],
-                    role=role,sync_sl_tp=True,
-                    expected_other_ticket=request["confirmed_ticket"],
-                    expected_account_ids=request["account_ids"],
-                    draw_tv=bool(request.get("draw_tv",False)),
-                    draw_internal=bool(request.get("draw_internal",False)),
-                    operation="user",
-                )
-                title="缺少的一邊已補進並核對"
-                message=(
-                    f"場內訂單：{internal.ticket}\n"
-                    f"場外訂單：{external.ticket}\n"
-                    "兩邊持倉已重新讀回；場外 SL／TP 同步已核對。"
-                    + ("\nTradingView 繪圖已完成。"
-                       if request.get("draw_tv") else "")
-                )
+        if action=="close":
+            role=request["confirmed_role"]
+            closed=flow.run_single_leg_close_test(
+                item,internal_platform,external_platform,
+                request["profile_name"],request["sheet_url"],
+                role=role,
+                expected_ticket=request["confirmed_ticket"],
+                expected_account_ids=request["account_ids"],
+                require_other_empty=True,
+                operation="user",
+            )
+            title="已平倉並確認兩邊皆無持倉"
+            message=(
+                f"已確認關閉 {role} 的訂單 {closed.ticket}。"
+                "兩邊帳戶目前都沒有該次配對持倉。"
+            )
+        else:
+            role=(
+                "external" if request["confirmed_role"]=="internal"
+                else "internal"
+            )
+            internal,external=flow.run_single_leg_test(
+                item,internal_platform,external_platform,
+                request["profile_name"],request["sheet_url"],
+                role=role,sync_sl_tp=True,
+                expected_other_ticket=request["confirmed_ticket"],
+                expected_account_ids=request["account_ids"],
+                draw_tv=bool(request.get("draw_tv",False)),
+                draw_internal=bool(request.get("draw_internal",False)),
+                operation="user",
+            )
+            title="缺少的一邊已補進並核對"
+            message=(
+                f"場內訂單：{internal.ticket}\n"
+                f"場外訂單：{external.ticket}\n"
+                "兩邊持倉已重新讀回；場外 SL／TP 同步已核對。"
+                + ("\nTradingView 繪圖已完成。"
+                   if request.get("draw_tv") else "")
+            )
         signal=getattr(
             getattr(self,"signals",None),"auto_entry_result",None
         )
@@ -2797,9 +2715,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
                     !=request.get("sheet_url")
                 or current_item!=item
-                or (TradingHelperApp._selected_test_symbol(
-                    self,("internal","external")
-                ) or item.symbol)!=request.get("symbol",item.symbol)
+                or item.symbol!=request.get("symbol",item.symbol)
                 or self.internal_platform.currentText()!=internal_platform
                 or self.external_platform.currentText()!=external_platform):
             QMessageBox.warning(
@@ -2817,16 +2733,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
 
     def _fill_approved_reentry(self, request: dict) -> None:
-        # Keep the chosen test instrument inside the worker thread, just as
-        # for ordinary test entry. Do not run another fault-injection test.
-        with test_symbol_scope(request.get("symbol")):
-            self._fill_both_task(
-                request["internal_platform"],request["external_platform"],True,
-                sync_sl_tp=True,
-                draw_tv=bool(request.get("draw_tv",False)),
-                draw_internal=bool(request.get("draw_internal",False)),
-                fast_pair=True,authorized_reentry_id=f"{time.time_ns()}",
-            )
+        # Resume the normal workflow with the verified instruction's symbol.
+        self._fill_both_task(
+            request["internal_platform"],request["external_platform"],True,
+            sync_sl_tp=True,
+            draw_tv=bool(request.get("draw_tv",False)),
+            draw_internal=bool(request.get("draw_internal",False)),
+            fast_pair=True,authorized_reentry_id=f"{time.time_ns()}",
+        )
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = ThemedDialog(self)
@@ -3667,118 +3581,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     missing.append(f"{role_label} {platform}：{labels.get(key, key)}")
         return missing
 
-    def _selected_test_action(self, roles: tuple[str, ...]) -> str:
-        if roles != ("internal", "external"):
-            return ""
-        for action, option in getattr(self, "test_scenario_checkboxes", {}).items():
-            if option.isChecked():
-                return action
-        symbol = TradingHelperApp._selected_test_symbol(self, roles)
-        return f"weekend:{symbol}" if symbol else ""
 
-    @staticmethod
-    def _selected_test_symbol(owner, roles: tuple[str, ...]) -> str | None:
-        if roles != ("internal", "external"):
-            return None
-        for symbol, option in getattr(owner, "test_asset_checkboxes", {}).items():
-            if option.isChecked():
-                return symbol
-        return None
 
-    @staticmethod
-    def _exclusive_optional_checkbox(
-        group: dict[str, QCheckBox], current: QCheckBox, checked: bool,
-    ) -> None:
-        if not checked:
-            return
-        for option in group.values():
-            if option is not current and option.isChecked():
-                option.setChecked(False)
 
-    @staticmethod
-    def _test_action_role(action: str) -> str:
-        if action.endswith(":internal"):
-            return "internal"
-        if action.endswith(":external"):
-            return "external"
-        return ""
-
-    def _test_action_missing(
-        self, action: str, platforms: dict[str,str], item: TradeInstruction,
-        test_symbol: str | None = None,
-    ) -> list[str]:
-        role=self._test_action_role(action)
-        if test_symbol is None and action.startswith("weekend:"):
-            test_symbol = action.split(":", 1)[1]
-        with test_symbol_scope(test_symbol):
-            # Every test starts with both order forms filled and then runs the
-            # ordinary dual-account checks for the selected test instrument.
-            missing=self._fill_calibration_missing(
-                ("internal","external"),platforms,item
-            )
-        modify_roles=["external"]
-        if "MT5" in platforms["internal"].upper():
-            modify_roles.append("internal")
-        required_modify=("position_order_row","position_sl_input",
-                         "position_tp_input","position_modify_confirm")
-        for modify_role in modify_roles:
-            points=self.store.data["platforms"].get(
-                platforms[modify_role],{}
-            ).get("points",{})
-            for key in required_modify:
-                if not isinstance(points.get(key),dict) or not points[key]:
-                    missing.append(
-                        f"{modify_role} {platforms[modify_role]}：{key}"
-                    )
-        close_roles=(
-            ("internal","external") if action=="close:internal"
-            else ("external",) if action=="close:external" else ()
-        )
-        for close_role in close_roles:
-            points=self.store.data["platforms"].get(
-                platforms[close_role],{}
-            ).get("points",{})
-            if not isinstance(points.get("position_close_button"),dict) or not points["position_close_button"]:
-                missing.append(
-                    f"{close_role} {platforms[close_role]}：position_close_button"
-                )
-        return missing
-
-    def _confirm_test_action(
-        self, action: str, item: TradeInstruction,
-        test_symbol: str | None = None,
-    ) -> bool:
-        if action.startswith("weekend:"):
-            symbol = test_symbol or action.split(":", 1)[1]
-            return QMessageBox.question(
-                self,"開始假日雙邊測試？",
-                f"{symbol}：兩個連線帳戶各進場一單，並同步 SL／TP。會實際下單。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        role=self._test_action_role(action)
-        side="場內" if role=="internal" else "場外"
-        instrument = test_symbol or item.symbol
-        if action.startswith("reentry:"):
-            return QMessageBox.question(
-                self,f"測試{side}補進？",
-                f"{instrument}：先讓另一邊進場，再補進{side}一次。\n"
-                + ("逾時平掉場外。" if role=="internal" else "逾時由你選擇平倉或補進。")
-                + "會實際下單；結果不明就停止。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        if action.startswith("close:"):
-            return QMessageBox.question(
-                self,f"測試{side}快平？",
-                f"{instrument}：兩邊進場後，"
-                + ("平掉場內及場外，再詢問是否重新進場。"
-                   if role=="internal" else "平掉場外，再於 15 秒內補進並同步 SL／TP。")
-                + "\n會實際開倉及平倉；勾選延遲時會改測逾時處理。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        return True
 
     def _launch_fill(self, roles: tuple[str, ...]) -> None:
         """Perform UI preflight before starting any broker-window clicks."""
@@ -3797,8 +3602,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self.instruction is None:
             QMessageBox.warning(self, "填入前檢查", "請先讀取 Google 試算表。")
             return
-        test_action=self._selected_test_action(roles)
-        test_symbol = TradingHelperApp._selected_test_symbol(self, roles)
         platforms = {
             "internal": self.internal_platform.currentText(),
             "external": self.external_platform.currentText(),
@@ -3831,7 +3634,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         random_adjustment = False
         candidate, random_adjustment = self._maybe_adjust_repeated_expected_sl(
-            candidate, roles=roles, dirty=dirty, test_action=test_action,
+            candidate, roles=roles, dirty=dirty,
         )
         if random_adjustment:
             entry = self.parameter_inputs["expected_sl_combined"]
@@ -3851,7 +3654,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if warning_values is not None:
                 original, adjusted = warning_values
                 action = (
-                    "進場" if self.auto_entry_on_fill_both.isChecked() or test_action
+                    "進場" if self.auto_entry_on_fill_both.isChecked()
                     else "填入"
                 )
                 answer = QMessageBox.question(
@@ -3866,12 +3669,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         if dirty:
             # Check calibration before writing the approved value to Sheets.
-            if test_action:
-                missing=self._test_action_missing(
-                    test_action, platforms, candidate, test_symbol
-                )
-            else:
-                missing = self._fill_calibration_missing(roles, platforms, candidate)
+            missing = self._fill_calibration_missing(roles, platforms, candidate)
             if missing:
                 QMessageBox.warning(
                     self, "請先校準必要按鈕",
@@ -3882,8 +3680,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._fill_waiting_for_sheet = {
                 "roles": roles, "platforms": platforms,
                 "expected": candidate, "fields": tuple(dirty),
-                "sheet_ready": False,"test_action":test_action,
-                "test_symbol": test_symbol,
+                "sheet_ready": False,
             }
             self._confirm_fill_text_inputs()
             self.update_all_trade_parameters()
@@ -3895,12 +3692,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self._fill_waiting_for_sheet["sheet_ready"] = True
                 QTimer.singleShot(0, self._resume_fill_after_sheet_update)
             return
-        if test_action:
-            missing=self._test_action_missing(
-                test_action, platforms, candidate, test_symbol
-            )
-        else:
-            missing = self._fill_calibration_missing(roles, platforms, candidate)
+        missing = self._fill_calibration_missing(roles, platforms, candidate)
         if missing:
             QMessageBox.warning(
                 self, "請先校準必要按鈕",
@@ -3908,13 +3700,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 + "\n請到「編輯 → 欄位校準」完成後再試。"
             )
             return
-        if test_action and not self._confirm_test_action(
-            test_action, candidate, test_symbol
-        ):
-            return
-        self._start_fill_worker(
-            roles, platforms, test_action=test_action, test_symbol=test_symbol
-        )
+        self._start_fill_worker(roles, platforms)
 
     def _resume_fill_after_sheet_update(self) -> None:
         pending = self._fill_waiting_for_sheet
@@ -3942,23 +3728,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
             return
         self._fill_waiting_for_sheet = None
-        test_action=str(pending.get("test_action", ""))
-        test_symbol=pending.get("test_symbol")
-        if test_action and not self._confirm_test_action(
-            test_action, expected, test_symbol
-        ):
-            return
-        self._start_fill_worker(
-            pending["roles"], pending["platforms"], test_action=test_action,
-            test_symbol=test_symbol,
-        )
+        self._start_fill_worker(pending["roles"], pending["platforms"])
 
     def _start_fill_worker(self, roles: tuple[str, ...],
-                           platforms: dict[str, str],
-                           *, test_action: str = "",
-                           test_symbol: str | None = None) -> None:
+                           platforms: dict[str, str]) -> None:
         auto_entry = self.auto_entry_on_fill_both.isChecked()
-        fast_pair = bool(auto_entry or test_action)
+        fast_pair = bool(auto_entry)
         sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
             auto_entry
@@ -3972,39 +3747,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             getattr(self, "tv_draw_internal", None)
             and self.tv_draw_internal.isChecked()
         )
-        delay_option = getattr(self, "test_delay_checkbox", None)
-        test_delay = bool(test_action and delay_option is not None
-                          and delay_option.isChecked())
-        if test_action.startswith("weekend:"):
-            self._start(
-                "假日測試",
-                lambda: self._run_complete_test_scenario(
-                    test_action, platforms, symbol=test_symbol,
-                    draw_tv=auto_draw,draw_internal=draw_internal,
-                    test_delay=test_delay,
-                    fast_pair=fast_pair,
-                ),
-                restore_after=False,
-            )
-            return
-        if test_action.startswith(("reentry:","close:")):
-            title={
-                "reentry:internal":"測試場內重新進場",
-                "close:internal":"測試場內關單",
-                "reentry:external":"測試場外重新進場",
-                "close:external":"測試場外關單",
-            }[test_action]
-            self._start(
-                title,
-                lambda: self._run_complete_test_scenario(
-                    test_action, platforms, symbol=test_symbol,
-                    draw_tv=auto_draw,draw_internal=draw_internal,
-                    test_delay=test_delay,
-                    fast_pair=fast_pair,
-                ),
-                restore_after=False,
-            )
-            return
         # Read Qt options on GUI thread, not inside the worker.
         if roles == ("internal", "external"):
             self._start(
@@ -4028,24 +3770,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._start("填入場內" if role == "internal" else "填入場外",
                         task, restore_after=False)
 
-    def _run_complete_test_scenario(
-        self, action: str, platforms: dict[str,str],
-        *, symbol: str | None = None,
-        draw_tv: bool = False, draw_internal: bool = False,
-        test_delay: bool = False,
-        fast_pair: bool = True,
-    ) -> None:
-        if symbol is None and action.startswith("weekend:"):
-            symbol = action.split(":", 1)[1]
-        with test_symbol_scope(symbol):
-            self._fill_both_task(
-                platforms["internal"],platforms["external"],True,
-                sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,
-                fast_pair=fast_pair and not action.startswith("reentry:"),
-                test_scenario=action,
-                test_delay=test_delay,
-            )
 
     def fill_role(self, role: str) -> None:
         self._side_fill_active = False

@@ -119,14 +119,14 @@ class ReentryPreparationTests(unittest.TestCase):
             self.assertEqual(port._expected_symbol,"ETHUSD")
         automation.fill.assert_called_once_with("MT5","external",instruction())
 
-    def test_full_user_reentry_preserves_symbol_inside_worker_without_another_test(self):
+    def test_full_user_reentry_does_not_enable_retired_symbol_override(self):
         observed=[]
         fake=SimpleNamespace(_fill_both_task=lambda *a,**kw:observed.append(
             (effective_test_symbol("XAUUSD"),kw)))
         TradingHelperApp._fill_approved_reentry(fake,{
             "internal_platform":"cTrader","external_platform":"MT5","symbol":"ETHUSD",
         })
-        self.assertEqual(observed[0][0],"ETHUSD")
+        self.assertEqual(observed[0][0],"XAUUSD")
         self.assertNotIn("test_scenario",observed[0][1])
         self.assertEqual(effective_test_symbol("XAUUSD"),"XAUUSD")
 

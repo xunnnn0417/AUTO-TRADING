@@ -27,6 +27,9 @@ This tool reads your sheet and fills calibrated broker fields. When enabled by t
 - 「消息」頁與側欄重大事件共用同一份資料。手動重整會重新抓取所有來源，更新中不能重複送出；失敗保留舊消息與原成功時間，並標示待更新。
 - 側欄餘額／預期 SL 驚嘆號使用旁邊的非阻擋式說明卡；不喚回主畫面，其他控制仍可操作。重按、Esc、點外部或收起側欄即可關閉；交易前確認仍沿用原流程。
 - 校準結果儲存或關閉後，保留同一個平台校準視窗及頁籤，方便接續校準。
+- 校準尋找或預覽結束後會恢復已開啟的側邊快捷，維持原收合狀態；顯示設定使用與自動化區相同的白色勾勾。
+- 已移除產品內的假日／單邊故障／延遲測試選項及啟動入口；一般進場、異常恢復及離線回歸測試保留。
+- Shared background polling checks public news/central-bank RSS once a minute, while Forex Factory schedules remain at 30 minutes and BEA at six hours. Conditional requests reuse unchanged content; failures back off and respect Retry-After, including manual refresh. Polling frequency does not guarantee publication latency or complete coverage. Official RSS descriptions do not publish a numeric per-minute allowance: [RTHK](https://news.rthk.hk/rthk/ch/rss.htm), [Fed](https://www.federalreserve.gov/feeds/feeds.htm), [ECB](https://www.ecb.europa.eu/home/html/rss.en.html).
 - TradingView position helper
 - 餘額及預期 SL 的警示以更新後讀回的數值為準；輸入途中不新增警示，既有警示也不會僅因修改文字而解除。場內餘額超出帳號獲利目標／最大虧損範圍時，主畫面與側欄都會阻止填入。
 - 餘額、每日盈虧、預期 SL 與進場價更新後，即使表格出現警示或交易計算無效，仍保留已確認寫入的新值，以淡色顯示並阻止交易，不自動還原。未確認寫入／讀回時保留可編輯草稿，不冒充更新完成；其他已讀數值繼續顯示。

@@ -64,27 +64,11 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertFalse(self.w.auto_draw_tv_after_entry.isEnabled())
         self.assertFalse(DEFAULT_CONFIG["ui"]["auto_entry_on_fill_both"])
 
-    def test_test_section_is_hidden_unselected_and_needs_no_master_checkbox(self):
-        self.w.switch_workspace("交易")
-        self.assertFalse(hasattr(self.w,"test_mode_checkbox"))
-        self.assertFalse(self.w.test_controls.isVisible())
-        choices=(*self.w.test_asset_checkboxes.values(),
-                 *self.w.test_scenario_checkboxes.values(),self.w.test_delay_checkbox)
-        self.assertTrue(all(not c.isVisible() and not c.isChecked() for c in choices))
-        self.assertEqual(self.w._selected_test_action(("internal","external")),"")
-        # Show only in this isolated UI: choices must work directly if a
-        # later testing session restores the section, without a master gate.
-        self.w.test_controls.show()
-        self.qtapp.processEvents()
-        self.assertFalse(self.w.test_asset_checkboxes["BTCUSD"].isVisible())
-        self.assertTrue(self.w.test_asset_checkboxes["ETHUSD"].isEnabled())
-        self.w.test_asset_checkboxes["ETHUSD"].click()
-        self.assertEqual(self.w._selected_test_symbol(self.w,("internal","external")),"ETHUSD")
-        self.w.test_scenario_checkboxes["close:external"].click()
-        self.assertEqual(self.w._selected_test_action(("internal","external")),"close:external")
-        self.assertEqual(len(self.w.test_scenario_checkboxes),4)
-        self.w.test_delay_checkbox.click()
-        self.assertTrue(self.w.test_delay_checkbox.isChecked())
+    def test_retired_product_test_controls_and_launchers_are_removed(self):
+        for name in ('test_controls', 'test_asset_checkboxes', 'test_scenario_checkboxes',
+                     'test_delay_checkbox', '_selected_test_action', '_selected_test_symbol',
+                     '_confirm_test_action', '_run_complete_test_scenario'):
+            self.assertFalse(hasattr(self.w, name), name)
         self.assertTrue(DEFAULT_CONFIG["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertFalse(DEFAULT_CONFIG["ui"]["auto_draw_tv_after_entry"])
 
@@ -99,8 +83,8 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w.auto_fast_pair,
             self.w.auto_sync_sl_tp_after_entry,
             self.w.auto_draw_tv_after_entry,
-            *self.w.test_asset_checkboxes.values(),
-            *self.w.test_scenario_checkboxes.values(),
+            self.w.tv_draw_internal, self.w.show_calibration_badges,
+            self.w.side_panel_checkbox, self.w.always_on_top,
         )
         for checkbox in boxes:
             with self.subTest(checkbox=checkbox.objectName()):

@@ -253,20 +253,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(abs(pos(heading).y()-pos(w.reload_sheet_button).y()),12)
                 self.assertGreater(w.internal_platform.width(),150)
                 self.assertGreater(w.external_platform.width(),150)
-                self.assertEqual(
-                    w.test_controls.parentWidget(),
-                    w.auto_draw_tv_after_entry.parentWidget(),
-                )
-                self.assertEqual(set(w.test_asset_checkboxes), {"BTCUSD", "ETHUSD"})
-                self.assertEqual(len(w.test_scenario_checkboxes), 4)
-                for choice in (
-                    *w.test_asset_checkboxes.values(),
-                    *w.test_scenario_checkboxes.values(),
-                ):
-                    self.assertEqual(
-                        choice.parentWidget(),
-                        w.test_controls,
-                    )
+                self.assertFalse(hasattr(w, "test_controls"))
                 summary=w.trade_page.findChildren(QWidget,"centeredSummaryCell")
                 self.assertEqual(len(summary),4)
                 self.assertTrue(summary[0].isAncestorOf(w.stage_selector))

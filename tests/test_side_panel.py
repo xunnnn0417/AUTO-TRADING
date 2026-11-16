@@ -395,7 +395,11 @@ class SidePanelTests(unittest.TestCase):
         panel = self.open_panel()
         panel.set_collapsed(True)
         QTest.mousePress(panel.handle, Qt.LeftButton)
-        QTest.qWait(240)
+        for _ in range(50):
+            if panel._handle_dragging:
+                break
+            QTest.qWait(20)
+        self.assertTrue(panel._handle_dragging)
         self.assertEqual(panel.width(), panel.height())
         self.assertFalse(panel.mask().isEmpty())
         area = panel.screen().availableGeometry()

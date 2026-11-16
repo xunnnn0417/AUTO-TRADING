@@ -47,7 +47,7 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
                    return_value=QMessageBox.Yes) as prompt:
             adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal", "external"),
-                dirty=(), test_action="",
+                dirty=(),
             )
         self.assertTrue(did_adjust)
         self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
@@ -63,7 +63,7 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
                    return_value=QMessageBox.Yes):
             adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, item, roles=("internal", "external"),
-                dirty=(), test_action="",
+                dirty=(),
             )
         self.assertTrue(did_adjust)
         self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
@@ -75,7 +75,7 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
                    return_value=QMessageBox.Yes) as prompt:
             adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal", "external"),
-                dirty=("daily_pnl",), test_action="",
+                dirty=("daily_pnl",),
             )
         self.assertTrue(did_adjust)
         self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
@@ -85,11 +85,11 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
         with patch("trading_helper.gui.QMessageBox.question") as prompt:
             same, changed = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal", "external"),
-                dirty=("expected_sl_combined",), test_action="",
+                dirty=("expected_sl_combined",),
             )
             single_item, single_changed = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal",),
-                dirty=(), test_action="",
+                dirty=(),
             )
         self.assertIs(same, self.item)
         self.assertIs(single_item, self.item)
@@ -97,7 +97,7 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
         self.assertFalse(single_changed)
         prompt.assert_not_called()
 
-    def test_test_scenario_prompts_before_fill_even_when_auto_entry_toggle_is_off(self):
+    def test_fill_only_does_not_change_repeated_stop_when_auto_entry_is_off(self):
         self.ui.auto_entry_on_fill_both.setChecked(False)
         with patch("trading_helper.gui.choose_repeat_adjustment",
                    return_value=Decimal("-9.12")), \
@@ -105,11 +105,11 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
                    return_value=QMessageBox.Yes) as prompt:
             adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
                 self.ui, self.item, roles=("internal", "external"),
-                dirty=(), test_action="reentry:internal",
+                dirty=(),
             )
-        self.assertTrue(did_adjust)
-        self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
-        prompt.assert_called_once()
+        self.assertFalse(did_adjust)
+        self.assertEqual(adjusted.expected_sl_points, self.item.expected_sl_points)
+        prompt.assert_not_called()
 
     def test_only_successful_result_remembers_the_last_points(self):
         self.ui.instruction = self.item

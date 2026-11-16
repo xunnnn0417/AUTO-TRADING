@@ -46,7 +46,7 @@ class CalendarTests(unittest.TestCase):
             service.events = parse_events(rows)
             service.fetched_at = NOW
             service.source_times = dict.fromkeys(SOURCE_URLS, NOW)
-            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=4)))
+            self.assertTrue(service.is_fresh(NOW + timedelta(seconds=30)))
             self.assertFalse(service.is_fresh(NOW + timedelta(hours=2)))
             service._save_cache()
             restored = EconomicCalendar(Path(folder) / 'calendar.json')
@@ -54,7 +54,7 @@ class CalendarTests(unittest.TestCase):
             self.assertEqual(restored.fetched_at, NOW)
             with patch('trading_helper.calendar_events.datetime') as clock, \
                  patch('trading_helper.calendar_events.threading.Thread') as thread:
-                clock.now.return_value = NOW + timedelta(minutes=1)
+                clock.now.return_value = NOW + timedelta(seconds=20)
                 restored.refresh()
                 thread.assert_not_called()
 

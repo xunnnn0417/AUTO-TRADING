@@ -12,8 +12,9 @@ from math import ceil
 from pathlib import Path
 from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
 from .headline_language import local_title, translate_title, valid_translation
 
 FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
@@ -30,8 +31,8 @@ SOURCE_URLS = {'ff': FEED_URL, 'bea': BEA_URL, 'fed': FED_URL, 'ecb': ECB_URL,
 SOURCE_NAMES = {'ff': 'Forex Factory', 'bea': 'BEA', 'fed': 'Fed', 'ecb': 'ECB',
                 'rthk_finance': '香港電台財經', 'rthk_world': '香港電台國際'}
 SOURCE_TTLS = {'ff': timedelta(minutes=30), 'bea': timedelta(hours=6),
-               'fed': timedelta(minutes=15), 'ecb': timedelta(minutes=15),
-               'rthk_finance': timedelta(minutes=5), 'rthk_world': timedelta(minutes=5)}
+               'fed': timedelta(minutes=1), 'ecb': timedelta(minutes=1),
+               'rthk_finance': timedelta(minutes=1), 'rthk_world': timedelta(minutes=1)}
 MARKET_TOPICS = re.compile(
     '黃金|金價|貴金屬|美元|美匯|美債|國債|收益率|孳息|聯儲|聯準|鮑威爾|央行|利率|減息|加息|'
     '通脹|通膨|物價|非農|就業|失業|零售|GDP|PCE|CPI|PPI|PMI|特朗普|川普|關稅|'
@@ -189,6 +190,15 @@ class EconomicCalendar(QObject):
         self._last_attempt: dict[str, datetime] = {}
         self._busy = False
         self._closed = False
+        self._validators = {}
+        self._source_failures = {}
+        self._retry_at = {}
+        self.refresh_timer = QTimer(self)
+        self._polling_enabled = False
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setTimerType(Qt.PreciseTimer)
+        self.refresh_timer.timeout.connect(lambda: self._poll())
+
         self.received.connect(self._apply)
         self.translated.connect(self._apply_translations)
         try:
@@ -236,6 +246,27 @@ class EconomicCalendar(QObject):
                     and timedelta(0) <= now-fetched < SOURCE_TTLS['ff']
                     and self._ff_coverage[0] <= start and end <= self._ff_coverage[1])
 
+    def start(self) -> None:
+        # App-owned: automatic checks continue when the sidebar is collapsed/hidden.
+        if not self._closed:
+            self._polling_enabled = True
+            self.refresh_timer.start(60_000)
+
+    def _poll(self) -> None:
+        self.refresh()
+        self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        if self._closed or not self._polling_enabled:
+            return
+        now = datetime.now(UTC)
+        deadlines = [max(
+            self._last_attempt.get(key, self.source_times.get(key, now-SOURCE_TTLS[key]))+SOURCE_TTLS[key],
+            self._retry_at.get(key, now),
+        ) for key in SOURCE_URLS]
+        delay = 1000 if self._busy else max(250, min(60_000, ceil((min(deadlines)-now).total_seconds()*1000)))
+        self.refresh_timer.start(delay)
+
     def refresh(self, *, force: bool = False) -> None:
         now = datetime.now(UTC)
         if self._closed or self._busy:
@@ -243,8 +274,9 @@ class EconomicCalendar(QObject):
         self._translation_enabled = True
         self._translate_missing()
         due = [key for key in SOURCE_URLS
-               if force or ((key not in self.source_times or not timedelta(0) <= now-self.source_times[key] < SOURCE_TTLS[key])
-               and (key not in self._last_attempt or now-self._last_attempt[key] >= min(SOURCE_TTLS[key], timedelta(minutes=15))))]
+               if now >= self._retry_at.get(key, now)
+               and (force or key not in self.source_times
+                    or not timedelta(0) <= now-self._last_attempt.get(key, self.source_times[key]) < SOURCE_TTLS[key])]
         if not due:
             return
         self._busy = True
@@ -254,22 +286,35 @@ class EconomicCalendar(QObject):
 
     def _read_source(self, key):
         try:
-            request = Request(SOURCE_URLS[key], headers={'User-Agent': 'TradingWorkflowHelper/0.1'})
+            headers = {'User-Agent': 'TradingWorkflowHelper/0.1'}
+            headers.update(self._validators.get(key, {}))
+            request = Request(SOURCE_URLS[key], headers=headers)
             with urlopen(request, timeout=8) as response:
                 raw = response.read(MAX_BYTES + 1)
+                validators = {}
+                for name, conditional in (('ETag', 'If-None-Match'), ('Last-Modified', 'If-Modified-Since')):
+                    value = response.headers.get(name)
+                    if isinstance(value, str) and 0 < len(value) <= 512 and '\r' not in value and '\n' not in value:
+                        validators[conditional] = value
             if len(raw) > MAX_BYTES:
                 raise ValueError('事件資料過大')
             if key == 'ff':
                 rows = json.loads(raw.decode('utf-8-sig'))
                 data = parse_events(rows)
-                return key, data, datetime.now(UTC), '', calendar_week(rows)
+                return key, data, datetime.now(UTC), '', calendar_week(rows), validators
             elif key == 'bea':
                 data = parse_bea_schedule(json.loads(raw.decode('utf-8-sig')))
             elif key.startswith('rthk_'):
                 data = parse_market_news(raw, SOURCE_NAMES[key])
             else:
                 data = parse_announcements(raw, SOURCE_NAMES[key])
-            return key, data, datetime.now(UTC), ''
+            return key, data, datetime.now(UTC), '', None, validators
+        except HTTPError as exc:
+            exc.close()
+            if exc.code == 304 and key in self.source_times:
+                return key, None, datetime.now(UTC), ''
+            retry = exc.headers.get('Retry-After', '') if exc.headers else ''
+            return key, None, None, f'HTTP {exc.code}', None, retry
         except (OSError, ValueError, TypeError) as exc:
             return key, None, None, type(exc).__name__
 
@@ -291,16 +336,37 @@ class EconomicCalendar(QObject):
             key, data, fetched_at, error = record[:4]
             if error:
                 self.source_errors[key] = error
+                failures = min(7, self._source_failures.get(key, 0)+1)
+                self._source_failures[key] = failures
+                delay = timedelta(seconds=min(3600, 60 * 2**(failures-1)))
+                retry = record[5] if len(record) > 5 else ''
+                now = datetime.now(UTC)
+                retry_time = now+delay
+                if isinstance(retry, str) and len(retry) <= 100:
+                    try:
+                        requested = (now+timedelta(seconds=int(retry)) if retry.isdigit()
+                                     else parsedate_to_datetime(retry))
+                        if requested.tzinfo is not None:
+                            retry_time = max(retry_time, requested.astimezone(UTC))
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                self._retry_at[key] = retry_time
             else:
-                if key == 'ff':
+                self._source_failures.pop(key, None)
+                self._retry_at.pop(key, None)
+                if len(record) > 5 and isinstance(record[5], dict):
+                    self._validators[key] = record[5]
+                if key == 'ff' and data is not None:
                     self._ff_coverage = record[4] if len(record) > 4 else None
                 self.source_errors.pop(key, None)
                 self.source_times[key] = fetched_at
-                (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
+                if data is not None:  # HTTP 304 confirms the existing data unchanged.
+                    (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
         self.error = '；'.join(f'{SOURCE_NAMES[key]}：{error}' for key, error in self.source_errors.items())
         self._combine()
         self._save_cache()
         self.changed.emit()
+        self._schedule_refresh()
         if self._translation_enabled:
             self._translate_missing()
 
@@ -365,6 +431,9 @@ class EconomicCalendar(QObject):
             state = ('無法更新' if key in self.source_errors else
                      '待更新' if when is None or not timedelta(0) <= now-when < SOURCE_TTLS[key] else '已連線')
             stamp = f' · {when.astimezone(TAIPEI):%m/%d %H:%M:%S}' if when else ''
+            retry = self._retry_at.get(key)
+            if retry is not None and retry > now:
+                stamp += f' · {retry.astimezone(TAIPEI):%H:%M:%S} 後重試'
             lines.append(name + '：' + state + stamp)
         return lines
 
@@ -393,4 +462,6 @@ class EconomicCalendar(QObject):
             pass
 
     def close(self) -> None:
+        self._polling_enabled = False
+        self.refresh_timer.stop()
         self._closed = True
