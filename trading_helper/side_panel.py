@@ -268,7 +268,7 @@ class SideQuickPanel(QWidget):
         from .event_feed import EventFeedView
         self.calendar = app._get_event_calendar()
         self.event_view = EventFeedView(lambda: self.calendar, self.event_flyout,
-                                        title='重大事件', close=self.events_button.setChecked)
+                                        title='重大事件', close=self.events_button.setChecked, compact=True)
         flyout_layout.addWidget(self.event_view)
         # Shared view attributes retained for the sidebar's preview controls.
         for name in ('event_tabs', 'event_rows', 'news_rows', 'event_status', 'source_details'):

@@ -29,6 +29,8 @@ class NewsWorkspaceTests(unittest.TestCase):
             self.w.toggle_side_panel(True)
             panel = self.w.side_panel
             self.assertIs(service, panel.calendar)
+            self.assertTrue(panel.event_rows.compact)
+            self.assertFalse(self.w.news_feed.event_rows.compact)
             now = datetime.now(UTC)
             service.events = [CalendarEvent(now+timedelta(hours=1), 'USD', '<b>CPI</b>')]
             service.source_times = dict.fromkeys(SOURCE_URLS, now)

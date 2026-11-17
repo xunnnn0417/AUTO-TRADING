@@ -34,3 +34,21 @@ class NewsCardTests(unittest.TestCase):
     def test_personnel_event_is_retained_even_without_old_market_keywords(self):
         raw = '<rss><channel><item><title>美國財長突然辭職</title><pubDate>Tue, 17 Nov 2026 00:00:00 GMT</pubDate></item></channel></rss>'.encode()
         self.assertEqual(len(parse_market_news(raw, '香港電台國際')), 1)
+
+    def test_compact_sidebar_uses_smaller_type_and_less_height_without_losing_text(self):
+        regular, compact = NewsCards(), NewsCards(compact=True)
+        self.addCleanup(regular.close)
+        self.addCleanup(compact.close)
+        title = '特朗普宣布對進口商品加徵關稅'
+        rows = [(datetime.now(UTC), '香港電台國際', title, title, False, '已公布')]*3
+        for view in (regular, compact):
+            view.resize(370, 450)
+            view.show()
+            view.set_entries(rows, '')
+        self.app.processEvents()
+        regular_size = regular.document().find(title).charFormat().font().pixelSize()
+        compact_size = compact.document().find(title).charFormat().font().pixelSize()
+        self.assertGreater(compact_size, 0)
+        self.assertLess(compact_size, regular_size)
+        self.assertLess(compact.document().size().height(), regular.document().size().height())
+        self.assertEqual(compact.text(), regular.text())

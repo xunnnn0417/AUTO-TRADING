@@ -12,7 +12,7 @@ from .news_cards import NewsCards
 
 
 class EventFeedView(QWidget):
-    def __init__(self, get_calendar, parent=None, *, title='消息與事件', close=None):
+    def __init__(self, get_calendar, parent=None, *, title='消息與事件', close=None, compact=False):
         super().__init__(parent)
         self._get_calendar = get_calendar
         self.calendar = None
@@ -41,7 +41,7 @@ class EventFeedView(QWidget):
             header.addWidget(button)
         root.addLayout(header)
         self.event_tabs = QTabWidget()
-        self.event_rows, self.news_rows = (NewsCards() for _ in range(2))
+        self.event_rows, self.news_rows = (NewsCards(compact=compact) for _ in range(2))
         for caption, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
             self.event_tabs.addTab(label, caption)
         root.addWidget(self.event_tabs, 1)
@@ -74,6 +74,12 @@ class EventFeedView(QWidget):
                 border-bottom: 2px solid transparent; }
             QTabBar::tab:selected { color: #f1edf7; border-bottom-color: #9a84e5; }
         ''')
+        if compact:
+            self.setStyleSheet(self.styleSheet()+'''
+                QLabel, QToolButton, QTabBar::tab { font-size:12px; }
+                QToolButton { padding:3px; }
+                QTabBar::tab { padding:5px 6px; }
+            ''')
         self.refresh_button.setText('重整')
 
     def bind(self):

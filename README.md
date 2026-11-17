@@ -33,6 +33,7 @@ This tool reads your sheet and fills calibrated broker fields. When enabled by t
 - Each attempted source request writes local `diagnostics/news-poll.jsonl` evidence: start/end times, source, automatic/manual trigger, HTTP status, duration, bytes, parsed count, content-change flag and outcome. HTTP 304 is an unchanged success; HTTP 200 with invalid content is a parse failure. Logs rotate at 2 MiB with four backups (about 10 MiB total), and contain no account, sheet or news-body content. They are not uploaded.
 - 新取得、近 15 分鐘內發布且含具體潛在事件的消息會顯示簡短非阻擋式提醒，並在「消息」亮紅點。標題規則區分政策宣布、重要發言／人事、地緣事件、金融風險與經濟數據；單純價格漲跌回顧仍列出但不彈窗。重要人物的突發標題若資訊不足或屬人事傳聞，標示「待確認」。判斷只依已取得的標題，不確認新聞真實性、不預測漲跌，也不保證涵蓋所有可能影響黃金的事件。
 - 主畫面與側欄共用分類色條、左側時間及重點標題；關鍵字上色，原文可展開查看。來源文字一律轉義，不能開啟外部連結或載入資源。首次載入不彈歷史消息，同則不重複；交易、校準或其他確認視窗進行中延後提醒，查看消息清除紅點。
+- 側欄消息使用較小字級、較窄時間欄與較短列間距，保留完整標題及原文入口；主畫面維持原字級與間距。
 - 消息頁與側欄消息窗提供「測試重大消息」按鈕，注入明確標示的暫存測試消息，走相同提醒、紅點與操作中延後流程。測試不發出額外網路請求、不操作交易，也不寫入來源快取或抓取結果記錄；重啟後移除。
 - TradingView position helper
 - 餘額及預期 SL 的警示以更新後讀回的數值為準；輸入途中不新增警示，既有警示也不會僅因修改文字而解除。場內餘額超出帳號獲利目標／最大虧損範圍時，主畫面與側欄都會阻止填入。
