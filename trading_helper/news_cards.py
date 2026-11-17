@@ -1,0 +1,69 @@
+"""Shared category stripe, time column and headline-first event list."""
+from html import escape
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QTextBrowser
+
+from .calendar_events import TAIPEI
+from .news_relevance import assess_headline, highlight_title
+
+
+class NewsCards(QTextBrowser):
+    def __init__(self):
+        super().__init__()
+        self.setFrameShape(QFrame.NoFrame)
+        self.setOpenLinks(False)
+        self.setOpenExternalLinks(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.document().setDocumentMargin(4)
+        self.setStyleSheet('QTextBrowser { border:0; background:transparent; color:#eeedf3; }')
+        self._rows = []
+        self._open_details = set()
+        self.anchorClicked.connect(self._toggle_details)
+
+    def loadResource(self, resource_type, url):
+        return None  # Feed titles cannot load files, images or remote resources.
+
+    def text(self):
+        return self.toPlainText()
+
+    def set_entries(self, rows, empty):
+        # Stable identity keeps expansion across refresh; titles are never HTML.
+        self._rows = rows
+        self._empty = empty
+        self._render()
+
+    def _toggle_details(self, url):
+        if url.scheme() != 'detail' or not url.path().isdigit():
+            return
+        index = int(url.path())
+        if index >= len(self._rows):
+            return
+        identity = self._rows[index][:3]
+        self._open_details.symmetric_difference_update({identity})
+        self._render()
+
+    def _render(self):
+        old_scroll = self.verticalScrollBar().value()
+        valid = {row[:3] for row in self._rows}
+        self._open_details.intersection_update(valid)
+        cards = []
+        for index, (when, source, original, shown, scheduled, state) in enumerate(self._rows):
+            assessment = assess_headline(original, scheduled=scheduled)
+            color = assessment.color
+            identity = (when, source, original)
+            opened = identity in self._open_details
+            details = (f'<p style="margin:6px 0 0;color:#aaa5b7">原文：{escape(original)}</p>' if opened else '')
+            # Full source title is retained; no invented AI summary or direction.
+            cards.append(
+                f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
+                f'<td width="3" bgcolor="{color}"></td><td width="10"></td>'
+                f'<td width="70" valign="top"><span style="color:#eeedf3">{when.astimezone(TAIPEI):%m/%d}</span>'
+                f'<br><span style="color:#aaa5b7">{when.astimezone(TAIPEI):%H:%M}<br>{escape(state)}</span></td>'
+                f'<td valign="top"><p style="margin:0;color:{color};font-size:11px">{escape(assessment.category)}</p>'
+                f'<p style="margin:5px 0;font-size:14px">{highlight_title(shown, color)}</p>'
+                f'<span style="color:#aaa5b7;font-size:11px">{escape(source)}</span>　'
+                f'<a href="detail:{index}" style="color:#aaa5b7;text-decoration:none;font-size:11px">'
+                f'{"收起原文" if opened else "查看原文"}</a>{details}</td></tr></table><p style="margin:0;height:14px"><br></p>')
+        self.setHtml(''.join(cards) if cards else f'<p style="color:#aaa5b7">{escape(self._empty)}</p>')
+        self.verticalScrollBar().setValue(old_scroll)

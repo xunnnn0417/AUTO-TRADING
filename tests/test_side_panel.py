@@ -144,8 +144,9 @@ class SidePanelTests(unittest.TestCase):
         panel.calendar.source_times = dict.fromkeys(SOURCE_URLS, datetime.now(UTC))
         panel.update_events()
         self.assertIn('1 小時', panel.events_button.text())
-        self.assertEqual(panel.event_rows.textFormat(), Qt.PlainText)
+        self.assertFalse(panel.event_rows.openExternalLinks())
         self.assertIn('<b>Rate</b>', panel.event_rows.text())
+        self.assertIn('&lt;b&gt;Rate&lt;/b&gt;', panel.event_rows.toHtml())
         panel.calendar.error = '暫時無法更新'
         panel.update_events()
         self.assertIn('待更新', panel.event_status.text())

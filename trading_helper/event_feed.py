@@ -3,11 +3,12 @@ from datetime import datetime, timedelta
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget, QScrollArea,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget,
 )
-from .calendar_events import UTC, TAIPEI
+from .calendar_events import UTC
 from .event_summary import relevant_announcement
 from .ui_theme import themed_icon
+from .news_cards import NewsCards
 
 
 class EventFeedView(QWidget):
@@ -40,16 +41,9 @@ class EventFeedView(QWidget):
             header.addWidget(button)
         root.addLayout(header)
         self.event_tabs = QTabWidget()
-        self.event_rows, self.news_rows = (QLabel() for _ in range(2))
+        self.event_rows, self.news_rows = (NewsCards() for _ in range(2))
         for caption, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
-            label.setTextFormat(Qt.PlainText)
-            label.setWordWrap(True)
-            label.setAlignment(Qt.AlignTop)
-            label.setStyleSheet('padding: 10px 2px;')
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(label)
-            self.event_tabs.addTab(scroll, caption)
+            self.event_tabs.addTab(label, caption)
         root.addWidget(self.event_tabs, 1)
         self.event_status = QToolButton()
         self.event_status.setAccessibleName('消息來源狀態')
@@ -121,18 +115,17 @@ class EventFeedView(QWidget):
         def title(original):
             shown = self.calendar.title(original)
             return shown + ('〔機翻〕' if original in self.calendar.translations else '')
-        def line(event):
-            return f'{event.when.astimezone(TAIPEI):%m/%d %H:%M}  {event.currency} · {event.source}\n{title(event.title)}'
-        self.event_rows.setText('\n\n'.join(map(line, upcoming[:20])) or
-                               '目前載入資料沒有近期排程；請查看來源更新狀態。')
+        self.event_rows.set_entries([(e.when, e.currency+' · '+e.source, e.title, title(e.title), True, '即將發生')
+                                    for e in upcoming[:20]], '目前載入資料沒有近期排程；請查看來源更新狀態。')
         recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title)
                   for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
         recent += [(n.when, n.source, n.title) for n in self.calendar.news
                    if now-timedelta(hours=72) <= n.when <= now
                    and (n.source == '測試消息' or n.source.startswith('香港電台') or relevant_announcement(n.title))]
         recent = sorted(set(recent), reverse=True)[:24]
-        self.news_rows.setText('\n\n'.join(f'{when.astimezone(TAIPEI):%m/%d %H:%M} · {source}\n{title(original)}'
-            for when, source, original in recent) or '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
+        self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source, '已公布')
+                                   for when, source, original in recent],
+                                  '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
         self.news_rows.setToolTip('\n\n'.join(original for _, _, original in recent))
         self.event_rows.setToolTip('\n'.join(item.title for item in upcoming[:20]))
         details = ('\n'.join(self.calendar.status_lines(now)) +

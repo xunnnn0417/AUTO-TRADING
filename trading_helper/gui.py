@@ -2143,7 +2143,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.setIcon(QMessageBox.Warning)
         dialog._primary_text.setTextFormat(Qt.PlainText)
         service = self._get_event_calendar()
-        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source}\n{service.title(item.title)}'
+        from .news_relevance import assess_headline
+        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source} · {assess_headline(item.title).category}\n{service.title(item.title)}'
                  for item in items[:3]]
         extra = f'\n另有 {len(items)-3} 則，請查看消息。' if len(items) > 3 else ''
         dialog.setText('以下消息可能影響黃金短期波動：\n\n'+'\n\n'.join(lines)+extra)

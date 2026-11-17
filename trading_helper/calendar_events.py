@@ -21,6 +21,7 @@ from http.client import HTTPException
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
 from .headline_language import local_title, translate_title, valid_translation
 from .news_probe import append_probe
+from .news_relevance import assess_headline
 
 FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 BEA_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
@@ -133,7 +134,8 @@ def parse_events(rows: object) -> list[CalendarEvent]:
 
 
 def parse_market_news(raw: bytes, source: str) -> list[Announcement]:
-    return [item for item in parse_announcements(raw, source) if MARKET_TOPICS.search(item.title)]
+    return [item for item in parse_announcements(raw, source)
+            if MARKET_TOPICS.search(item.title) or assess_headline(item.title).notify]
 
 
 def calendar_week(rows):
@@ -420,7 +422,6 @@ class EconomicCalendar(QObject):
             self._translate_missing()
 
     def _new_announcements(self, key, rows):
-        from .event_summary import relevant_announcement
         now = datetime.now(UTC)
         primed = key in self.source_times
         previous = set(self._news_by_source[key])
@@ -429,7 +430,7 @@ class EconomicCalendar(QObject):
             identity = hashlib.sha256(f'{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
             if (primed and item not in previous and identity not in self._seen_news
                     and now-timedelta(minutes=15) <= item.when <= now
-                    and (bool(MARKET_TOPICS.search(item.title)) or relevant_announcement(item.title))):
+                    and assess_headline(item.title).notify):
                 alerts.append(item)
             self._seen_news[identity] = None
         self._seen_news = dict(list(self._seen_news.items())[-500:])
@@ -492,7 +493,7 @@ class EconomicCalendar(QObject):
 
     def preview_announcement(self):
         """Inject only an in-memory headline into the normal notification path."""
-        item = Announcement(datetime.now(UTC), '測試消息', '【測試】臨時重大消息：黃金市場波動提醒')
+        item = Announcement(datetime.now(UTC), '測試消息', '【測試】特朗普突然宣布調整關稅政策')
         self._preview_news = (self._preview_news + [item])[-5:]
         self._combine()
         self.changed.emit()

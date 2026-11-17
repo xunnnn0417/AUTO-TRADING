@@ -94,6 +94,20 @@ class NewsMonitoringTests(unittest.TestCase):
         self.assertEqual(result[3], 'OSError')
         self.assertIn('診斷記錄無法寫入', '\n'.join(self.service.status_lines(datetime.now(feeds.UTC))))
 
+    def test_price_recap_stays_in_feed_but_only_real_catalyst_notifies(self):
+        service = self.service
+        now = datetime.now(feeds.UTC)
+        received = []
+        service.announcements.connect(received.extend)
+        service._apply([('rthk_finance', [], now, '')])
+        recap = feeds.Announcement(now, '香港電台財經', '金價升0.04%')
+        catalyst = feeds.Announcement(now, '香港電台財經', '特朗普宣布加徵關稅')
+        service._apply([('rthk_finance', [recap, catalyst], now, '')])
+        self.assertEqual(received, [catalyst])
+        self.assertIn(recap, service.news)
+        service._apply([('rthk_finance', [recap, catalyst], now, '')])
+        self.assertEqual(received, [catalyst])
+
     def test_parse_failure_and_manual_request_attribution_are_recorded(self):
         response = MagicMock()
         response.__enter__.return_value.status = 200

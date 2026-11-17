@@ -1,9 +1,9 @@
 """Read-only event wording for the helper's configured trading-day interval."""
 from datetime import datetime, timedelta
-import re
 
 from .calendar_events import TAIPEI, countdown
 from .trading_day import trading_day_key
+from .news_relevance import assess_headline
 
 
 def trading_session(now, settings):
@@ -24,9 +24,7 @@ def trading_session(now, settings):
 
 
 def relevant_announcement(title):
-    if re.search(r'tentative schedule|banking data|digital euro|supervis|regulat', title, re.I):
-        return False
-    return bool(re.search(r'interest rate|monetary policy|FOMC|inflation|employment|Powell|rate decision', title, re.I))
+    return assess_headline(title).notify
 
 
 def event_summary(events, now, settings, day_is_loaded, title=lambda text: text):
