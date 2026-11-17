@@ -177,7 +177,7 @@ class MainVisualRegressionTests(unittest.TestCase):
     def test_all_old_ui_controls_stay_accessible(self):
         self.assertEqual(
             [a.text() for a in self.window.profile_manage_menu.actions() if not a.isSeparator()],
-            ["建立新方案", "儲存目前方案", "重新命名目前方案", "刪除目前方案"],
+            ["建立新方案", "儲存目前方案", "重新命名目前方案", "刪除目前方案", "手機連線"],
         )
         self.assertTrue(self.window.profile_combo.isVisible())
         self.assertTrue(self.window.auto_entry_on_fill_both.isVisible())

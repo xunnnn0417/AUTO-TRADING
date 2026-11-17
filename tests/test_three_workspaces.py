@@ -333,7 +333,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
         self.assertEqual(w.auto_entry_on_fill_both.isChecked(),False)
         self.assertEqual(
             [a.text() for a in w.profile_manage_menu.actions() if not a.isSeparator()],
-            ["建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案"]
+            ["建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案","手機連線"]
         )
         # Page navigation never writes a trading config or triggers a trade.
         w.store.data["ui"]["test_marker"]="not modified"

@@ -557,6 +557,7 @@ class UiSignals(QObject):
     duplicate_entry_decision = Signal(object)
     window_binding_result = Signal(object)
     auto_entry_result = Signal(object)
+    remote_task_result = Signal(object)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -903,6 +904,27 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # *after* QWidget.__init__. Reapply the compact size once shown.
         QTimer.singleShot(80, self._dock_top)
         QTimer.singleShot(350, self.read_sheet)
+        QTimer.singleShot(500, self._resume_mobile_remote)
+
+    def _mobile_remote(self):
+        from .remote_ui import RemoteController
+        if getattr(self, "remote_controller", None) is None:
+            self.remote_controller = RemoteController(self)
+        return self.remote_controller
+
+    def _resume_mobile_remote(self):
+        # No listener or credentials are created until explicitly enabled.
+        if (self.store.path.parent / "mobile-remote.sqlite3").exists():
+            controller = self._mobile_remote()
+            if controller.store.setting("enabled") == "1":
+                try:
+                    controller.start(controller.store.setting("origin"))
+                except ValueError:
+                    self.log("手機連線未能恢復，請在管理選單重新開啟。")
+
+    def open_mobile_remote(self):
+        if self.can_update():
+            self._mobile_remote().show_settings()
 
     def _build_operation_hint(self) -> None:
         self._operation_restore_geometry = None
@@ -1135,6 +1157,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         delete_action.triggered.connect(self.delete_profile)
         self.profile_manage_button.setMenu(self.profile_manage_menu)
+        self.profile_manage_menu.addSeparator()
+        mobile_action = self.profile_manage_menu.addAction("手機連線")
+        mobile_action.triggered.connect(self.open_mobile_remote)
         top_row.addWidget(self.profile_manage_button)
         top_row.addStretch(1)
 
@@ -2968,6 +2993,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         def worker() -> None:
             suggestion = None
             duplicate_data = None
+            outcome = "completed"
             if hide_during:
                 self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
@@ -2991,8 +3017,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if not self.emergency.event.is_set():
                     self.signals.status.emit("就緒")
             except EmergencyStopped:
+                outcome = "stopped"
                 self.signals.status.emit("已停止")
             except DuplicateEntryDecisionRequired as exc:
+                outcome = "waiting"
                 self.signals.status.emit("待確認")
                 duplicate_data={
                     "key":exc.key,
@@ -3005,6 +3033,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     "發現已存在的自動進場紀錄，等待使用者決定是否調整數值。"
                 )
             except CTraderDecimalInputSuggestion as exc:
+                outcome = "waiting"
                 self.signals.status.emit("待確認")
                 self.log(str(exc))
                 suggestion = {
@@ -3016,10 +3045,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     "actual": exc.actual,
                 }
             except InvalidInternalTakeProfit as exc:
+                outcome = "failed"
                 self.signals.status.emit("請修改場內餘額")
                 self.log("試算表已讀取，交易數值需調整。")
                 self.signals.error.emit(str(exc))
             except Exception as exc:
+                outcome = "failed"
                 self.signals.status.emit("錯誤")
                 self.log(f"錯誤：{exc}")
                 # An entry receipt already contains the uncertainty and
@@ -3027,10 +3058,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if not getattr(exc, "_auto_entry_result_emitted", False):
                     self.signals.error.emit(str(exc))
             finally:
+                if self.emergency.event.is_set() and outcome == "completed":
+                    outcome = "stopped"
                 with self._update_lock:
                     self._active_tasks -= 1
                 if is_fill:
                     self._fill_task_lock.release()
+                result_signal = getattr(self.signals, "remote_task_result", None)
+                if result_signal is not None:
+                    result_signal.emit({"name": name, "status": outcome})
                 if hide_during:
                     if restore_after:
                         self.signals.operation_finished.emit()
@@ -5613,6 +5649,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self._update_in_progress and not self._allow_update_exit:
             event.ignore()
             return
+        remote = getattr(self, "remote_controller", None)
+        if remote is not None:
+            remote.stop()
         self.save_ui_state()
         self._pending_news_alerts.clear()
         self._news_alert_timer.stop()
