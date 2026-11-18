@@ -9,22 +9,54 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import time
 from collections import deque
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpServer
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
+from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpServer, QSslSocket
 from PySide6.QtWebSockets import QWebSocketServer
 
 COOKIE = "helper_remote"
 MAX_MESSAGE = 16_384
 SESSION_SECONDS = 180 * 24 * 60 * 60
+_native_tls_ready = False
+
+
+def use_windows_native_tls():
+    """Do not let Qt scan unrelated OpenSSL plugins while selecting Schannel."""
+    global _native_tls_ready
+    if os.name != 'nt' or _native_tls_ready:
+        return
+    import PySide6
+    try:
+        source = Path(PySide6.__file__).parent / 'plugins' / 'tls' / 'qschannelbackend.dll'
+        content = source.read_bytes()
+        # A single versioned code cache, separate from settings/calibration.
+        root = Path(tempfile.gettempdir()) / 'TradingWorkflowHelper_QtTLS' / hashlib.sha256(content).hexdigest()[:20]
+        target = root / 'tls' / source.name
+        if not target.exists() or target.read_bytes() != content:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix('.tmp')
+            temporary.write_bytes(content)
+            temporary.replace(target)
+        original = QCoreApplication.libraryPaths()
+        try:
+            QCoreApplication.setLibraryPaths([str(root)])
+            if not QSslSocket.setActiveBackend('schannel'):
+                raise ValueError('Windows 加密連線元件無法啟用，手機連線未開啟。')
+        finally:
+            QCoreApplication.setLibraryPaths(original)
+    except OSError as exc:
+        raise ValueError('Windows 加密連線元件無法載入，手機連線未開啟。') from exc
+    _native_tls_ready = True
 
 
 def normalized_origin(value: str) -> str:
@@ -146,6 +178,7 @@ class MobileServer(QObject):
 
     def __init__(self, store: RemoteStore, assets: dict, parent=None):
         super().__init__(parent)
+        use_windows_native_tls()
         self.store, self.assets = store, assets
         self.http = QTcpServer(self)
         self.websockets = QWebSocketServer("對沖小幫手", QWebSocketServer.NonSecureMode, self)

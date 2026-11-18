@@ -918,16 +918,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def _resume_mobile_remote(self):
         # No listener or credentials are created until explicitly enabled.
         if (self.store.path.parent / "mobile-remote.sqlite3").exists():
-            controller = self._mobile_remote()
-            if controller.store.setting("enabled") == "1":
-                try:
+            try:
+                controller = self._mobile_remote()
+                if controller.store.setting("enabled") == "1":
                     controller.start(controller.store.setting("origin"))
-                except ValueError:
-                    self.log("手機連線未能恢復，請在管理選單重新開啟。")
+            except ValueError:
+                self.log("手機連線未能恢復，請在管理選單重新開啟。")
 
     def open_mobile_remote(self):
         if self.can_update():
-            self._mobile_remote().show_settings()
+            try:
+                self._mobile_remote().show_settings()
+            except ValueError as exc:
+                QMessageBox.warning(self, '手機連線', str(exc))
 
     def _build_operation_hint(self) -> None:
         self._operation_restore_geometry = None

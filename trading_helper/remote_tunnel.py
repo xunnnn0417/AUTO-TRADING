@@ -5,6 +5,10 @@ import os
 import re
 import shutil
 import tempfile
+import json
+import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
@@ -23,7 +27,7 @@ class QuickTunnel(QObject):
     failed = Signal(str)
     changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, diagnostic_path=None):
         super().__init__(parent)
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
@@ -41,6 +45,34 @@ class QuickTunnel(QObject):
         self._folder = None
         self._stopping = False
         self._failed = False
+        self.diagnostic_path = Path(diagnostic_path) if diagnostic_path else None
+        self._tail = deque(maxlen=12)
+        self._started_at = time.monotonic()
+
+    def _record(self, event, **details):
+        if self.diagnostic_path is None:
+            return
+        # Bounded local diagnostics, without URLs, credentials or local paths.
+        def clean(value):
+            value = re.sub(r'https?://\S+', '[網址]', str(value))
+            value = re.sub(r'(?i)[a-z]:\\[^\s"<>]+', '[本機路徑]', value)
+            value = re.sub(r'(?i)\b(token|authorization|cookie)\s*[:=]\s*\S+', r'\1=[隱藏]', value)
+            return value[:400]
+        record = dict(event=event, at_utc=datetime.now(timezone.utc).isoformat(),
+                      elapsed_ms=round((time.monotonic()-self._started_at)*1000),
+                      tail=[clean(line) for line in self._tail],
+                      **{key:clean(value) for key,value in details.items()})
+        try:
+            path = self.diagnostic_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            previous = json.loads(path.read_text(encoding='utf-8')) if path.exists() and path.stat().st_size < 256_000 else []
+            if not isinstance(previous, list):
+                previous = []
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps((previous+[record])[-20:], ensure_ascii=False), encoding='utf-8')
+            temporary.replace(path)
+        except (OSError, ValueError):
+            pass  # Diagnostics must not change connection or trading behavior.
 
     @property
     def running(self):
@@ -57,6 +89,8 @@ class QuickTunnel(QObject):
         self._stopping = self._failed = False
         self.connected = False
         self.url = self._buffer = ''
+        self._tail.clear()
+        self._started_at = time.monotonic()
         self.message = '正在建立手機網址…'
         self._folder = tempfile.TemporaryDirectory(prefix='helper-mobile-')
         config = Path(self._folder.name) / 'quick-tunnel.yaml'
@@ -74,6 +108,7 @@ class QuickTunnel(QObject):
         ])
         self.timeout.start()
         self.process.start()
+        self._record('starting')
         self.changed.emit()
 
     def _read(self):
@@ -86,6 +121,7 @@ class QuickTunnel(QObject):
         lines = self._buffer.split('\n')
         self._buffer = lines.pop()[-4096:]
         for line in lines:
+            self._tail.append(line[-800:])
             match = re.search(r'https://([a-z0-9]+(?:-[a-z0-9]+)*)\.trycloudflare\.com(?=[\s|/]|$)', line)
             if match:
                 self.url = match.group(0)
@@ -93,6 +129,7 @@ class QuickTunnel(QObject):
                 self.connected = True
                 self.timeout.stop()
                 self.message = '手機外網連線已建立（臨時網址）'
+                self._record('connected')
                 self.ready.emit(self.url)
                 self.changed.emit()
             elif 'Unregistered tunnel connection' in line and self.connected:
@@ -102,14 +139,16 @@ class QuickTunnel(QObject):
         if not self._stopping:
             self._fail('無法啟動手機連線工具，請確認工具與網路。')
 
-    def _finished(self, *_):
+    def _finished(self, exit_code=0, *_):
         if not self._stopping and not self._failed:
-            self._fail('手機外網連線已結束；不會重送操作。')
+            self._read()
+            self._fail('手機外網連線已結束；不會重送操作。', exit_code=exit_code)
 
-    def _fail(self, message):
+    def _fail(self, message, **details):
         if self._failed or self._stopping:
             return
         self._failed = True
+        self._record('failed', reason=message, process_error=self.process.errorString(), **details)
         self.stop()
         self.message = message
         self.failed.emit(message)

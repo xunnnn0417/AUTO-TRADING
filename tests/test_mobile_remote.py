@@ -1,6 +1,7 @@
 """Private temporary stores, loopback sockets and stubbed desktop operations only."""
 import http.client
 import json
+import os
 import secrets
 import sqlite3
 import tempfile
@@ -10,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtNetwork import QAbstractSocket, QNetworkRequest
+from PySide6.QtCore import QCoreApplication, QTimer, QUrl
+from PySide6.QtNetwork import QAbstractSocket, QNetworkRequest, QSslSocket
 from PySide6.QtTest import QTest
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import QApplication
@@ -138,6 +139,24 @@ class MobileTransportTests(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertNotIn("unsafe-inline", headers["Content-Security-Policy"])
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native TLS backend')
+    def test_windows_transport_selects_native_tls_without_disabling_verification(self):
+        self.assertEqual(QSslSocket.activeBackend(), 'schannel')
+        self.assertTrue(QSslSocket.supportsSsl())
+        socket = QSslSocket()
+        self.assertNotEqual(socket.peerVerifyMode(), QSslSocket.VerifyNone)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows native TLS backend')
+    def test_missing_windows_backend_does_not_fall_back_to_conflicting_openssl(self):
+        paths = QCoreApplication.libraryPaths()
+        with patch('trading_helper.remote_control._native_tls_ready', False), \
+             patch.object(QSslSocket, 'setActiveBackend', return_value=False), \
+             patch('trading_helper.remote_control.QWebSocketServer') as websocket:
+            with self.assertRaisesRegex(ValueError, '加密連線元件'):
+                MobileServer(self.store, ASSETS)
+        websocket.assert_not_called()
+        self.assertEqual(QCoreApplication.libraryPaths(), paths)
 
     def test_pair_is_one_use_and_cookie_is_http_only(self):
         code = self.server.arm_pairing()
@@ -372,3 +391,10 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.w._mobile_resume_timer.start(500)
         self.w.close()
         self.assertFalse(self.w._mobile_resume_timer.isActive())
+
+    def test_backend_failure_is_explained_in_desktop_settings(self):
+        with patch.object(self.w, '_mobile_remote', side_effect=ValueError('Windows 加密連線元件無法啟用')), \
+             patch.object(gui.QMessageBox, 'warning') as warning:
+            self.w.open_mobile_remote()
+        warning.assert_called_once()
+        self.assertIn('加密連線元件', warning.call_args.args[2])

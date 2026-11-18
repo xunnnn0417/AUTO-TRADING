@@ -1,5 +1,7 @@
 """Temporary tunnel lifecycle with stubbed child processes, no public listener."""
 import unittest
+import json
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -89,3 +91,27 @@ class QuickTunnelTests(unittest.TestCase):
                     'https://example.org', 'http://127.0.0.1:8765 --evil'):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 self.tunnel.start(url)
+
+    def test_failure_diagnostics_are_local_bounded_and_redact_sensitive_values(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'mobile-connection.json'
+            self.tunnel.diagnostic_path = path
+            self.start_stub()
+            self.tunnel._consume('ERR request https://secret.trycloudflare.com token=PRIVATEKEY Cookie=PRIVATECOOKIE C:\\Users\\Private\\file\n')
+            self.tunnel._finished(7)
+            records = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(records[-1]['exit_code'], '7')
+            self.assertEqual(records[-1]['event'], 'failed')
+            text = path.read_text(encoding='utf-8')
+            for secret in ('secret.trycloudflare.com','PRIVATEKEY','PRIVATECOOKIE','Private'):
+                self.assertNotIn(secret, text)
+            for _ in range(25):
+                self.tunnel._record('test')
+            self.assertEqual(len(json.loads(path.read_text(encoding='utf-8'))), 20)
+
+    def test_unwritable_diagnostics_never_break_connection_failure_handling(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.tunnel.diagnostic_path = Path(folder)
+            self.start_stub()
+            self.tunnel._fail('網路失敗')
+            self.assertEqual(self.errors, ['網路失敗'])

@@ -41,7 +41,7 @@ class RemoteController(QObject):
         self.store = RemoteStore(app.store.path.parent / "mobile-remote.sqlite3")
         self.server = MobileServer(self.store, ASSETS, self)
         self.server.command.connect(self._command)
-        self.tunnel = QuickTunnel(self)
+        self.tunnel = QuickTunnel(self, diagnostic_path=app.store.path.parent / 'diagnostics' / 'mobile-connection.json')
         self.tunnel.ready.connect(self._tunnel_ready)
         self.tunnel.failed.connect(self._tunnel_failed)
         self.temporary_connection = False
