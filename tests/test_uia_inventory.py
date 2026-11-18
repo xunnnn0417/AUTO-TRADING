@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from trading_helper.uia_inventory import fresh_controls, INPUT_TYPES, FORM_TYPES
+from trading_helper.uia_inventory import fresh_controls, INPUT_TYPES, FORM_TYPES, ACCOUNT_ID, PLACE_ORDER_ID
 
 
 class FreshInventoryTests(unittest.TestCase):
@@ -42,3 +42,33 @@ class FreshInventoryTests(unittest.TestCase):
         root = SimpleNamespace(descendants=MagicMock(return_value=['a','a']))
         self.assertEqual(fresh_controls(root), ['a','a'])
         root.descendants.assert_called_once_with()
+
+    def test_form_query_restricts_text_and_buttons_without_dropping_input_types(self):
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        from pywinauto.uia_defines import IUIA
+        root = MagicMock(spec=UIAWrapper)
+        client = MagicMock(spec=IUIA())
+        client.tree_scope = {'descendants': 4}
+        client.build_condition.side_effect = lambda **kw: tuple(kw.items())
+        client.iuia.CreatePropertyCondition.side_effect = lambda prop, value: ('id', value)
+        client.iuia.CreateOrConditionFromArray.side_effect = lambda items: ('or', tuple(items))
+        client.iuia.CreateAndCondition.side_effect = lambda a, b: ('and', a, b)
+        with patch('pywinauto.uia_defines.IUIA', return_value=client), \
+             patch('pywinauto.uia_element_info.elements_from_uia_array', return_value=[]):
+            fresh_controls(root, text_ids=(ACCOUNT_ID,), text_names=('Gold vs US Dollar',),
+                           button_ids=(PLACE_ORDER_ID,))
+        query = repr(root.element_info.element.FindAll.call_args)
+        for value in (*INPUT_TYPES, ACCOUNT_ID, PLACE_ORDER_ID, 'Gold vs US Dollar'):
+            self.assertIn(value, query)
+        self.assertIn('and', query)
+        root.descendants.assert_not_called()
+
+    def test_account_query_cannot_fall_back_to_all_text(self):
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        root = MagicMock(spec=UIAWrapper)
+        with patch('pywinauto.uia_element_info.elements_from_uia_array', return_value=[]):
+            fresh_controls(root, ('Text',), text_ids=(ACCOUNT_ID,), text_names=())
+            self.assertEqual(root.element_info.element.FindAll.call_count, 1)
+            with self.assertRaisesRegex(ValueError, 'no target'):
+                fresh_controls(root, ('Text',), text_names=())
+        self.assertEqual(root.element_info.element.FindAll.call_count, 1)

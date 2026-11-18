@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 from .uia_inventory import fresh_controls, INPUT_TYPES
+from .phase_timing_report import timed_phase
 
 
 user32 = ctypes.windll.user32
@@ -486,18 +487,25 @@ class WindowController:
             return self._refresh(window.handle)
         if minimized:
             user32.ShowWindow(window.handle, SW_RESTORE)
-        user32.SetForegroundWindow(window.handle)
-        # SetForegroundWindow may succeed immediately. Poll only until the
-        # desired HWND is active rather than sleeping 200ms unconditionally.
-        deadline=time.monotonic()+0.22
-        while user32.GetForegroundWindow()!=window.handle:
-            self.emergency.guard()
-            if time.monotonic()>=deadline:
-                raise AutomationError(
-                    "平台視窗無法取得焦點，停止填值／核對，避免操作錯誤視窗。"
-                )
-            time.sleep(0.015)
-        return self._refresh(window.handle)
+        for attempt in range(2):
+            with timed_phase('平台焦點重試' if attempt else '平台焦點切換'):
+                self.emergency.guard()
+                if attempt:
+                    self._refresh(window.handle)  # Stop if the target disappeared.
+                user32.SetForegroundWindow(window.handle)
+                # No fixed wait after success. A delayed/denied switch gets
+                # one bounded retry, without clicking or simulating any key.
+                deadline=time.monotonic()+0.22
+                while user32.GetForegroundWindow()!=window.handle:
+                    self.emergency.guard()
+                    if time.monotonic()>=deadline:
+                        break
+                    time.sleep(0.015)
+                else:
+                    return self._refresh(window.handle)
+        raise AutomationError(
+            "平台視窗重試後仍無法取得焦點，已停止。請先將平台切到前景再試。"
+        )
 
     def cursor_position(self) -> tuple[int, int]:
         point = wintypes.POINT()

@@ -18,7 +18,14 @@ from .auto_entry import DemoAccount, Position
 from .test_mode import effective_test_symbol
 from .phase_timing_report import timed_call
 from .windows import AutomationError, WindowInfo, WindowController
-from .uia_inventory import fresh_controls
+from .uia_inventory import fresh_controls, ACCOUNT_ID, PLACE_ORDER_ID
+
+CTRADER_DESCRIPTIONS = {
+    "GOLD": "Gold vs US Dollar", "XAUUSD": "Gold vs US Dollar",
+    "XAGUSD": "Silver vs US Dollar", "SILVER": "Silver vs US Dollar",
+    "EURUSD": "Euro vs US Dollar", "BTCUSD": "Bitcoin vs US Dollar",
+    "ETHUSD": "Ethereum vs US Dollar",
+}
 
 
 class DemoUiBrokerPort:
@@ -85,6 +92,13 @@ class DemoUiBrokerPort:
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
 
+    def _fresh_form_controls(self, window):
+        from pywinauto import Desktop
+        description = CTRADER_DESCRIPTIONS.get(self._test_symbol_override or self._expected_symbol)
+        return fresh_controls(Desktop(backend='uia').window(handle=window.handle),
+                              text_ids=(ACCOUNT_ID,), text_names=(description,),
+                              button_ids=(PLACE_ORDER_ID,))
+
     def set_expected_accounts(
         self, accounts: dict[tuple[str,str],DemoAccount]
     ) -> None:
@@ -139,16 +153,7 @@ class DemoUiBrokerPort:
                 )
             return
         from pywinauto import Desktop
-        descriptions={
-            "GOLD":"Gold vs US Dollar",
-            "XAUUSD":"Gold vs US Dollar",
-            "XAGUSD":"Silver vs US Dollar",
-            "SILVER":"Silver vs US Dollar",
-            "EURUSD":"Euro vs US Dollar",
-            "BTCUSD":"Bitcoin vs US Dollar",
-            "ETHUSD":"Ethereum vs US Dollar",
-        }
-        wanted=descriptions.get(verification_symbol)
+        wanted=CTRADER_DESCRIPTIONS.get(verification_symbol)
         if not wanted:
             raise AutomationError(
                 f"cTrader 尚未驗證 {verification_symbol} 商品描述欄位，拒絕送單。"
@@ -329,11 +334,9 @@ class DemoUiBrokerPort:
             for attempt in range(attempts):
                 elements=(
                     list(_controls) if _controls is not None
-                    else Desktop(backend="uia").window(
+                    else fresh_controls(Desktop(backend="uia").window(
                         handle=window.handle
-                    ).descendants(
-                        control_type="Text",
-                    )
+                    ), ('Text',), text_ids=(ACCOUNT_ID,), text_names=())
                 )
                 number_nodes=[e for e in elements if
                     str(e.element_info.automation_id)==
@@ -876,9 +879,7 @@ class DemoUiBrokerPort:
             self.automation.emergency.guard()
             self.automation.windows.focus(_window)
             try:
-                _controls = fresh_controls(Desktop(backend="uia").window(
-                    handle=_window.handle
-                ))
+                _controls = self._fresh_form_controls(_window)
             except Exception as exc:
                 raise AutomationError("cTrader 表單讀取失敗，未送單。") from exc
             if not isinstance(_controls, list) or not _controls:
@@ -999,9 +1000,7 @@ class DemoUiBrokerPort:
             try:
                 from pywinauto import Desktop
                 timestamps["uia_inventory_started"]=time.perf_counter()
-                controls=fresh_controls(Desktop(backend="uia").window(
-                    handle=win.handle
-                ))
+                controls=self._fresh_form_controls(win)
             except Exception as exc:
                 raise AutomationError(
                     "cTrader 送單前無法安全讀取原生 UIA 清單；未送單。"

@@ -10,6 +10,7 @@ from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
 from .test_mode import active_test_symbol_override, effective_test_symbol
 from .phase_timing_report import timed_call, timed_phase
+from .uia_inventory import fresh_controls, ACCOUNT_ID
 from .windows import (
     AutomationError,
     CalibrationMismatchError,
@@ -796,9 +797,8 @@ class PlatformAutomation:
         if isinstance(self.windows, WindowController):
             from pywinauto import Desktop
             try:
-                nodes=Desktop(backend="uia").window(handle=window.handle).descendants(
-                    control_type="Text"
-                )
+                nodes=fresh_controls(Desktop(backend="uia").window(handle=window.handle),
+                                     ('Text',), text_ids=(ACCOUNT_ID,), text_names=())
                 numbers=[str(n.window_text()).strip() for n in nodes
                          if str(n.element_info.automation_id)=="CTraderAccountNumberTextBlock_AId"
                          and n.is_visible()]
