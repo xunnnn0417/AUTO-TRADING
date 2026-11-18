@@ -603,8 +603,14 @@ class SideQuickPanel(QWidget):
             if event.type() == QEvent.ApplicationDeactivate:
                 self.events_button.setChecked(False)
             elif event.type() == QEvent.MouseButtonPress:
-                target = watched.window() if isinstance(watched, QWidget) else None
-                if target not in (self, news):
+                # Native QWindow receives the press before its QWidget child.
+                # Testing only QWidget.window() misclassifies real inside clicks.
+                point = event.globalPosition().toPoint()
+                target = watched if isinstance(watched, QWidget) else None
+                inside = ((target in (self, news) or news.isAncestorOf(target) or self.isAncestorOf(target))
+                          if target is not None else
+                          (news.frameGeometry().contains(point) or self.frameGeometry().contains(point)))
+                if not inside:
                     self.events_button.setChecked(False)
             elif event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
                 self.events_button.setChecked(False)

@@ -140,6 +140,29 @@ class MobileTransportTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertNotIn("unsafe-inline", headers["Content-Security-Policy"])
 
+    def test_reopening_same_origin_reuses_cookie_without_another_pairing_code(self):
+        status, headers, _ = self.pair()
+        self.assertEqual(status, 200)
+        cookie = headers['Set-Cookie'].split(';')[0]
+        for _ in range(5):
+            status, _, body = self.http(path='/api/session', headers={'Cookie': cookie})
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {'paired': True})
+        self.assertEqual(len(self.store.devices()), 1)
+        self.assertEqual(self.server.pair_code, '')
+
+    def test_shared_ruler_image_is_not_served_to_unpaired_clients(self):
+        self.server.ruler_image = b'<svg xmlns="http://www.w3.org/2000/svg"><text>private</text></svg>'
+        path = '/api/ruler.png?v='+'a'*16
+        status, _, body = self.http(path=path)
+        self.assertEqual(status, 401)
+        self.assertNotIn(b'private', body)
+        _, headers, _ = self.pair()
+        status, headers, body = self.http(path=path, headers={'Cookie': headers['Set-Cookie'].split(';')[0]})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Content-Type'], 'image/png')
+        self.assertIn(b'private', body)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows native TLS backend')
     def test_windows_transport_selects_native_tls_without_disabling_verification(self):
         self.assertEqual(QSslSocket.activeBackend(), 'schannel')
@@ -398,3 +421,56 @@ class MobileDesktopAdapterTests(unittest.TestCase):
             self.w.open_mobile_remote()
         warning.assert_called_once()
         self.assertIn('加密連線元件', warning.call_args.args[2])
+
+    def test_phone_connection_settings_do_not_block_paired_phone(self):
+        self.controller.show_settings()
+        self.qtapp.processEvents()
+        dialog = self.controller.settings_dialog
+        self.assertIsNotNone(dialog)
+        self.assertFalse(dialog.isModal())
+        self.assertTrue(self.controller.snapshot()['available'])
+        self.assertNotIn('待確認', self.controller.snapshot()['health'])
+        with patch.object(self.w, 'fill_both') as fill:
+            self.command('fill_both')
+            self.qtapp.processEvents()
+            fill.assert_called_once()
+        dialog.close()
+        self.qtapp.processEvents()
+        self.assertIsNone(self.controller.settings_dialog)
+
+    def test_routine_success_is_inline_but_failures_still_request_attention(self):
+        self.command('refresh_news')
+        self.controller.last_busy = 0
+        self.controller._finish()
+        self.assertFalse(self.controller.store.latest(self.device)['result']['popup_required'])
+        self.command('refresh_news')
+        self.controller.active['errors'].append('來源失敗')
+        self.controller._finish()
+        self.assertTrue(self.controller.store.latest(self.device)['result']['popup_required'])
+
+    def test_mobile_news_bounds_dates_and_omits_price_recaps(self):
+        from datetime import datetime, timedelta, timezone
+        from trading_helper.calendar_events import CalendarEvent, Announcement
+        now = datetime.now(timezone.utc)
+        calendar = self.w._get_event_calendar()
+        calendar.events = [CalendarEvent(now+timedelta(days=400), 'USD', 'far'),
+                           CalendarEvent(now+timedelta(days=2), 'USD', 'later'),
+                           CalendarEvent(now+timedelta(hours=1), 'USD', 'near')]
+        calendar.news = [Announcement(now, '來源', '金價曾反彈1%'),
+                         Announcement(now, '來源', '美軍襲擊中東基地', '來源提供的事件內容')]
+        items = self.controller.snapshot()['news']
+        self.assertEqual([item['title'] for item in items if item['scheduled']], ['near', 'later'])
+        self.assertEqual([item['title'] for item in items if not item['scheduled']], ['美軍襲擊中東基地'])
+        self.assertEqual(items[-1]['details'], '來源提供的事件內容')
+
+
+class PhoneQrTests(unittest.TestCase):
+    def test_local_qr_scans_to_exact_url_without_including_a_pairing_secret(self):
+        import cv2
+        import numpy as np
+        from trading_helper.remote_qr import phone_qr_image
+        origin = 'https://phone-test.trycloudflare.com'
+        image = phone_qr_image(origin)
+        rows = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(image.height(), image.bytesPerLine())
+        value, _, _ = cv2.QRCodeDetector().detectAndDecode(rows[:, :image.width()])
+        self.assertEqual(value, origin)

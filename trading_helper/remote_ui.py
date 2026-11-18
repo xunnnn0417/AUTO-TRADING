@@ -212,13 +212,23 @@ class RemoteController(QObject):
         if calendar is not None:
             from datetime import datetime, timedelta, timezone
             recent = datetime.now(timezone.utc)-timedelta(days=1)
-            for event in [event for event in calendar.events if event.when >= recent][:60]:
+            for event in sorted(event for event in calendar.events
+                                if recent <= event.when <= datetime.now(timezone.utc)+timedelta(days=45))[:60]:
                 news.append(dict(when=event.when.isoformat(), title=calendar.title(event.title),
-                                 source=event.source, scheduled=True))
+                                 source=event.source, scheduled=True, details=event.details))
             for event in calendar.news[:30]:
+                from .news_relevance import assess_headline
+                if not recent <= event.when <= datetime.now(timezone.utc) or not assess_headline(event.title).notify:
+                    continue
                 news.append(dict(when=event.when.isoformat(), title=calendar.title(event.title),
-                                 source=event.source, scheduled=False))
+                                 source=event.source, scheduled=False, details=event.details))
         ruler = app.account_ruler.state
+        if ruler != getattr(self, '_ruler_state', None):
+            from .progress_ruler import render_mobile_ruler
+            import hashlib
+            self.server.ruler_image = render_mobile_ruler(ruler)
+            self._ruler_state = ruler
+            self._ruler_revision = hashlib.sha256(self.server.ruler_image).hexdigest()[:16]
         return dict(
             profile=app.profiles.active_name, profiles=app.profiles.names(),
             stage=app.stage_selector.currentText(),
@@ -230,6 +240,7 @@ class RemoteController(QObject):
             parameters=parameters, options=options,
             values={key: value.text() for key, value in app.data_labels.items()},
             ruler=json.loads(json.dumps(asdict(ruler), default=str)) if ruler is not None else None,
+            ruler_revision=getattr(self, '_ruler_revision', ''),
             warnings={"internal_balance": app._balance_warning_active(),
                       "expected_sl_combined": app._expected_sl_warning_values() is not None},
             actions={"fill_both": available and app.action_buttons["填入兩邊"].isEnabled(),
@@ -238,7 +249,8 @@ class RemoteController(QObject):
                      "update": available, "sync": available, "view_sl_tp": available},
             available=available, busy=busy or bool(self.active),
             health="無法操作" if not self._desktop_ok else "執行中" if busy or self.active else
-                   "電腦待確認" if modal else "請調整場內餘額" if app._balance_warning_active()
+                   f"請先處理電腦上的「{modal.windowTitle() or '確認'}」視窗" if modal and modal is not self.dialog else
+                   "請確認下方提示" if modal else "請調整場內餘額" if app._balance_warning_active()
                    else "等待交易資料" if app.instruction is None else "正常",
             phase=self.phase, dialog=self._dialog_snapshot(), news=news,
             news_error=calendar.error if calendar else "消息尚未載入",
@@ -289,7 +301,7 @@ class RemoteController(QObject):
         else:
             status, message = "not_started", "操作已結束，沒有新增執行結果；請查看畫面或確認是否已取消。"
         result = dict(message=message[:12000], title=report.get("title", "操作結果") if report else "操作結果")
-        result["popup_required"] = not item.get("receipt_shown", False)
+        result["popup_required"] = status != 'completed' and not item.get("receipt_shown", False)
         self.store.finish(item["device"], item["id"], status, result)
         self.active = None
         self.server.reply(item["device"], {"type": "result", "operation": self.store.latest(item["device"])})
@@ -472,12 +484,18 @@ class RemoteController(QObject):
         from .window_chrome import ThemedDialog
         from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QListWidget, QVBoxLayout
         from PySide6.QtCore import Qt
+        if self.settings_dialog is not None:
+            self.settings_dialog.show()
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+            return
         dialog = ThemedDialog(self.app)
         self.settings_dialog = dialog
+        dialog.setWindowModality(Qt.NonModal)
         dialog.setWindowTitle("手機連線")
         dialog.resize(520, 540)
         layout = QVBoxLayout(dialog)
-        note = QLabel("手機開啟下方網址，首次輸入配對碼即可連線。\n臨時連線經 Cloudflare 轉送；停止或重開後網址會改變，需重新配對。")
+        note = QLabel("手機掃碼或開啟網址，首次輸入配對碼。\n同一網址、同一瀏覽器會記住配對。臨時網址在停止或重開後會更換；長期免配對需固定網址。")
         note.setWordWrap(True)
         layout.addWidget(note)
         quick = QPushButton('啟用手機連線（臨時網址）')
@@ -488,11 +506,24 @@ class RemoteController(QObject):
         layout.addWidget(phone_url)
         copy_url = QPushButton('複製手機網址')
         layout.addWidget(copy_url)
+        qr_toggle = QPushButton('顯示 QR Code')
+        qr_toggle.setCheckable(True)
+        layout.addWidget(qr_toggle)
+        qr = QLabel()
+        qr.setAlignment(Qt.AlignCenter)
+        qr.setVisible(False)
+        layout.addWidget(qr)
+        qr_toggle.toggled.connect(qr.setVisible)
         status = QLabel()
         status.setWordWrap(True)
         status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(status)
-        advanced = QGroupBox('本機預覽／已設定的固定網址')
+        advanced_toggle = QPushButton('進階連線設定 ▾')
+        advanced_toggle.setCheckable(True)
+        layout.addWidget(advanced_toggle)
+        advanced = QGroupBox('固定網址（需先設定連線服務）')
+        advanced.setVisible(False)
+        advanced_toggle.toggled.connect(advanced.setVisible)
         advanced_layout = QVBoxLayout(advanced)
         origin = QLineEdit(self.store.setting("origin"))
         origin.setPlaceholderText('已設定轉送的固定 HTTPS 網址；本機預覽可留空')
@@ -500,7 +531,8 @@ class RemoteController(QObject):
         row = QHBoxLayout()
         toggle = QPushButton("停止連線" if self.server.http.isListening() else "啟用連線")
         pair = QPushButton("產生配對碼")
-        preview = QPushButton("本機預覽")
+        preview = QPushButton("電腦預覽")
+        preview.setToolTip('只在這台電腦檢查手機版面；手機請使用上方網址或 QR Code。')
         for button in (toggle, pair, preview):
             row.addWidget(button)
         advanced_layout.addLayout(row)
@@ -524,6 +556,18 @@ class RemoteController(QObject):
             origin.setEnabled(not listening)
             phone_url.setText(self.server.public_origin if ready else '')
             copy_url.setEnabled(bool(phone_url.text()))
+            qr_toggle.setEnabled(bool(phone_url.text()))
+            if phone_url.text() and qr.property('origin') != phone_url.text():
+                from .remote_qr import phone_qr_image
+                from PySide6.QtGui import QPixmap
+                try:
+                    qr.setPixmap(QPixmap.fromImage(phone_qr_image(phone_url.text())))
+                    qr.setProperty('origin', phone_url.text())
+                except (ImportError, AttributeError, ValueError):
+                    qr.setText('QR Code 無法顯示，請複製上方網址。')
+            elif not phone_url.text():
+                qr.clear()
+                qr.setProperty('origin', '')
             status.setText(self.tunnel.message if self.temporary_connection or not listening
                            else ('固定網址連線已啟用' if self.server.public_origin else '僅限本機預覽，手機尚不能連線'))
             if self.temporary_connection and self.server.pair_code:
@@ -576,7 +620,10 @@ class RemoteController(QObject):
         self.tunnel.changed.connect(refresh)
         refresh()
         dialog.install_chrome()
-        dialog.exec()
-        self.server.changed.disconnect(refresh)
-        self.tunnel.changed.disconnect(refresh)
-        self.settings_dialog = None
+        def cleanup():
+            self.server.changed.disconnect(refresh)
+            self.tunnel.changed.disconnect(refresh)
+            self.settings_dialog = None
+            dialog.deleteLater()
+        dialog.finished.connect(cleanup)
+        dialog.show()

@@ -8,6 +8,16 @@ from trading_helper.news_cards import NewsCards
 
 
 class NewsCardTests(unittest.TestCase):
+    def test_published_result_and_per_event_details_are_source_text_only(self):
+        view = NewsCards()
+        self.addCleanup(view.close)
+        now = datetime.now(UTC)
+        view.set_entries([(now, '來源', 'CPI', 'CPI', True, '已公布', '公布值：2.4%　預期：2.5%'),
+                          (now, '來源', 'GDP', 'GDP', True, '已公布', '')], '')
+        self.assertIn('公布值：2.4%', view.text())
+        view.anchorClicked.emit(QUrl('detail:1'))
+        self.assertIn('來源尚未提供公布結果', view.text())
+        self.assertEqual(view.toolTip(), '')
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

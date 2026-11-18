@@ -189,6 +189,7 @@ class MobileServer(QObject):
         self.pending = set()
         self.public_origin = ""
         self.state = {}
+        self.ruler_image = b''
         self.revision = 0
         self.lease = ""
         self.lease_until = 0.0
@@ -344,6 +345,12 @@ class MobileServer(QObject):
                 self._respond(sock, 200 if authenticated else 401,
                               b'{"paired":true}' if authenticated else b'{"paired":false}',
                               "application/json")
+                return
+            if method == 'GET' and re.fullmatch(r'/api/ruler.png\?v=[a-f0-9]{16}', path) and not length:
+                authenticated = self.store.authenticate(self._cookie_token(headers.get('cookie', '')), origin)
+                self._respond(sock, 200 if authenticated else 401,
+                              self.ruler_image if authenticated else b'Pairing required',
+                              'image/png' if authenticated else 'text/plain')
                 return
             if method == "POST" and path == "/api/pair":
                 if (headers.get("origin") != origin

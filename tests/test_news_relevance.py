@@ -20,6 +20,7 @@ class NewsRelevanceTests(unittest.TestCase):
                       '美國CPI高於預期', '日本首相呼籲央行不要快速升息',
                       '加拿大央行總裁突然宣布辭職　明年6月生效',
                       '以色列宣布對伊朗發動空襲', '中東停火協議正式生效',
+                      '美軍襲擊武裝組織基地', '伊朗稱運油輪遇襲',
                       '美國大型銀行倒閉　央行緊急介入',
                       'Trump announces new tariffs', 'Fed chair resigns unexpectedly',
                       'FOMC statement', 'Interest rate decision',

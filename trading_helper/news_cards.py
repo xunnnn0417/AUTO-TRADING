@@ -56,12 +56,19 @@ class NewsCards(QTextBrowser):
         time_style = 'font-size:11px;' if self.compact else ''
         spacer = ('<p style="margin:0;font-size:6px"><br></p>' if self.compact
                   else '<p style="margin:0;height:14px"><br></p>')
-        for index, (when, source, original, shown, scheduled, state) in enumerate(self._rows):
+        for index, row in enumerate(self._rows):
+            when, source, original, shown, scheduled, state = row[:6]
+            content = row[6] if len(row) > 6 else ''
             assessment = assess_headline(original, scheduled=scheduled)
             color = assessment.color
             identity = (when, source, original)
             opened = identity in self._open_details
-            details = (f'<p style="margin:6px 0 0;color:#aaa5b7">原文：{escape(original)}</p>' if opened else '')
+            details = (f'<p style="margin:6px 0 0;color:#aaa5b7">原文：{escape(original)}'
+                       + (f'<br>內容：{escape(content)}' if content else
+                          '<br>來源尚未提供公布結果。' if scheduled and state == '已公布' else '')
+                       + '</p>') if opened else ''
+            result = (f'<p style="margin:4px 0;color:#edc779;font-size:11px">{escape(content)}</p>'
+                      if content and scheduled and state == '已公布' else '')
             # Full source title is retained; no invented AI summary or direction.
             cards.append(
                 f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
@@ -69,7 +76,7 @@ class NewsCards(QTextBrowser):
                 f'<td width="{time_width}" valign="top"><span style="color:#eeedf3;{time_style}">{when.astimezone(TAIPEI):%m/%d}</span>'
                 f'<br><span style="color:#aaa5b7;{time_style}">{when.astimezone(TAIPEI):%H:%M}<br>{escape(state)}</span></td>'
                 f'<td valign="top"><p style="margin:0;color:{color};font-size:11px">{escape(assessment.category)}</p>'
-                f'<p style="margin:{title_margin}px 0;font-size:{headline_size}px">{highlight_title(shown, color)}</p>'
+                f'<p style="margin:{title_margin}px 0;font-size:{headline_size}px">{highlight_title(shown, color)}</p>{result}'
                 f'<span style="color:#aaa5b7;font-size:11px">{escape(source)}</span>　'
                 f'<a href="detail:{index}" style="color:#aaa5b7;text-decoration:none;font-size:11px">'
                 f'{"收起原文" if opened else "查看原文"}</a>{details}</td></tr></table>{spacer}')

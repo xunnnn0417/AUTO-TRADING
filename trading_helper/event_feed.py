@@ -26,6 +26,7 @@ class EventFeedView(QWidget):
         self.test_alert_button.setToolTip('模擬一則消息，測試提醒與紅點；不會操作交易。')
         self.test_alert_button.clicked.connect(self.test_announcement)
         header.addWidget(self.test_alert_button)
+        self.test_alert_button.hide()
         self.refresh_button = QToolButton()
         self.refresh_button.setIcon(themed_icon('refresh'))
         self.refresh_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -113,7 +114,7 @@ class EventFeedView(QWidget):
     def update_events(self):
         self.bind()
         now = datetime.now(UTC)
-        upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
+        upcoming = sorted(event for event in self.calendar.events if now < event.when <= now + timedelta(days=45))
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         busy = self.calendar._busy
         self.refresh_button.setEnabled(not busy)
@@ -121,19 +122,19 @@ class EventFeedView(QWidget):
         def title(original):
             shown = self.calendar.title(original)
             return shown + ('〔機翻〕' if original in self.calendar.translations else '')
-        self.event_rows.set_entries([(e.when, e.currency+' · '+e.source, e.title, title(e.title), True, '即將發生')
+        self.event_rows.set_entries([(e.when, e.currency+' · '+e.source, e.title, title(e.title), True, '即將發生', e.details)
                                     for e in upcoming[:20]], '目前載入資料沒有近期排程；請查看來源更新狀態。')
-        recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title)
+        recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title, e.details)
                   for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
-        recent += [(n.when, n.source, n.title) for n in self.calendar.news
+        recent += [(n.when, n.source, n.title, n.details) for n in self.calendar.news
                    if now-timedelta(hours=72) <= n.when <= now
-                   and (n.source == '測試消息' or n.source.startswith('香港電台') or relevant_announcement(n.title))]
+                   and relevant_announcement(n.title)]
         recent = sorted(set(recent), reverse=True)[:24]
-        self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source, '已公布')
-                                   for when, source, original in recent],
+        self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source, '已公布', details)
+                                   for when, source, original, details in recent],
                                   '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
-        self.news_rows.setToolTip('\n\n'.join(original for _, _, original in recent))
-        self.event_rows.setToolTip('\n'.join(item.title for item in upcoming[:20]))
+        self.news_rows.setToolTip('')
+        self.event_rows.setToolTip('')
         details = ('\n'.join(self.calendar.status_lines(now)) +
             '\n台北時間；英文可能機翻，消息可能延遲或漏報。')
         self.event_status.setText('ⓘ 來源狀態 · ' + ('部分待更新' if stale else '已更新'))

@@ -272,7 +272,7 @@ class SidePanelTests(unittest.TestCase):
         panel.update_events()
         self.assertNotIn('10 天', panel.events_button.text())
         self.assertIn('下一場', panel.events_button.text())
-        self.assertIn('金價受美元走強影響', panel.news_rows.text())
+        self.assertNotIn('金價受美元走強影響', panel.news_rows.text())
         self.assertIn('GDP', panel.event_rows.text())
 
     def test_event_sources_start_collapsed_each_time_and_only_two_tabs_remain(self):
@@ -304,6 +304,23 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel.collapsed)
         QTest.keyClicks(self.w.parameter_inputs['daily_pnl'], '123')
         self.assertEqual(self.w.parameter_inputs['daily_pnl'].text(), '123')
+
+    def test_native_window_presses_on_news_controls_do_not_dismiss_flyout(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        self.qtapp.processEvents()
+        for widget in (panel.event_view.refresh_button, panel.event_status, panel.news_rows.viewport()):
+            global_point = QPointF(widget.mapToGlobal(widget.rect().center()))
+            event = QMouseEvent(QEvent.MouseButtonPress, QPointF(widget.rect().center()),
+                                global_point, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            panel.eventFilter(panel.event_flyout.windowHandle(), event)
+            self.assertTrue(panel.event_flyout.isVisible())
+        with patch.object(panel.calendar, 'refresh') as refresh:
+            QTest.mouseClick(panel.event_view.refresh_button, Qt.LeftButton)
+            refresh.assert_called_once_with(force=True)
+        QTest.mouseClick(panel.event_status, Qt.LeftButton)
+        self.assertTrue(panel.source_details.isVisible())
+        self.assertTrue(panel.event_flyout.isVisible())
 
     def test_news_switching_to_another_app_dismisses_without_hiding_sidebar(self):
         panel = self.open_panel()

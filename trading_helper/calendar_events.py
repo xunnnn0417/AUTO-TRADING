@@ -9,7 +9,8 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from datetime import datetime, timedelta, timezone
 from math import ceil
 from pathlib import Path
@@ -52,6 +53,7 @@ class CalendarEvent:
     currency: str
     title: str
     source: str = 'Forex Factory'
+    details: str = field(default='', compare=False)
 
 
 @dataclass(frozen=True, order=True)
@@ -59,6 +61,32 @@ class Announcement:
     when: datetime
     source: str
     title: str
+    details: str = field(default='', compare=False)
+
+
+def source_text(raw):
+    """Bounded source text only; discard markup, scripts and embedded media."""
+    class PlainText(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts, self.hidden = [], 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {'script', 'style'}:
+                self.hidden += 1
+            elif tag in {'br', 'p', 'div', 'li'}:
+                self.parts.append(' ')
+
+        def handle_endtag(self, tag):
+            if tag in {'script', 'style'}:
+                self.hidden = max(0, self.hidden-1)
+
+        def handle_data(self, data):
+            if not self.hidden:
+                self.parts.append(data)
+    parser = PlainText()
+    parser.feed(str(raw or '')[:16000])
+    return re.sub(r'\s+', ' ', ''.join(parser.parts)).strip()[:1600]
 
 
 def aware_date(raw: str) -> datetime:
@@ -105,7 +133,8 @@ def parse_announcements(raw: bytes, source: str) -> list[Announcement]:
         try:
             when = parsedate_to_datetime(row.findtext('pubDate') or '')
             if when.tzinfo is not None:
-                items.add(Announcement(when.astimezone(UTC), source, title))
+                items.add(Announcement(when.astimezone(UTC), source, title,
+                                      source_text(row.findtext('description'))))
         except (ValueError, TypeError, OverflowError):
             continue
     return sorted(items, reverse=True)
@@ -129,7 +158,13 @@ def parse_events(rows: object) -> list[CalendarEvent]:
             continue
         if when.tzinfo is None:
             continue
-        events.add(CalendarEvent(when.astimezone(UTC), currency.upper(), title))
+        values = []
+        for key, label in (('actual', '公布值'), ('forecast', '預期'), ('previous', '前值')):
+            value = row.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                values.append(label+'：'+source_text(value)[:100])
+        events.add(CalendarEvent(when.astimezone(UTC), currency.upper(), title,
+                                 details=' '.join(values)))
     return sorted(events)
 
 
@@ -241,10 +276,12 @@ class EconomicCalendar(QObject):
                         self.source_times[key] = aware_date(payload['times'][key])
                         if key in self._events_by_source:
                             self._events_by_source[key] = [CalendarEvent(aware_date(row['when']),
-                                row['currency'], str(row['title'])[:180], SOURCE_NAMES[key]) for row in rows]
+                                row['currency'], str(row['title'])[:180], SOURCE_NAMES[key],
+                                source_text(row.get('details', ''))) for row in rows]
                         else:
                             self._news_by_source[key] = [Announcement(aware_date(row['when']),
-                                SOURCE_NAMES[key], str(row['title'])[:300]) for row in rows]
+                                SOURCE_NAMES[key], str(row['title'])[:300],
+                                source_text(row.get('details', ''))) for row in rows]
                 else:
                     self._events_by_source['ff'] = parse_events(payload['rows'])
                     self.source_times['ff'] = aware_date(payload['fetched_at'])
@@ -531,7 +568,7 @@ class EconomicCalendar(QObject):
                 'translation_day': self._translation_day,
                 'translation_chars': self._translation_chars,
                 'times': {key: value.isoformat() for key, value in self.source_times.items()},
-                'sources': {key: [dict(when=e.when.isoformat(), title=e.title,
+                'sources': {key: [dict(when=e.when.isoformat(), title=e.title, details=e.details,
                                     **({'currency': e.currency} if isinstance(e, CalendarEvent) else {})) for e in rows]
                             for key, rows in {**self._events_by_source, **self._news_by_source}.items()
                             if key in self.source_times},
