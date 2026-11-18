@@ -917,10 +917,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _resume_mobile_remote(self):
         # No listener or credentials are created until explicitly enabled.
+        self._mobile_resume_timer.stop()
         if (self.store.path.parent / "mobile-remote.sqlite3").exists():
             try:
                 controller = self._mobile_remote()
                 if controller.store.setting("enabled") == "1":
+                    if controller.server.http.isListening():
+                        return
+                    if controller._busy():
+                        self._mobile_resume_timer.start(500)
+                        return
                     controller.resume()
             except ValueError:
                 self.log("手機連線未能恢復，請在管理選單重新開啟。")

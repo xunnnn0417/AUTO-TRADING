@@ -434,6 +434,34 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.w.close()
         self.assertFalse(self.w._mobile_resume_timer.isActive())
 
+    def test_startup_busy_defers_mobile_resume_until_idle(self):
+        self.controller.stop()
+        self.controller.store.set_setting('enabled', '1')
+        self.w._active_tasks = 1
+        with patch.object(self.controller, 'resume') as resume:
+            self.w._resume_mobile_remote()
+            resume.assert_not_called()
+            self.assertTrue(self.w._mobile_resume_timer.isActive())
+            self.w._active_tasks = 0
+            self.w._resume_mobile_remote()
+            resume.assert_called_once()
+        self.assertFalse(self.w._mobile_resume_timer.isActive())
+
+    def test_startup_resume_does_not_replace_existing_listener(self):
+        self.controller.store.set_setting('enabled', '1')
+        with patch.object(self.controller, 'resume') as resume:
+            self.w._resume_mobile_remote()
+        resume.assert_not_called()
+
+    def test_disabled_connection_cancels_a_pending_startup_retry(self):
+        self.controller.stop()
+        self.controller.store.set_setting('enabled', '0')
+        self.w._mobile_resume_timer.start(500)
+        with patch.object(self.controller, 'resume') as resume:
+            self.w._resume_mobile_remote()
+        resume.assert_not_called()
+        self.assertFalse(self.w._mobile_resume_timer.isActive())
+
     def test_fixed_origin_resumes_after_restart_without_discarding_grants(self):
         with patch('trading_helper.remote_tunnel.tailscale_path', return_value='tailscale.exe'), \
              patch.object(self.controller.fixed_tunnel, 'start'):
