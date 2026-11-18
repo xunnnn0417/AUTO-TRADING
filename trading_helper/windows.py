@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Callable
 
+from .uia_inventory import fresh_controls, INPUT_TYPES
+
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
@@ -583,9 +585,9 @@ class WindowController:
             # instrument, fields and button; never reuse a previous order.
             controls=(
                 _controls if _controls is not None
-                else Desktop(backend="uia").window(
+                else fresh_controls(Desktop(backend="uia").window(
                     handle=focused.handle
-                ).descendants()
+                ), INPUT_TYPES)
             )
         except Exception as exc:
             raise AutomationError(
@@ -626,14 +628,14 @@ class WindowController:
                 refreshed=True
                 time.sleep(0.12)
                 try:
-                    fresh_controls=Desktop(backend="uia").window(
+                    refreshed_controls=fresh_controls(Desktop(backend="uia").window(
                         handle=focused.handle
-                    ).descendants()
+                    ), INPUT_TYPES)
                 except Exception as exc:
                     raise AutomationError(
                         f"{key} UIA 重讀失敗，已停止：{exc}"
                     ) from exc
-                types=index_controls(fresh_controls)
+                types=index_controls(refreshed_controls)
                 unique={}
                 for ctrl,rect in types["Edit"]+types["Spinner"]:
                     a,b,c,d=rect

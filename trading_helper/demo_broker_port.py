@@ -18,6 +18,7 @@ from .auto_entry import DemoAccount, Position
 from .test_mode import effective_test_symbol
 from .phase_timing_report import timed_call
 from .windows import AutomationError, WindowInfo, WindowController
+from .uia_inventory import fresh_controls
 
 
 class DemoUiBrokerPort:
@@ -160,10 +161,9 @@ class DemoUiBrokerPort:
         matches=[
             item for item in controls
             if str(item.element_info.control_type)=="Text"
-            and item.is_visible() and
-            str(item.element_info.automation_id).endswith(
+            and str(item.element_info.automation_id).endswith(
                 "SymbolQuickInfoTemplates__TextBlock_Description_AId"
-            ) and str(item.window_text()).strip()==wanted
+            ) and item.is_visible() and str(item.window_text()).strip()==wanted
             and item.rectangle().left>=1400
             and 145<=item.rectangle().top<=280
         ]
@@ -335,10 +335,9 @@ class DemoUiBrokerPort:
                         control_type="Text",
                     )
                 )
-                visible=[e for e in elements if e.is_visible()]
-                number_nodes=[e for e in visible if
+                number_nodes=[e for e in elements if
                     str(e.element_info.automation_id)==
-                    "CTraderAccountNumberTextBlock_AId"]
+                    "CTraderAccountNumberTextBlock_AId" and e.is_visible()]
                 if len(number_nodes)>1:
                     raise AutomationError(
                         "cTrader 帳號欄位不唯一，無法安全辨識帳戶。"
@@ -877,9 +876,9 @@ class DemoUiBrokerPort:
             self.automation.emergency.guard()
             self.automation.windows.focus(_window)
             try:
-                _controls = Desktop(backend="uia").window(
+                _controls = fresh_controls(Desktop(backend="uia").window(
                     handle=_window.handle
-                ).descendants()
+                ))
             except Exception as exc:
                 raise AutomationError("cTrader 表單讀取失敗，未送單。") from exc
             if not isinstance(_controls, list) or not _controls:
@@ -1000,9 +999,9 @@ class DemoUiBrokerPort:
             try:
                 from pywinauto import Desktop
                 timestamps["uia_inventory_started"]=time.perf_counter()
-                controls=Desktop(backend="uia").window(
+                controls=fresh_controls(Desktop(backend="uia").window(
                     handle=win.handle
-                ).descendants()
+                ))
             except Exception as exc:
                 raise AutomationError(
                     "cTrader 送單前無法安全讀取原生 UIA 清單；未送單。"
@@ -1063,9 +1062,9 @@ class DemoUiBrokerPort:
                 raise AutomationError("cTrader 尚未人工校準真正的 Place order。")
             buttons=[b for b in controls
                 if str(b.element_info.control_type)=="Button"
-                and b.is_visible() and b.is_enabled() and
-                str(b.element_info.automation_id)==
+                and str(b.element_info.automation_id)==
                 "Orders_Create_MarketOrderPlaceButtonControl__Button_NewOrdersWindowPlaceOrder_AId"
+                and b.is_visible() and b.is_enabled()
             ]
             if len(buttons)!=1:
                 raise AutomationError("cTrader 找不到唯一 Place order 按鈕。")
