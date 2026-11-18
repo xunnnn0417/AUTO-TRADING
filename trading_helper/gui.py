@@ -5366,6 +5366,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         first_checked = first.isChecked()
         if fast is not None:
             fast.setEnabled(False)
+        if sync is not None:
+            if not first_checked and sync.isChecked():
+                was_blocked = sync.blockSignals(True)
+                sync.setChecked(False)
+                sync.blockSignals(was_blocked)
+            sync.setEnabled(first_checked)
         sync_checked = bool(sync is not None and sync.isChecked())
         third.setToolTip(
             "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
@@ -5423,7 +5429,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     ) -> None:
         """Store future opt-in only; never run broker/TV workflows."""
         if enabled:
-            if (checkbox is self.auto_draw_tv_after_entry
+            if (checkbox in (self.auto_sync_sl_tp_after_entry, self.auto_draw_tv_after_entry)
                     and not self.auto_entry_on_fill_both.isChecked()):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(False)

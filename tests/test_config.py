@@ -102,7 +102,7 @@ class ProfileStoreTests(unittest.TestCase):
         for key in all_auto:
             self.assertFalse(new_scheme["ui"][key],key)
             self.assertTrue(old_scheme["ui"][key],key)
-        self.assertTrue(new_scheme["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertFalse(new_scheme["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertTrue(new_scheme["ui"]["auto_fast_pair"])
         self.assertTrue(old_scheme["ui"]["auto_sync_sl_tp_after_entry"])
         store_again=ProfileStore(existing,self.path)
@@ -110,7 +110,7 @@ class ProfileStoreTests(unittest.TestCase):
         for key in all_auto:
             self.assertFalse(store_again.load_profile("新方案")["ui"][key])
             self.assertTrue(store_again.load_profile(old_name)["ui"][key])
-        self.assertTrue(store_again.load_profile("新方案")["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertFalse(store_again.load_profile("新方案")["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertTrue(store_again.load_profile(old_name)["ui"]["auto_sync_sl_tp_after_entry"])
         # The sheet columns and credentials carry across, but the URL/GID do not.
         self.assertEqual(new_scheme["sheet"]["spreadsheet_url"], "")

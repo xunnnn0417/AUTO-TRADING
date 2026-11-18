@@ -39,7 +39,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.w.deleteLater()
         self.qtapp.processEvents()
 
-    def test_sync_is_visible_and_on_by_default_while_quick_control_is_hidden(self):
+    def test_sync_is_visible_but_disabled_until_auto_entry_while_quick_control_is_hidden(self):
         self.w.switch_workspace("交易")
         for name in (
             "auto_entry_on_fill_both",
@@ -55,8 +55,8 @@ class CompactFollowUpControlsTests(unittest.TestCase):
                 checkbox,QEvent(QEvent.ToolTip)
             ))
         sync=self.w.auto_sync_sl_tp_after_entry
-        self.assertTrue(sync.isChecked())
-        self.assertTrue(sync.isEnabled())
+        self.assertFalse(sync.isChecked())
+        self.assertFalse(sync.isEnabled())
         self.assertIn(sync,self.w.centralWidget().findChildren(QCheckBox))
         self.assertFalse(self.w.auto_fast_pair.isVisible())
         self.assertEqual(self.w._hover_help._timer.interval(),2000)
@@ -123,6 +123,7 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             self.w.auto_entry_on_fill_both.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
         self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertTrue(self.w.auto_draw_tv_after_entry.isEnabled())
         self.w.auto_sync_sl_tp_after_entry.setChecked(False)
@@ -180,6 +181,26 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertTrue(fill_task.call_args.args[2])
         self.assertFalse(fill_task.call_args.kwargs.get("sync_sl_tp", False))
 
+    def test_disabling_auto_entry_clears_and_disables_sync_without_extra_prompt(self):
+        with patch.object(gui.QMessageBox,'question',return_value=QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
+        with patch.object(gui.QMessageBox,'question') as prompt:
+            self.w.auto_entry_on_fill_both.setChecked(False)
+            prompt.assert_not_called()
+        sync=self.w.auto_sync_sl_tp_after_entry
+        self.assertFalse(sync.isChecked())
+        self.assertFalse(sync.isEnabled())
+        self.assertFalse(self.w.profiles.load_profile()['ui']['auto_sync_sl_tp_after_entry'])
+        with patch.object(gui.QMessageBox,'question') as prompt:
+            sync.setChecked(True)
+            prompt.assert_not_called()
+        self.assertFalse(sync.isChecked())
+        with patch.object(gui.QMessageBox,'question',return_value=QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+        self.assertTrue(sync.isEnabled())
+        self.assertFalse(sync.isChecked())
+
     def test_new_scheme_starts_disabled_and_old_scheme_remembers(self):
         original=self.w.profiles.active_name
         with patch("trading_helper.gui.QMessageBox.question",
@@ -200,8 +221,9 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.assertFalse(getattr(self.w,key).isChecked(),key)
             self.assertFalse(self.w.profiles.load_profile()["ui"][key])
             self.assertTrue(self.w.profiles.load_profile(original)["ui"][key])
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
-        self.assertTrue(self.w.profiles.load_profile()["ui"]["auto_sync_sl_tp_after_entry"])
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isEnabled())
+        self.assertFalse(self.w.profiles.load_profile()["ui"]["auto_sync_sl_tp_after_entry"])
         self.assertTrue(self.w.profiles.load_profile(original)["ui"]["auto_sync_sl_tp_after_entry"])
         with patch("trading_helper.gui.QMessageBox.question") as dialogs, \
              patch.object(self.w, "read_sheet",return_value=None):
@@ -516,35 +538,41 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertFalse(tv.isVisible())
         self.assertFalse(edit.isVisible())
 
-    def test_sync_preference_stays_on_and_auto_entry_disarms_tv_only(self):
+    def test_auto_entry_disarms_sync_and_tv_until_explicitly_enabled_again(self):
         first=self.w.auto_entry_on_fill_both
         third=self.w.auto_draw_tv_after_entry
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             first.setChecked(True)
             self.w.auto_fast_pair.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
             third.setChecked(True)
         self.assertTrue(first.isChecked())
         self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertTrue(third.isChecked())
         first.setChecked(False)
         self.assertFalse(first.isChecked())
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isEnabled())
         self.assertTrue(self.w.auto_fast_pair.isChecked())
         self.assertFalse(third.isEnabled())
         self.assertFalse(any(self.w.store.data["ui"].get(k)
                              for k in (
                                  "auto_entry_on_fill_both",
+                                 "auto_sync_sl_tp_after_entry",
                                  "auto_draw_tv_after_entry"
                              )))
         with patch("trading_helper.gui.QMessageBox.question") as prompt:
             third.setChecked(True)
             prompt.assert_not_called()
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
         self.assertFalse(third.isChecked())
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
             first.setChecked(True)
+            self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isEnabled())
+            self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
             third.setChecked(True)
         self.assertTrue(first.isChecked())
         self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
@@ -563,9 +591,10 @@ class CompactFollowUpControlsTests(unittest.TestCase):
             self.w._apply_profile_ui()
             prompt.assert_not_called()
         self.assertFalse(self.w.auto_entry_on_fill_both.isChecked())
-        self.assertTrue(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isEnabled())
         self.assertFalse(self.w.auto_draw_tv_after_entry.isChecked())
-        self.assertTrue(ui["auto_sync_sl_tp_after_entry"])
+        self.assertFalse(ui["auto_sync_sl_tp_after_entry"])
         self.assertFalse(ui["auto_draw_tv_after_entry"])
         ui.update({
             "auto_entry_on_fill_both":True,

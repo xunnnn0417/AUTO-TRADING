@@ -306,6 +306,19 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.controller.tick()
         self.assertEqual(self.controller.server.state["parameters"]["daily_pnl"]["raw"], "-12")
 
+    def test_auto_entry_off_clears_sync_and_phone_cannot_reenable_it(self):
+        with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes):
+            self.w.auto_entry_on_fill_both.setChecked(True)
+            self.w.auto_sync_sl_tp_after_entry.setChecked(True)
+        self.w.auto_entry_on_fill_both.setChecked(False)
+        self.assertEqual(self.controller.snapshot()['options']['auto_sync'],
+                         {'checked':False,'enabled':False})
+        with patch.object(gui.QMessageBox,'question') as prompt:
+            self.command('option',{'key':'auto_sync','checked':True})
+            prompt.assert_not_called()
+        self.assertEqual(self.replies[-1]['type'],'rejected')
+        self.assertFalse(self.w.auto_sync_sl_tp_after_entry.isChecked())
+
     def test_local_edit_between_publish_and_mobile_draft_cannot_be_overwritten(self):
         self.controller.tick()
         request = dict(id=secrets.token_hex(12), action="draft", args={"internal_balance": "49000"},
