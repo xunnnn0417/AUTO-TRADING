@@ -199,6 +199,8 @@ class DemoUiBrokerPort:
     def _bound(self, platform, role):
         profile=self.automation.config["platforms"][platform]
         pattern=profile["window_title"][role]
+        account=profile.get("account_number",{}).get(role,"")
+        account_options={"expected_account":account} if account else {}
         if (platform in ("cTrader", "GooeyTrade")
                 and isinstance(self.automation.windows, WindowController)):
             # Production entrypoints all share WindowController's
@@ -206,7 +208,11 @@ class DemoUiBrokerPort:
             # shape to preserve offline compatibility without OS windows.
             return profile,self.automation.windows.find_calibrated_main(
                 pattern,profile.get("points",{}).get("lot_input",{}),
-                platform=platform,
+                platform=platform,**account_options,
+            )
+        if "MT5" in platform.upper() and isinstance(self.automation.windows, WindowController):
+            return profile,self.automation.windows.find_broker_main(
+                pattern,platform=platform,**account_options,
             )
         window=self.automation.windows.find(pattern)
         if "MT5" not in platform.upper() and isinstance(window, WindowInfo):
@@ -745,6 +751,12 @@ class DemoUiBrokerPort:
 
     def _form_window(self, platform,role, *, allow_absent=False):
         profile,main=self._bound(platform,role)
+        filled=getattr(self.automation,"_last_verified_fills",{})
+        identity=filled.get((platform,role),{}).get("main_window") if isinstance(filled,dict) else None
+        if identity is not None and isinstance(self.automation.windows, WindowController):
+            current=(main.handle,self.automation.windows._window_pid(main.handle))
+            if current!=identity:
+                raise AutomationError("填入後平台視窗已更換，請重新填入並核對；未送單。")
         if "MT5" not in platform.upper():
             return profile,main
         point=profile.get("points",{}).get("lot_input")
@@ -1217,15 +1229,20 @@ class DemoUiBrokerPort:
         self.automation.windows.double_click(
             win,points["position_order_row"]
         )
-        try:
-            modify=self.automation.windows.wait_for_active_window_change(
-                win,timeout=3.0
+        if isinstance(self.automation.windows, WindowController):
+            modify=self.automation.windows.wait_for_broker_modify(
+                win,pos.platform,points["position_sl_input"],timeout=3.0
             )
-        except AutomationError:
-            modify=self.automation.windows.wait_for_window_matching_point_size(
-                points["position_sl_input"],timeout=3.0,
-                exclude_handles={win.handle},
-            )
+        else:
+            try:
+                modify=self.automation.windows.wait_for_active_window_change(
+                    win,timeout=3.0
+                )
+            except AutomationError:
+                modify=self.automation.windows.wait_for_window_matching_point_size(
+                    points["position_sl_input"],timeout=3.0,
+                    exclude_handles={win.handle},
+                )
         for key,value in (
             ("position_sl_input",sl),("position_tp_input",tp)
         ):

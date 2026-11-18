@@ -219,6 +219,22 @@ class FillGuardTests(unittest.TestCase):
         self.assertFalse(w._fill_task_lock.acquire(timeout=0.02) is False)
         w._fill_task_lock.release()
 
+    def test_broker_worker_opens_a_scoped_window_binding_session(self):
+        w=self.w
+        completed=threading.Event()
+        observed=[]
+        def task():
+            observed.append(w.windows._broker_session.get())
+            completed.set()
+        with patch('trading_helper.mouse_guard.PhysicalMouseGuard'):
+            w._start('填入場內',task,hide_during=False)
+            self.assertTrue(completed.wait(timeout=2))
+            self.assertTrue(w._fill_task_lock.acquire(timeout=2))
+            w._fill_task_lock.release()
+        self.assertEqual(len(observed),1)
+        self.assertIsInstance(observed[0],dict)
+        self.assertIsNone(w.windows._broker_session.get())
+
     def test_tighter_sl_confirmation_controls_both_platform_orders(self):
         self.calibrated()
         w = self.w

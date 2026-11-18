@@ -82,10 +82,13 @@ class CTraderWindowChoiceTests(unittest.TestCase):
         with self.assertRaisesRegex(AutomationError, "主交易視窗有"):
             self.port._bound("cTrader", "external")
 
-    def test_mt5_still_uses_original_direct_lookup(self):
-        self.windows.find = lambda _pattern: self.main
+    def test_mt5_resolves_bound_terminal_instead_of_first_window(self):
+        other = make_window(303, "222222 - Broker-B - [XAUUSD,H1]", 1938, 1038)
+        terminal = make_window(404, "111111 - Broker-A - [XAUUSD,H1]", 1938, 1038)
+        self.config["platforms"]["MT5"]["window_title"]["internal"] = r"111111.*Broker-A"
+        self.windows.list_windows = lambda: [other, terminal]
         _, found = self.port._bound("MT5", "internal")
-        self.assertEqual(found, self.main)
+        self.assertEqual(found, terminal)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,7 @@ class VerifiedModifyCleanupTests(unittest.TestCase):
         self.port._bound=lambda *args:({"points":points},WindowInfo(1,"MT5",0,0,800,600))
         self.automation._normalize_numeric_input=lambda raw,value:D(raw)
         self.windows.wait_for_active_window_change.return_value=self.window
+        self.windows.wait_for_broker_modify.return_value=self.window
         self.windows.read_edit_value.side_effect=[str(target_sl),str(target_tp)]
         self.port.set_position_sl_tp(self.pos,target_sl,target_tp)
         self.windows.click.assert_called_once_with(self.window,points["position_modify_confirm"])

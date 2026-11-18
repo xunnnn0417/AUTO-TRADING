@@ -532,6 +532,17 @@ def _window_title_pattern(platform: str, title: str) -> str:
     return re.escape(title)
 
 
+def _bound_broker_main(app, platform: str, role: str) -> WindowInfo:
+    """Use the saved role/account for read-only calibration and inspection."""
+    profile = app.store.data["platforms"][platform]
+    pattern = profile.get("window_title", {}).get(role, "")
+    if isinstance(app.windows, WindowController):
+        account = profile.get("account_number", {}).get(role, "")
+        options = {"expected_account": account} if account else {}
+        return app.windows.find_broker_main(pattern, platform=platform, **options)
+    return app.windows.find(pattern)
+
+
 class UiSignals(QObject):
     log = Signal(str)
     status = Signal(str)
@@ -3011,6 +3022,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if hide_during:
                 self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
+            def run_task() -> None:
+                if broker_operation and isinstance(self.windows, WindowController):
+                    with self.windows.broker_window_session():
+                        task()
+                else:
+                    task()
             try:
                 mouse_tasks = is_fill or name in (
                     "繪製 TradingView", "同步場外止盈止損", "同步到場外"
@@ -3023,11 +3040,11 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                                 "滑鼠保護中：暫停實體滑鼠輸入，"
                                 "程式仍可操作；按 Esc 緊急停止。"
                             )
-                            task()
+                            run_task()
                     finally:
                         self.log("滑鼠保護已解除。")
                 else:
-                    task()
+                    run_task()
                 if not self.emergency.event.is_set():
                     self.signals.status.emit("就緒")
             except EmergencyStopped:
@@ -5057,10 +5074,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         platform, {}
                     ).get("points",{}).get("account_number")
                     account_number = None
-                    if platform == "cTrader" and point:
+                    if platform == "cTrader" and isinstance(self.windows, WindowController):
+                        try:
+                            account_number = self.windows.read_ctrader_account(target)
+                        except AutomationError:
+                            if point:
+                                account_number = self.windows.read_account_number(target,point)
+                    elif platform == "cTrader" and point:
                         account_number = self.windows.read_account_number(target,point)
+                    if account_number is not None:
                         account_message = f"；帳號已核對：{account_number}"
                     elif platform == "cTrader":
+                        previous_account = self.store.data["platforms"][platform].get(
+                            "account_number", {}
+                        ).get(role, "")
+                        if previous_account:
+                            raise AutomationError("無法確認新視窗帳號，原綁定已保留。")
                         account_message = "；帳號位置未校準"
                     self._save_bound_window(platform,role,pattern)
                     if account_number is not None:
@@ -6326,7 +6355,17 @@ class CalibrationDialog(ThemedDialog):
         ).strip()
         if not pattern:
             raise AutomationError("尚未設定此平台的視窗標題")
+        if (key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
+                and isinstance(self.app.windows, WindowController)):
+            return _bound_broker_main(self.app, self.platform, role)
         matches = self.app.windows.find_all(pattern)
+        if (self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
+                and isinstance(self.app.windows, WindowController)):
+            main = _bound_broker_main(self.app, self.platform, role)
+            pid = process_id_for_window(main.handle)
+            if not pid:
+                raise AutomationError("無法確認已綁定的平台程序；沒有顯示框線。")
+            matches = [win for win in matches if process_id_for_window(win.handle) == pid]
         if key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}:
             main = select_broker_main_window(
                 matches, self.app.windows.list_windows(),
@@ -6518,11 +6557,11 @@ class CalibrationDialog(ThemedDialog):
         try:
             if not str(pattern or "").strip():
                 raise ValueError("尚未綁定此交易平台視窗，請先設定視窗標題")
-            matched = self.app.windows.find(pattern)
+            matched = _bound_broker_main(self.app, self.platform, self._display_role("lot_input"))
             # The configured title regex (e.g. "cTrader") may also match
             # "Modify order or position - cTrader". Scan must bind to the
             # unique *main terminal* first, then select modal by same PID.
-            target = select_broker_main_window(
+            target = matched if isinstance(self.app.windows, WindowController) else select_broker_main_window(
                 matched,self.app.windows.list_windows(),self.platform,
                 process_id_for_window, binding_pattern=pattern,
             )
@@ -6898,7 +6937,7 @@ class CalibrationDialog(ThemedDialog):
         role = self._display_role("lot_input")
         pattern = profile.get("window_title", {}).get(role, "")
         try:
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, self.platform, role)
             target_pid = process_id_for_window(target.handle)
             if not target_pid:
                 raise ValueError("無法確認目標視窗所屬程序")
@@ -6965,7 +7004,7 @@ class CalibrationDialog(ThemedDialog):
         profile = self.app.store.data["platforms"][self.platform]
         pattern = profile.get("window_title", {}).get(role, "")
         try:
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, self.platform, role)
         except Exception as exc:
             QMessageBox.warning(self, "UIA 欄位檢測", f"找不到目標視窗：{exc}")
             return
@@ -7331,7 +7370,7 @@ class PostEntryCalibrationDialog(ThemedDialog):
         try:
             if not pattern:
                 raise ValueError("尚未設定 cTrader 視窗標題")
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, "cTrader", role)
             hwnd = int(target.handle)
             if not process_id_for_window(hwnd):
                 raise ValueError("無法確認 cTrader 視窗程序")

@@ -418,6 +418,46 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         self.assertIn("未更改",box.findChild(QLabel,"windowBindingResultLabel").text())
         box.close()
 
+    def test_ctrader_rebinding_reads_native_account_for_both_roles(self):
+        for role in ('internal','external'):
+            platform_box=self.w.internal_platform if role=='internal' else self.w.external_platform
+            platform_box.setCurrentText('cTrader')
+            self.w.bind_role_window(role)
+            panel=self.w._window_binding_dialog
+            with patch.object(self.w.windows,'foreground_top_level_window',
+                              return_value=SimpleNamespace(handle=901,title='cTrader 5.10.22')), \
+                 patch.object(self.w.windows,'read_ctrader_account',return_value='222222') as native, \
+                 patch.object(gui,'process_id_for_window',return_value=123), \
+                 patch.object(gui.time,'sleep',return_value=None), \
+                 patch.object(self.w,'_start',side_effect=lambda name,task,**kw:task()):
+                panel.findChild(QPushButton,'windowBindingChangeButton').click()
+                self.qtapp.processEvents()
+            native.assert_called_once()
+            self.assertEqual(self.w.store.data['platforms']['cTrader']['account_number'][role],'222222')
+            self.assertIn('已更改完成',panel.findChild(QLabel,'windowBindingResultLabel').text())
+            panel.close()
+
+    def test_unreadable_new_ctrader_account_preserves_existing_binding(self):
+        self.w.internal_platform.setCurrentText('cTrader')
+        self.w._save_bound_window('cTrader','internal','old-cTrader-binding')
+        self.w._save_bound_account('cTrader','internal','111111')
+        self.w.store.data['platforms']['cTrader']['points'].pop('account_number',None)
+        self.w.bind_role_window('internal')
+        panel=self.w._window_binding_dialog
+        with patch.object(self.w.windows,'foreground_top_level_window',
+                          return_value=SimpleNamespace(handle=901,title='cTrader 5.10.22')), \
+             patch.object(self.w.windows,'read_ctrader_account',side_effect=gui.AutomationError('unreadable')), \
+             patch.object(gui,'process_id_for_window',return_value=123), \
+             patch.object(gui.time,'sleep',return_value=None), \
+             patch.object(self.w,'_start',side_effect=lambda name,task,**kw:task()):
+            panel.findChild(QPushButton,'windowBindingChangeButton').click()
+            self.qtapp.processEvents()
+        profile=self.w.store.data['platforms']['cTrader']
+        self.assertEqual(profile['window_title']['internal'],'old-cTrader-binding')
+        self.assertEqual(profile['account_number']['internal'],'111111')
+        self.assertIn('原綁定已保留',panel.findChild(QLabel,'windowBindingResultLabel').text())
+        panel.close()
+
     def test_confirmed_fast_pair_preference_persists_without_repeat_prompt(self):
         with patch("trading_helper.gui.QMessageBox.question",
                    return_value=QMessageBox.Yes):
