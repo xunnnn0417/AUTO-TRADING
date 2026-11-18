@@ -33,6 +33,19 @@ class SidePanelTests(unittest.TestCase):
         self.qtapp.processEvents()
         return self.w.side_panel
 
+    def test_late_window_move_is_redocked_after_geometry_events_settle(self):
+        panel = self.open_panel()
+        area = panel._screen.availableGeometry()
+        for collapsed in (False, True, False):
+            panel.set_collapsed(collapsed)
+            # Reproduce the screenshot: an expanded panel retains the parked
+            # handle's x-coordinate after a late native geometry update.
+            panel.move(area.right()-27, panel.y())
+            self.qtapp.processEvents()
+            self.qtapp.processEvents()
+            self.assertLessEqual(panel.frameGeometry().right(), area.right())
+            self.assertGreaterEqual(panel.frameGeometry().left(), area.left())
+
     def test_shared_drafts_placeholders_and_enter_use_existing_update_flow(self):
         panel = self.open_panel()
         self.w.instruction = sample()

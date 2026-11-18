@@ -503,7 +503,8 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.controller.server.arm_pairing()
         self.controller.server.pair_until = time.monotonic()+62
         self.controller.server.changed.emit()
-        self.assertIn('01:02', code.text())
+        countdown = dialog.findChild(QLabel, 'phonePairCountdown')
+        self.assertIn('01:02', countdown.text())
         self.controller.server.pair_until = 0
         self.controller.server.changed.emit()
         self.assertIn('已過期', code.text())
@@ -520,6 +521,28 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.controller.active['errors'].append('來源失敗')
         self.controller._finish()
         self.assertTrue(self.controller.store.latest(self.device)['result']['popup_required'])
+
+    def test_phone_settings_show_fixed_setup_and_only_offer_revoke_after_selection(self):
+        from PySide6.QtWidgets import QListWidget, QPushButton, QGroupBox
+        self.controller.show_settings()
+        self.qtapp.processEvents()
+        dialog = self.controller.settings_dialog
+        self.addCleanup(dialog.close)
+        labels = [b.text() for b in dialog.findChildren(QPushButton)]
+        for removed in ('關閉', '其他連線設定 ▾', '設定固定入口 ▾', '啟用手機連線（臨時網址）'):
+            self.assertNotIn(removed, labels)
+        group = dialog.findChild(QGroupBox, 'phoneFixedSetup')
+        self.assertIsNotNone(group)
+        self.assertTrue(group.isVisible())
+        revoke = dialog.findChild(QPushButton, 'phoneRevoke')
+        devices = dialog.findChild(QListWidget)
+        self.assertFalse(revoke.isVisible())
+        devices.setCurrentRow(0)
+        self.assertTrue(revoke.isVisible())
+        self.controller.server.changed.emit()
+        self.assertTrue(revoke.isVisible())
+        devices.clearSelection()
+        self.assertFalse(revoke.isVisible())
 
     def test_mobile_news_bounds_dates_and_omits_price_recaps(self):
         from datetime import datetime, timedelta, timezone

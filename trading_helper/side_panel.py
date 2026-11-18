@@ -101,6 +101,9 @@ class SideQuickPanel(QWidget):
         self._hold_timer.setInterval(180)
         self._hold_timer.timeout.connect(self._begin_handle_drag)
         self._screen = app.screen() or QGuiApplication.primaryScreen()
+        self._dock_timer = QTimer(self)
+        self._dock_timer.setSingleShot(True)
+        self._dock_timer.timeout.connect(self.dock)
         self._y = int(app.store.data['ui'].get('side_panel_y', 70))
         self.setStyleSheet('''
             QWidget { color: #ece8f1; font-family: "Segoe UI", "Microsoft JhengHei UI"; font-size: 11px; }
@@ -541,6 +544,25 @@ class SideQuickPanel(QWidget):
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
         self._position_event_flyout()
         self._position_warning_flyout()
+
+    def _schedule_dock(self):
+        # Windows can deliver the native resize/move after set_collapsed has
+        # already parked the old size. Re-evaluate once that geometry settles.
+        timer = getattr(self, '_dock_timer', None)
+        if timer is not None and self.isVisible() and not self._handle_dragging:
+            timer.start(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_dock()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._schedule_dock()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_dock()
 
     def _begin_handle_drag(self):
         if self._handle_pointer is None or not self.collapsed:

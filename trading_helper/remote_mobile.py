@@ -6,14 +6,14 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="stylesheet" href="/app.css"><title>對沖小幫手</title></head><body>
 <main><header><div><strong>對沖小幫手</strong><small id="stageLabel">手機控制</small></div>
-<button id="connect" class="subtle">連線</button></header>
+<div class="header-actions"><span id="health" class="health" role="status" aria-live="polite">尚未連線</span><button id="connect" class="subtle">連線</button></div></header>
 <section id="installCard" class="install-card" hidden><div class="row"><h2>下次直接從手機桌面開啟</h2><button id="installDismiss" class="subtle" aria-label="稍後加入桌面">×</button></div>
 <p id="installHint">建議先加入桌面，再從圖示開啟並完成配對。</p><button id="install" class="subtle">加入手機桌面</button></section>
 <section id="pairing" hidden><h2>第一次配對</h2><p>在電腦的「手機連線」取得配對碼。配對後會記住這支手機。</p>
 <label>裝置名稱<input id="deviceName" maxlength="32" value="我的手機" autocomplete="off"></label>
 <label>配對碼<input id="pairCode" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code"></label>
 <button id="pair" class="primary">配對並連線</button></section>
-<div id="health" class="health" role="status">尚未連線</div>
+<p id="healthDetail" class="muted" hidden></p>
 <nav class="workspace-tabs" aria-label="手機頁面"><button id="tradeTab" aria-selected="true">交易操作</button><button id="newsTab" aria-selected="false">消息</button></nav>
 <section id="trade"><div class="selects"><label>方案<select id="profile" data-control></select></label>
 <label>階段<select id="stage" data-control></select></label></div>
@@ -36,6 +36,7 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <p id="nextEvent" class="muted">尚未取得事件</p><h3>即將發生</h3><div id="newsUpcoming"></div><h3>已公布／新聞</h3><div id="newsPublished"></div></section>
 <p id="operation" class="muted" aria-live="polite"></p><button id="stop" hidden>停止本次操作</button>
 </main>
+<button id="backTop" aria-label="回到消息頂端" title="回到頂端" hidden>↑</button>
 <dialog id="confirmation"><h2 id="confirmTitle"></h2><p id="confirmText"></p><div id="confirmChecks"></div><div id="confirmButtons" class="buttons"></div></dialog>
 <dialog id="result"><h2 id="resultTitle">操作結果</h2><p id="resultText"></p><button id="resultClose">確定</button></dialog>
 <script src="/app.js" defer></script></body></html>'''
@@ -108,15 +109,15 @@ function render(s){state=s;const ready=connected()&&!working;$("stageLabel").tex
  for(const [key,option]of Object.entries(s.options)){let input=document.querySelector('[data-option="'+key+'"]');if(!input){const label=node("label");input=node("input");input.type="checkbox";input.dataset.option=key;input.onchange=()=>action("option",{key,checked:input.checked});label.append(input,node("span",optionNames[key]||key));$("options").append(label);}input.checked=option.checked;input.disabled=!ready||!option.enabled;}
  drawRuler(s.ruler,s.ruler_revision);const newsKey=JSON.stringify(s.news);if(newsKey!==newsSignature){newsSignature=newsKey;showNews(s.news);}
  showDialog(s.dialog);health();}
-function health(){const online=connected();const text=!online?(connecting?"正在連線…":!$("pairing").hidden?"首次使用或配對已失效，請輸入配對碼":"連線中斷，正在重新連線…"):state?state.health:"正在取得電腦狀態";$("health").textContent=text+(online&&rtt>1000?" · 連線稍慢":"");$("health").classList.toggle("bad",!online||rtt>1000||(state&&state.health==="無法操作"));if(!online)disable();
+function health(){const online=connected();const text=!online?(connecting?"正在連線…":!$("pairing").hidden?"首次使用或配對已失效，請輸入配對碼":"連線中斷，正在重新連線…"):state?state.health:"正在取得電腦狀態";const bad=!online||rtt>1000||!state||state.health!=="正常";$("health").textContent=!online?(connecting?"連線中":"未連線"):!bad?"正常":state&&state.busy?"操作中":"需留意";$("health").title=text;$("health").classList.toggle("bad",bad);$("healthDetail").textContent=text+(online&&rtt>1000?" · 連線稍慢":"");$("healthDetail").hidden=!bad;if(!online)disable();
  if(state){const next=state.news.filter(e=>e.scheduled&&new Date(e.when)>new Date()).sort((a,b)=>new Date(a.when)-new Date(b.when))[0];if(next){const minutes=Math.ceil((new Date(next.when)-Date.now())/60000);$("nextEvent").textContent="還有 "+Math.floor(minutes/1440)+"天 "+Math.floor(minutes%1440/60)+"時 "+minutes%60+"分 · "+next.title;}else $("nextEvent").textContent=state.news_error||"目前沒有可用的即將公布排程";}}
-function retryConnection(){if(reconnectTimer||!$("pairing").hidden||document.hidden)return;$("health").textContent="連線中斷，正在重新連線…";
+function retryConnection(){if(reconnectTimer||!$("pairing").hidden||document.hidden)return;health();
  reconnectTimer=setTimeout(()=>{reconnectTimer=null;connect();},retryDelay);retryDelay=Math.min(10000,retryDelay*2);}
 async function connect(){const attempt=++connectionAttempt;clearTimeout(reconnectTimer);reconnectTimer=null;connecting=true;
- if(socket){socket.onclose=null;socket.onmessage=null;socket.close();socket=null;}disable();$("connect").textContent="重新連線";$("health").textContent="正在連線…";seen=0;
+ if(socket){socket.onclose=null;socket.onmessage=null;socket.close();socket=null;}disable();$("connect").textContent="重新連線";seen=0;health();
  const abort=new AbortController();const timeout=setTimeout(()=>abort.abort(),8000);
  try{const session=await fetch("/api/session",{credentials:"same-origin",cache:"no-store",signal:abort.signal});if(attempt!==connectionAttempt)return;
- if(session.status===401){$("pairing").hidden=false;$("health").textContent="首次使用或配對已失效，請輸入配對碼";connecting=false;return;}if(!session.ok)throw new Error("連線失敗");}
+ if(session.status===401){$("pairing").hidden=false;connecting=false;health();return;}if(!session.ok)throw new Error("連線失敗");}
  catch(error){if(attempt===connectionAttempt){connecting=false;retryConnection();}return;}finally{clearTimeout(timeout);}
  $("pairing").hidden=true;const current=new WebSocket(location.origin.replace(/^http/,"ws")+"/ws");socket=current;
  const handshake=setTimeout(()=>{if(socket===current&&!connected())current.close();},8000);
@@ -130,8 +131,11 @@ $("connect").onclick=connect;$("update").onclick=()=>action("update");$("fill").
 document.querySelectorAll("[data-field]").forEach(e=>{e.oninput=()=>{dirty[e.dataset.field]=e.value;$("draftStatus").textContent="正在同步輸入…";clearTimeout(draftTimer);draftTimer=setTimeout(()=>flush().catch(error=>localNotice(error.message)),200);};e.onkeydown=event=>{if(event.key==="Enter")action("update");};});
 document.querySelectorAll("[data-action]").forEach(b=>b.onclick=()=>action(b.dataset.action));document.querySelectorAll("[data-warning]").forEach(b=>b.onclick=()=>action("warning",{key:b.dataset.warning}));$("newsRefresh").onclick=()=>action("refresh_news");$("stop").onclick=()=>send("stop").catch(e=>localNotice(e.message));
 $("resultClose").onclick=()=>$("result").close();$("confirmation").addEventListener("cancel",event=>event.preventDefault());
-function workspace(news){$("trade").hidden=news;$("newsSection").hidden=!news;$("tradeTab").setAttribute("aria-selected",String(!news));$("newsTab").setAttribute("aria-selected",String(news));}
+function updateBackTop(){$('backTop').hidden=$('newsSection').hidden||window.scrollY<240;}
+function workspace(news){$("trade").hidden=news;$("newsSection").hidden=!news;$("tradeTab").setAttribute("aria-selected",String(!news));$("newsTab").setAttribute("aria-selected",String(news));updateBackTop();}
 $("tradeTab").onclick=()=>workspace(false);$("newsTab").onclick=()=>workspace(true);
+window.addEventListener('scroll',updateBackTop,{passive:true});
+$('backTop').onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!connected())connect();});window.addEventListener("online",()=>{if(!connected())connect();});window.addEventListener("pageshow",e=>{if(e.persisted&&!connected())connect();});
 setInterval(()=>{health();if(connected())socket.send(JSON.stringify({type:"ping",echo:Date.now()}));else if(socket&&!connecting){socket.close();}else if(!connecting)retryConnection();},1500);disable();connect();
 '''
@@ -144,6 +148,8 @@ CSS += '''.options input[type=checkbox],#confirmChecks input[type=checkbox]{appe
 CSS += '.workspace-tabs{display:flex;gap:24px;border-bottom:1px solid #34303d;margin-top:18px}.workspace-tabs button{border:0;border-radius:0;background:transparent;color:#aaa2b7;padding:10px 4px;min-height:42px}.workspace-tabs button[aria-selected=true]{color:#fff;border-bottom:2px solid #a68be8}#newsSection h3{font-size:12px;color:#c1afd9;border-left:2px solid #9b80dc;padding-left:8px;margin-top:22px}article details{margin-top:5px;padding-top:4px}article details p{font-size:12px;color:#beb5cc}article details summary{padding-bottom:2px}'
 
 CSS += '''html{color-scheme:dark;scrollbar-width:thin;scrollbar-color:#514b5a #09090c}body{overflow-wrap:anywhere}.selects{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.row>#update{flex:0 0 74px;min-height:36px;font-size:12px;padding:6px 10px}.row>#fill{flex:1;min-height:44px}.install-card{background:#131218;border:1px solid #34303d;border-radius:10px;padding:12px}.install-card h2{font-size:12px;margin:0}.install-card p{font-size:12px;color:#b8b0c3}.text-button{display:block;margin:12px 0 0;padding:0;min-height:30px;background:transparent;border:0;color:#aaa1b9;font-size:11px}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#09090c}::-webkit-scrollbar-thumb{background:#514b5a;border-radius:6px}'''
+
+CSS += '''header{flex-wrap:wrap}.header-actions{display:flex;align-items:center;gap:8px}.health{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:4px 8px;font-size:11px;white-space:nowrap}.health::before{content:"";width:6px;height:6px;border-radius:50%;background:#69c68c;flex:none}.health.bad::before{background:#e4ac70}.header-actions #connect{min-height:32px;font-size:11px}.row>#update{min-height:44px;align-self:stretch}#backTop{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));width:42px;height:42px;padding:0;background:#24202e;border:1px solid #78688f;border-radius:50%;font-size:23px;line-height:1;box-shadow:0 3px 12px #0008;z-index:3}#healthDetail{margin:8px 0}'''
 
 
 def _icon_png(size):

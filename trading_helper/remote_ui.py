@@ -522,11 +522,11 @@ class RemoteController(QObject):
         self.server.reply(device, dict(type="ack", id=identifier, status="accepted"))
 
     def show_settings(self):
+        import webbrowser
         from .gui import QMessageBox
         from .window_chrome import ThemedDialog
         from .ui_theme import themed_icon
-        from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QListWidget, QVBoxLayout,
-                                      QScrollArea, QWidget, QSizePolicy)
+        from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QListWidget, QVBoxLayout, QScrollArea, QWidget
         from PySide6.QtCore import Qt
         if self.settings_dialog is not None:
             self.settings_dialog.show()
@@ -536,7 +536,7 @@ class RemoteController(QObject):
         dialog = ThemedDialog(self.app)
         self.settings_dialog = dialog
         dialog.setWindowModality(Qt.NonModal)
-        dialog.setWindowTitle("手機連線")
+        dialog.setWindowTitle('手機連線')
         dialog.resize(520, 540)
         root = QVBoxLayout(dialog)
         scroll = QScrollArea()
@@ -548,133 +548,124 @@ class RemoteController(QObject):
         layout.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(body)
         root.addWidget(scroll)
-        note = QLabel("第一次掃碼並輸入配對碼，之後從手機桌面圖示開啟。\n長期使用請設定固定入口；臨時網址重開後會變更。")
+        note = QLabel('首次掃碼並配對；之後從手機桌面圖示直接連線。')
         note.setWordWrap(True)
         layout.addWidget(note)
-        quick = QPushButton('啟用手機連線（臨時網址）')
-        layout.addWidget(quick)
-        phone_url = QLineEdit()
-        phone_url.setReadOnly(True)
-        phone_url.setPlaceholderText('啟用後顯示手機可開啟的網址')
-        layout.addWidget(phone_url)
-        qr_toggle = QPushButton('顯示 QR Code')
-        qr_toggle.setObjectName('phoneQrToggle')
-        qr_toggle.setCheckable(True)
-        layout.addWidget(qr_toggle)
-        qr = QLabel()
-        qr.setAlignment(Qt.AlignCenter)
-        qr.setFixedHeight(220)
-        qr.setStyleSheet('QLabel { background: transparent; border: none; }')
-        qr.setVisible(False)
-        layout.addWidget(qr)
-        def fit():
-            if self.settings_dialog is not dialog:
-                return
-            layout.activate()
-            root.activate()
-            available = dialog.screen().availableGeometry()
-            # Content owns its natural height; the device list never absorbs
-            # the space left by a hidden QR. Scroll only on shorter screens.
-            height = body.sizeHint().height()+root.contentsMargins().top()+root.contentsMargins().bottom()+root.spacing()+close.sizeHint().height()+dialog.title_bar.height()+8
-            dialog.resize(dialog.width(), min(height, available.height()-24))
-            if dialog.frameGeometry().bottom() > available.bottom():
-                dialog.move(dialog.x(), max(available.top(), available.bottom()-dialog.height()))
-
-        def show_qr(visible):
-            qr.setVisible(visible)
-            qr_toggle.setText('收起 QR Code' if visible else '顯示 QR Code')
-            QTimer.singleShot(0, fit)
-        qr_toggle.toggled.connect(show_qr)
+        fixed_group = QGroupBox('固定手機入口')
+        fixed_group.setObjectName('phoneFixedSetup')
+        fixed_layout = QVBoxLayout(fixed_group)
+        guide = QLabel('① 電腦安裝 Tailscale 並登入，完成後可關閉它的視窗。\n② 按「建立固定入口」，依提示允許；手機不用安裝 Tailscale。\nTailscale 需在背景執行，請勿登出或結束其服務。')
+        guide.setWordWrap(True)
+        fixed_layout.addWidget(guide)
+        row = QHBoxLayout()
+        download = QPushButton('安裝與登入')
+        fixed_start = QPushButton('建立固定入口')
+        row.addWidget(download)
+        row.addWidget(fixed_start)
+        fixed_layout.addLayout(row)
+        approval = QPushButton('允許固定入口')
+        approval.hide()
+        fixed_layout.addWidget(approval)
+        stop = QPushButton('停止手機連線')
+        stop.setObjectName('phoneStop')
+        stop.setToolTip('中斷手機連線；不會平倉或撤回已送出的操作。')
+        fixed_layout.addWidget(stop)
+        layout.addWidget(fixed_group)
         status = QLabel()
         status.setWordWrap(True)
         status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(status)
-        fixed_toggle = QPushButton('設定固定入口 ▾')
-        fixed_toggle.setCheckable(True)
-        layout.addWidget(fixed_toggle)
-        fixed_group = QGroupBox('固定入口：不用購買網域')
-        fixed_group.setVisible(False)
-        fixed_layout = QVBoxLayout(fixed_group)
-        fixed_note = QLabel('電腦安裝 Tailscale 並登入一次，再按「建立固定入口」。\n手機不用安裝 Tailscale；首次會要求你同意開啟連線。')
-        fixed_note.setWordWrap(True)
-        fixed_layout.addWidget(fixed_note)
-        fixed_row = QHBoxLayout()
-        download = QPushButton('安裝與登入說明')
-        fixed_start = QPushButton('建立固定入口')
-        fixed_row.addWidget(download)
-        fixed_row.addWidget(fixed_start)
-        fixed_layout.addLayout(fixed_row)
-        approval = QPushButton('允許固定入口')
-        approval.setVisible(False)
-        fixed_layout.addWidget(approval)
-        layout.addWidget(fixed_group)
-        fixed_toggle.toggled.connect(fixed_group.setVisible)
-        fixed_toggle.toggled.connect(lambda _: QTimer.singleShot(0, fit))
-        advanced_toggle = QPushButton('其他連線設定 ▾')
-        advanced_toggle.setCheckable(True)
-        layout.addWidget(advanced_toggle)
-        advanced = QGroupBox('固定網址（需先設定連線服務）')
-        advanced.setVisible(False)
-        advanced_toggle.toggled.connect(advanced.setVisible)
-        advanced_toggle.toggled.connect(lambda _: QTimer.singleShot(0, fit))
-        advanced_layout = QVBoxLayout(advanced)
-        origin = QLineEdit(self.store.setting("origin"))
-        origin.setPlaceholderText('已設定轉送的固定 HTTPS 網址；本機預覽可留空')
-        advanced_layout.addWidget(origin)
-        row = QHBoxLayout()
-        toggle = QPushButton("停止連線" if self.server.http.isListening() else "啟用連線")
-        preview = QPushButton("電腦預覽")
-        preview.setToolTip('只在這台電腦檢查手機版面；手機請使用上方網址或 QR Code。')
-        for button in (toggle, preview):
-            row.addWidget(button)
-        advanced_layout.addLayout(row)
-        layout.addWidget(advanced)
+        waiting = QLabel('第一次啟用若無法建立安全連線，請等幾分鐘再開啟；網址生效可能需約 10 分鐘。')
+        waiting.setWordWrap(True)
+        layout.addWidget(waiting)
+        phone_url = QLineEdit()
+        phone_url.setReadOnly(True)
+        phone_url.setPlaceholderText('建立入口後顯示固定手機網址')
+        layout.addWidget(phone_url)
+        qr_toggle = QPushButton('顯示 QR Code ▾')
+        qr_toggle.setObjectName('phoneQrToggle')
+        qr_toggle.setCheckable(True)
+        qr_toggle.setStyleSheet('QPushButton:checked { background: #292531; border-color: #74658f; }')
+        layout.addWidget(qr_toggle)
+        qr = QLabel()
+        qr.setAlignment(Qt.AlignCenter)
+        qr.setFixedHeight(220)
+        qr.hide()
+        layout.addWidget(qr)
         code_row = QHBoxLayout()
         code = QLabel()
         code.setObjectName('phonePairCode')
         code.setWordWrap(True)
+        countdown_text = QLabel()
+        countdown_text.setObjectName('phonePairCountdown')
+        countdown_text.setMinimumWidth(42)
+        countdown_text.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         pair = QPushButton()
         pair.setIcon(themed_icon('refresh'))
         pair.setFixedSize(32, 32)
         pair.setToolTip('重新產生配對碼')
         pair.setAccessibleName('重新產生配對碼')
         code_row.addWidget(code, 1)
+        code_row.addWidget(countdown_text)
         code_row.addWidget(pair)
         layout.addLayout(code_row)
         layout.addWidget(QLabel('已配對裝置'))
         devices = QListWidget()
         devices.setFixedHeight(80)
-        devices.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(devices)
-        revoke = QPushButton("移除選取的手機")
+        revoke = QPushButton('移除選取的手機')
+        revoke.setObjectName('phoneRevoke')
+        revoke.hide()
         layout.addWidget(revoke)
-        close = QPushButton("關閉")
-        root.addWidget(close)
+
+        def fit():
+            if self.settings_dialog is not dialog:
+                return
+            layout.activate()
+            root.activate()
+            area = dialog.screen().availableGeometry()
+            height = body.sizeHint().height()+root.contentsMargins().top()+root.contentsMargins().bottom()+dialog.title_bar.height()+8
+            dialog.resize(dialog.width(), min(height, area.height()-24))
+            if dialog.frameGeometry().bottom() > area.bottom():
+                dialog.move(dialog.x(), max(area.top(), area.bottom()-dialog.height()+1))
+
+        def show_qr(visible):
+            qr.setVisible(visible)
+            qr_toggle.setText('收起 QR Code ▴' if visible else '顯示 QR Code ▾')
+            QTimer.singleShot(0, fit)
+        qr_toggle.toggled.connect(show_qr)
 
         def update_code():
             remaining = max(0, math.ceil(self.server.pair_until-time.monotonic()))
-            if self.server.pair_code and self.server.pair_attempts > 5:
-                code.setText('配對碼已停用，請按 ↻ 重新產生。')
+            countdown_text.setText('')
+            if not self.server.http.isListening():
+                code.setText('建立入口後，可在此產生一次性配對碼。')
+            elif self.server.pair_code and self.server.pair_attempts > 5:
+                code.setText('配對碼已停用，請按右側重整。')
             elif self.server.pair_code and remaining:
-                code.setText(f'配對碼：{self.server.pair_code}　{remaining//60:02d}:{remaining%60:02d}')
+                code.setText('配對碼：'+self.server.pair_code)
+                countdown_text.setText(f'{remaining//60:02d}:{remaining%60:02d}')
             elif self.server.pair_code:
-                code.setText('配對碼已過期，請按 ↻ 重新產生。')
+                code.setText('配對碼已過期，請按右側重整。')
             else:
-                code.setText('新手機請按右側重整取得配對碼；已配對手機可直接連線。')
+                code.setText('新手機請按右側重整；已配對手機可直接連線。')
+
+        def selection_changed():
+            revoke.setVisible(bool(devices.selectedItems()))
+            QTimer.singleShot(0, fit)
+        devices.itemSelectionChanged.connect(selection_changed)
 
         def refresh():
             listening = self.server.http.isListening()
-            toggle.setText("停止連線" if listening else "啟用連線")
-            ready = listening and (not self.temporary_connection or self.tunnel.connected) and (not self.fixed_tunnel.running or self.fixed_tunnel.connected)
-            quick.setText('停止手機連線' if listening else '啟用手機連線（臨時網址）')
-            fixed_start.setEnabled(not self.fixed_tunnel.running)
+            ready = listening and bool(self.server.public_origin) and (not self.fixed_tunnel.running or self.fixed_tunnel.connected)
+            fixed_start.setEnabled(not listening)
+            fixed_start.setText('固定入口已啟用' if ready else '正在建立入口…' if self.fixed_tunnel.running else '建立固定入口')
+            stop.setEnabled(listening)
             approval.setVisible(bool(self.fixed_tunnel.approval_url))
             pair.setEnabled(ready)
-            preview.setEnabled(listening)
-            origin.setEnabled(not listening)
             phone_url.setText(self.server.public_origin if ready else '')
-            qr_toggle.setEnabled(bool(phone_url.text()))
-            if phone_url.text() and qr.property('origin') != phone_url.text():
+            qr_toggle.setEnabled(ready)
+            if ready and qr.property('origin') != phone_url.text():
                 from .remote_qr import phone_qr_image
                 from PySide6.QtGui import QPixmap
                 try:
@@ -682,71 +673,50 @@ class RemoteController(QObject):
                     qr.setProperty('origin', phone_url.text())
                 except (ImportError, AttributeError, ValueError):
                     qr.setText('QR Code 無法顯示，請在手機開啟上方網址。')
-            elif not phone_url.text():
+            elif not ready:
                 qr.clear()
                 qr.setProperty('origin', '')
-            status.setText(('已準備好，請用手機掃碼。' + ('（臨時網址）' if self.temporary_connection else '（固定網址）')) if ready and self.server.public_origin else
-                           (self.fixed_tunnel.message if self.fixed_tunnel.running or self.store.setting('provider') == 'tailscale' else self.tunnel.message if not listening or self.temporary_connection else '僅限電腦預覽，手機尚不能連線。'))
+            status.setText('固定入口已建立，請用手機掃碼。' if ready else self.fixed_tunnel.message)
             update_code()
-            selected = devices.currentItem().data(Qt.UserRole) if devices.currentItem() else None
-            devices.clear()
-            for device in self.store.devices():
-                devices.addItem(device["name"])
-                item = devices.item(devices.count()-1)
-                item.setData(Qt.UserRole, device['id'])
-                if device['id'] == selected:
-                    devices.setCurrentItem(item)
-        def toggle_server():
-            try:
-                if self.server.http.isListening():
-                    self.stop()
-                    self.store.set_setting("enabled", "0")
-                else:
-                    self.start(origin.text().strip())
-                    self.store.set_setting('provider', 'manual')
-                    self.store.set_setting("origin", self.server.public_origin)
-                    self.store.set_setting("enabled", "1")
-                refresh()
-            except ValueError as exc:
-                QMessageBox.warning(dialog, "手機連線", str(exc))
-        def arm():
-            self.server.arm_pairing()
-            update_code()
-        def toggle_temporary():
-            try:
-                if self.server.http.isListening():
-                    self.stop()
-                    self.store.set_setting('enabled', '0')
-                else:
-                    self.start_temporary()
-                refresh()
-            except ValueError as exc:
-                QMessageBox.warning(dialog, '手機連線', str(exc))
-        def remove():
-            entries = self.store.devices()
-            index = devices.currentRow()
-            if 0 <= index < len(entries):
-                self.store.revoke(entries[index]["id"])
-                self.server.publish(self.snapshot())
-                refresh()
-        def open_preview():
-            import webbrowser
-            webbrowser.open(self.server.local_origin)
+            selected = {item.data(Qt.UserRole) for item in devices.selectedItems()}
+            with QSignalBlocker(devices):
+                devices.clear()
+                for device in self.store.devices():
+                    devices.addItem(device['name'])
+                    item = devices.item(devices.count()-1)
+                    item.setData(Qt.UserRole, device['id'])
+                    item.setSelected(device['id'] in selected)
+            selection_changed()
+
         def start_fixed():
             try:
                 self.start_fixed()
             except ValueError as exc:
                 QMessageBox.warning(dialog, '固定手機入口', str(exc))
             refresh()
-        toggle.clicked.connect(toggle_server)
-        quick.clicked.connect(toggle_temporary)
-        download.clicked.connect(lambda: __import__('webbrowser').open('https://tailscale.com/download/windows'))
-        approval.clicked.connect(lambda: __import__('webbrowser').open(self.fixed_tunnel.approval_url) if self.fixed_tunnel.approval_url else None)
+
+        def stop_connection():
+            self.stop()
+            self.store.set_setting('enabled', '0')
+            refresh()
+
+        def arm():
+            self.server.arm_pairing()
+            update_code()
+
+        def remove():
+            selected = devices.selectedItems()
+            if selected:
+                self.store.revoke(selected[0].data(Qt.UserRole))
+                self.server.publish(self.snapshot())
+                refresh()
+
+        download.clicked.connect(lambda: webbrowser.open('https://tailscale.com/download/windows'))
+        approval.clicked.connect(lambda: webbrowser.open(self.fixed_tunnel.approval_url) if self.fixed_tunnel.approval_url else None)
         fixed_start.clicked.connect(start_fixed)
+        stop.clicked.connect(stop_connection)
         pair.clicked.connect(arm)
         revoke.clicked.connect(remove)
-        preview.clicked.connect(open_preview)
-        close.clicked.connect(dialog.accept)
         self.server.changed.connect(refresh)
         self.tunnel.changed.connect(refresh)
         self.fixed_tunnel.changed.connect(refresh)
@@ -754,7 +724,6 @@ class RemoteController(QObject):
         countdown.setInterval(1000)
         countdown.timeout.connect(update_code)
         countdown.start()
-        refresh()
         dialog.install_chrome()
         def cleanup():
             self.server.changed.disconnect(refresh)
@@ -764,5 +733,6 @@ class RemoteController(QObject):
             self.settings_dialog = None
             dialog.deleteLater()
         dialog.finished.connect(cleanup)
+        refresh()
         dialog.show()
         QTimer.singleShot(0, fit)
