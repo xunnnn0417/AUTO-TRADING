@@ -3,10 +3,12 @@
 HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101015"><meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="stylesheet" href="/app.css"><title>對沖小幫手</title></head><body>
 <main><header><div><strong>對沖小幫手</strong><small id="stageLabel">手機控制</small></div>
 <button id="connect" class="subtle">連線</button></header>
+<section id="installCard" class="install-card" hidden><div class="row"><h2>下次直接從手機桌面開啟</h2><button id="installDismiss" class="subtle" aria-label="稍後加入桌面">×</button></div>
+<p id="installHint">建議先加入桌面，再從圖示開啟並完成配對。</p><button id="install" class="subtle">加入手機桌面</button></section>
 <section id="pairing" hidden><h2>第一次配對</h2><p>在電腦的「手機連線」取得配對碼。配對後會記住這支手機。</p>
 <label>裝置名稱<input id="deviceName" maxlength="32" value="我的手機" autocomplete="off"></label>
 <label>配對碼<input id="pairCode" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code"></label>
@@ -29,6 +31,7 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <button data-action="view_sl_tp" data-control>查看止盈／損</button><button data-action="sync" data-control>同步場外 SL／TP</button>
 <label>場內進場點位<input data-field="internal_entry_price" inputmode="decimal" autocomplete="off" data-control></label></div>
 <div id="options" class="options"></div></details></section>
+<button id="installHelp" class="text-button">加入手機桌面說明</button>
 <section id="newsSection" hidden><div class="row"><h2>消息</h2><button id="newsRefresh" class="subtle" data-control>重新整理</button></div>
 <p id="nextEvent" class="muted">尚未取得事件</p><h3>即將發生</h3><div id="newsUpcoming"></div><h3>已公布／新聞</h3><div id="newsPublished"></div></section>
 <p id="operation" class="muted" aria-live="polite"></p><button id="stop" hidden>停止本次操作</button>
@@ -42,6 +45,28 @@ CSS = '''*{box-sizing:border-box}body{margin:0;background:#09090c;color:#e9e7ef;
 JS = r'''"use strict";
 const $=id=>document.getElementById(id);
 let socket=null,state=null,revision=0,lease="",seen=0,rtt=0,reconnectTimer=null,connectionAttempt=0,retryDelay=1000,connecting=false,dirty={},draftTimer=null,draftInFlight=null,pending=new Map(),working=false,lastDialog="",newsSignature="",rulerSignature="";
+let installPrompt=null;
+const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const temporaryHost=()=>location.hostname.endsWith('.trycloudflare.com');
+function installCard(){
+ let dismissed=false;try{dismissed=localStorage.getItem('installDismissed')==='1';}catch(error){}
+ $('installCard').hidden=standalone()||dismissed;
+ $('installHelp').hidden=standalone();
+ $('installHint').textContent=temporaryHost()?'目前是臨時網址，重開電腦連線後可能失效。固定入口設定好後，再加入桌面。':'建議先加入桌面，再從圖示開啟並配對，之後可直接連線。';
+ $('install').textContent=installPrompt?'加入手機桌面':'查看加入方式';
+}
+async function installApp(){
+ if(temporaryHost()){localNotice('目前是臨時網址，重開連線後可能失效。請先在電腦設定固定入口，再加入手機桌面。','先設定固定入口');return;}
+ if(installPrompt){const prompt=installPrompt;installPrompt=null;try{await prompt.prompt();await prompt.userChoice;installCard();return;}catch(error){installCard();}}
+ const ios=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+ localNotice(ios?'在 Safari 開啟此頁，按「分享」→「加入主畫面」。\n之後從桌面圖示開啟並完成一次配對。':'開啟瀏覽器選單，選「安裝應用程式」或「加入主畫面」。\n之後從桌面圖示開啟並完成一次配對。','加入手機桌面');
+}
+window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event;installCard();});
+window.addEventListener('appinstalled',()=>{installPrompt=null;installCard();});
+$('install').onclick=installApp;$('installHelp').onclick=installApp;
+$('installDismiss').onclick=()=>{try{localStorage.setItem('installDismissed','1');}catch(error){}$('installCard').hidden=true;};
+if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).catch(()=>{});
+installCard();
 const optionNames={auto_entry:"自動進場",auto_sync:"同步 SL／TP","rule:C2":"來回打","rule:B6":"最小交易日目標","rule:E14":"固定場內止盈"};
 function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
 function localNotice(message,title="提醒"){ $("resultTitle").textContent=title;$("resultText").textContent=message;if(!$("result").open)$("result").showModal(); }
@@ -118,10 +143,34 @@ CSS += '''.options input[type=checkbox],#confirmChecks input[type=checkbox]{appe
 
 CSS += '.workspace-tabs{display:flex;gap:24px;border-bottom:1px solid #34303d;margin-top:18px}.workspace-tabs button{border:0;border-radius:0;background:transparent;color:#aaa2b7;padding:10px 4px;min-height:42px}.workspace-tabs button[aria-selected=true]{color:#fff;border-bottom:2px solid #a68be8}#newsSection h3{font-size:12px;color:#c1afd9;border-left:2px solid #9b80dc;padding-left:8px;margin-top:22px}article details{margin-top:5px;padding-top:4px}article details p{font-size:12px;color:#beb5cc}article details summary{padding-bottom:2px}'
 
+CSS += '''html{color-scheme:dark;scrollbar-width:thin;scrollbar-color:#514b5a #09090c}body{overflow-wrap:anywhere}.selects{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.row>#update{flex:0 0 74px;min-height:36px;font-size:12px;padding:6px 10px}.row>#fill{flex:1;min-height:44px}.install-card{background:#131218;border:1px solid #34303d;border-radius:10px;padding:12px}.install-card h2{font-size:12px;margin:0}.install-card p{font-size:12px;color:#b8b0c3}.text-button{display:block;margin:12px 0 0;padding:0;min-height:30px;background:transparent;border:0;color:#aaa1b9;font-size:11px}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#09090c}::-webkit-scrollbar-thumb{background:#514b5a;border-radius:6px}'''
+
+
+def _icon_png(size):
+    from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+    image = QImage(size, size, QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+    painter = QPainter(image)
+    QSvgRenderer(ICON.encode('utf-8')).render(painter)
+    painter.end()
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, 'PNG')
+    return bytes(data)
+
 ASSETS = {
     "/": ("text/html; charset=utf-8", HTML),
     "/app.css": ("text/css; charset=utf-8", CSS),
     "/app.js": ("text/javascript; charset=utf-8", JS),
     "/icon.svg": ("image/svg+xml", ICON),
-    "/manifest.webmanifest": ("application/manifest+json", '{"name":"對沖小幫手","short_name":"對沖小幫手","start_url":"/","display":"standalone","background_color":"#09090c","theme_color":"#101015","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'),
+    "/icon-180.png": ("image/png", _icon_png(180)),
+    "/icon-192.png": ("image/png", _icon_png(192)),
+    "/icon-512.png": ("image/png", _icon_png(512)),
+    # No offline cache or fetch handler: reconnect always reads the live PC;
+    # no trading data, credentials, or pending command is stored in this worker.
+    "/sw.js": ("text/javascript; charset=utf-8", "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));"),
+    "/manifest.webmanifest": ("application/manifest+json", '{"id":"/","name":"對沖小幫手","short_name":"對沖小幫手","start_url":"/","scope":"/","display":"standalone","background_color":"#09090c","theme_color":"#101015","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}'),
 }

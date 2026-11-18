@@ -22,6 +22,12 @@ def cloudflared_path() -> str:
     return shutil.which('cloudflared') or ''
 
 
+def tailscale_path() -> str:
+    root = os.environ.get('ProgramFiles', '')
+    path = Path(root) / 'Tailscale' / 'tailscale.exe'
+    return str(path) if root and path.is_file() else shutil.which('tailscale') or ''
+
+
 class QuickTunnel(QObject):
     ready = Signal(str)
     failed = Signal(str)
@@ -168,3 +174,82 @@ class QuickTunnel(QObject):
             self._folder = None
         self.message = '手機外網連線已停止'
         self.changed.emit()
+
+
+class FixedTunnel(QuickTunnel):
+    """Own only a foreground Funnel session; never reset another service.
+
+    Account login and the provider's first-use permission remain explicit user
+    actions. No token, hostname, installer, or service is manufactured here.
+    """
+    def __init__(self, parent=None, diagnostic_path=None):
+        super().__init__(parent, diagnostic_path)
+        self.approval_url = ''
+        self._available = False
+        self.timeout.setInterval(180_000)
+        self.timeout.timeout.disconnect()
+        self.timeout.timeout.connect(lambda: self._fail('固定入口設定逾時，請完成 Tailscale 登入與允許設定後重試。'))
+        self.message = '固定入口尚未設定'
+
+    def start(self, local_origin):
+        if self.running:
+            raise ValueError('固定入口正在執行，請先停止。')
+        if not re.fullmatch(r'http://127\.0\.0\.1:[1-9][0-9]{0,4}', local_origin):
+            raise ValueError('固定入口只能連到本程式的本機入口。')
+        executable = tailscale_path()
+        if not executable:
+            raise ValueError('請先安裝 Tailscale 並登入，再按「建立固定入口」。不需要購買網域。')
+        self._stopping = self._failed = self.connected = self._available = False
+        self.url = self._buffer = self.approval_url = ''
+        self._tail.clear()
+        self._started_at = time.monotonic()
+        self.message = '正在建立固定入口；首次請完成 Tailscale 的允許設定。'
+        self.process.setProgram(executable)
+        # No --bg / --yes: don't persist exposure or skip provider consent.
+        self.process.setArguments(['funnel', '--https=8443', local_origin])
+        self.timeout.start()
+        self.process.start()
+        self._record('fixed_starting')
+        self.changed.emit()
+
+    def _consume(self, text):
+        if self._stopping or self._failed:
+            return
+        self._buffer += text
+        lines = self._buffer.split('\n')
+        self._buffer = lines.pop()[-4096:]
+        for line in lines:
+            # Provider approval URLs may contain tokens; never log them.
+            approval = re.search(r'https://login\.tailscale\.com/[A-Za-z0-9_/?=&.%~-]+', line)
+            if approval:
+                self.approval_url = approval.group(0)
+                self.message = '請按「允許固定入口」，完成首次設定。'
+                self.changed.emit()
+                continue
+            self._tail.append(line[-800:])
+            if 'Available on the internet:' in line:
+                self._available = True
+            match = re.search(r'https://([a-z0-9-]+\.)+[a-z0-9-]+\.ts\.net:8443/?(?=[\s|]|$)', line)
+            if self._available and match and not self.connected:
+                self.url = match.group(0).rstrip('/')
+                self.connected = True
+                self.timeout.stop()
+                self.approval_url = ''
+                self.message = '固定入口已準備好，請用手機掃碼。'
+                self._record('fixed_connected')
+                self.ready.emit(self.url)
+                self.changed.emit()
+
+    def _error(self, _error):
+        if not self._stopping:
+            self._fail('固定入口無法啟動，請確認已安裝並登入 Tailscale。')
+
+    def stop(self):
+        self.approval_url = ''
+        self._available = False
+        super().stop()
+
+    def _finished(self, exit_code=0, *_):
+        if not self._stopping and not self._failed:
+            self._read()
+            self._fail('固定入口已停止，請確認 Tailscale 登入與允許設定後重試。', exit_code=exit_code)

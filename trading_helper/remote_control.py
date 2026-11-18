@@ -379,7 +379,7 @@ class MobileServer(QObject):
                 return
             if method == "GET" and path in self.assets and not length:
                 content_type, content = self.assets[path]
-                self._respond(sock, 200, content.encode("utf-8"), content_type)
+                self._respond(sock, 200, content.encode("utf-8") if isinstance(content, str) else content, content_type)
                 return
             self._respond(sock, 404, b"Not found")
         except (ValueError, UnicodeError, KeyError, TypeError):
@@ -397,7 +397,7 @@ class MobileServer(QObject):
                    "Referrer-Policy: no-referrer", "Permissions-Policy: camera=(), microphone=(), geolocation=()",
                    "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; "
                    f"connect-src 'self' {websocket_sources}; img-src 'self'; manifest-src 'self'; "
-                   "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"]
+                   "worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"]
         if self.public_origin:
             headers.append("Strict-Transport-Security: max-age=31536000")
         sock.write(("\r\n".join(headers+list(extra))+"\r\n\r\n").encode("ascii")+body)

@@ -151,6 +151,25 @@ class MobileTransportTests(unittest.TestCase):
         self.assertEqual(len(self.store.devices()), 1)
         self.assertEqual(self.server.pair_code, '')
 
+    def test_install_assets_work_without_caching_trades_or_weakening_auth(self):
+        from PySide6.QtGui import QImage
+        status, headers, body = self.http('GET', '/manifest.webmanifest')
+        self.assertEqual(status, 200)
+        manifest = json.loads(body)
+        self.assertEqual(manifest['scope'], '/')
+        for icon in manifest['icons']:
+            status, _, raw = self.http('GET', icon['src'])
+            self.assertEqual(status, 200)
+            image = QImage.fromData(raw)
+            self.assertFalse(image.isNull())
+            self.assertEqual(f'{image.width()}x{image.height()}', icon['sizes'])
+        status, headers, raw = self.http('GET', '/sw.js')
+        self.assertEqual(status, 200)
+        self.assertIn('no-store', dict(headers)['Cache-Control'])
+        self.assertNotIn(b'caches.', raw)
+        self.assertNotIn(b'fetch', raw)
+        self.assertEqual(self.http('GET', '/api/session')[0], 401)
+
     def test_shared_ruler_image_is_not_served_to_unpaired_clients(self):
         self.server.ruler_image = b'<svg xmlns="http://www.w3.org/2000/svg"><text>private</text></svg>'
         path = '/api/ruler.png?v='+'a'*16
@@ -415,6 +434,26 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.w.close()
         self.assertFalse(self.w._mobile_resume_timer.isActive())
 
+    def test_fixed_origin_resumes_after_restart_without_discarding_grants(self):
+        with patch('trading_helper.remote_tunnel.tailscale_path', return_value='tailscale.exe'), \
+             patch.object(self.controller.fixed_tunnel, 'start'):
+            self.controller.start_fixed(port=0)
+        origin = 'https://laptop.example.ts.net:8443'
+        self.controller._fixed_ready(origin)
+        device, token = self.controller.store.pair('固定手機', origin)
+        self.controller.stop()
+        self.assertEqual(self.controller.store.authenticate(token, origin), device)
+        self.assertEqual(self.controller.store.setting('origin'), origin)
+        with patch.object(self.controller, 'start_fixed') as start:
+            self.controller.resume()
+        start.assert_called_once()
+
+    def test_missing_fixed_tool_preserves_working_connection(self):
+        with patch('trading_helper.remote_tunnel.tailscale_path', return_value=''):
+            with self.assertRaisesRegex(ValueError, '安裝 Tailscale'):
+                self.controller.start_fixed(port=0)
+        self.assertTrue(self.controller.server.http.isListening())
+
     def test_backend_failure_is_explained_in_desktop_settings(self):
         with patch.object(self.w, '_mobile_remote', side_effect=ValueError('Windows 加密連線元件無法啟用')), \
              patch.object(gui.QMessageBox, 'warning') as warning:
@@ -437,6 +476,40 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         dialog.close()
         self.qtapp.processEvents()
         self.assertIsNone(self.controller.settings_dialog)
+
+    def test_qr_collapse_restores_height_and_keeps_device_list_compact(self):
+        from PySide6.QtWidgets import QListWidget, QPushButton, QLabel
+        self.controller.show_settings()
+        self.qtapp.processEvents()
+        dialog = self.controller.settings_dialog
+        self.addCleanup(dialog.close)
+        qr = dialog.findChild(QPushButton, 'phoneQrToggle')
+        self.assertIsNotNone(qr)
+        self.controller.server.public_origin = 'https://phone.example.com'
+        self.controller.server.changed.emit()
+        self.qtapp.processEvents()
+        original = dialog.height()
+        devices = dialog.findChild(QListWidget)
+        for _ in range(3):
+            qr.setChecked(True)
+            QTest.qWait(20)
+            self.assertGreater(dialog.height(), original)
+            qr.setChecked(False)
+            QTest.qWait(20)
+            self.assertLessEqual(abs(dialog.height()-original), 2)
+            self.assertLessEqual(devices.height(), 90)
+        self.assertFalse(any(b.text() == '複製手機網址' for b in dialog.findChildren(QPushButton)))
+        code = dialog.findChild(QLabel, 'phonePairCode')
+        self.controller.server.arm_pairing()
+        self.controller.server.pair_until = time.monotonic()+62
+        self.controller.server.changed.emit()
+        self.assertIn('01:02', code.text())
+        self.controller.server.pair_until = 0
+        self.controller.server.changed.emit()
+        self.assertIn('已過期', code.text())
+        self.controller.server.pair_code = ''
+        self.controller.server.changed.emit()
+        self.assertNotIn('已過期', code.text())
 
     def test_routine_success_is_inline_but_failures_still_request_attention(self):
         self.command('refresh_news')

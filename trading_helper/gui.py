@@ -921,7 +921,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             try:
                 controller = self._mobile_remote()
                 if controller.store.setting("enabled") == "1":
-                    controller.start(controller.store.setting("origin"))
+                    controller.resume()
             except ValueError:
                 self.log("手機連線未能恢復，請在管理選單重新開啟。")
 

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
-from trading_helper.remote_tunnel import QuickTunnel
+from trading_helper.remote_tunnel import QuickTunnel, FixedTunnel
 
 
 class QuickTunnelTests(unittest.TestCase):
@@ -115,3 +115,51 @@ class QuickTunnelTests(unittest.TestCase):
             self.start_stub()
             self.tunnel._fail('網路失敗')
             self.assertEqual(self.errors, ['網路失敗'])
+
+
+class FixedTunnelTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.tunnel = FixedTunnel()
+        self.addCleanup(self.tunnel.stop)
+        self.urls = []
+        self.tunnel.ready.connect(self.urls.append)
+
+    def start_stub(self):
+        with patch('trading_helper.remote_tunnel.tailscale_path', return_value='tailscale.exe'), \
+             patch.object(self.tunnel.process, 'start'):
+            self.tunnel.start('http://127.0.0.1:18765')
+
+    def test_fixed_start_never_uses_background_reset_or_skips_consent(self):
+        self.start_stub()
+        self.assertEqual(self.tunnel.process.arguments(), ['funnel', '--https=8443', 'http://127.0.0.1:18765'])
+        self.assertEqual(self.urls, [])
+        self.tunnel._consume('https://laptop.example.ts.net:8443\n')
+        self.assertEqual(self.urls, [])
+        self.tunnel._consume('Available on the internet:\nhttps://laptop.example.ts.net:8443/\n')
+        self.assertEqual(self.urls, ['https://laptop.example.ts.net:8443'])
+        self.assertTrue(self.tunnel.connected)
+
+    def test_permission_url_is_separate_from_phone_url_and_never_logged(self):
+        self.start_stub()
+        self.tunnel._consume('Enable via https://login.tailscale.com/f/SECRET_APPROVAL\n')
+        self.assertTrue(self.tunnel.approval_url.endswith('SECRET_APPROVAL'))
+        self.assertEqual(self.urls, [])
+        self.assertNotIn('SECRET_APPROVAL', str(self.tunnel._tail))
+        self.tunnel.stop()
+        self.assertEqual(self.tunnel.approval_url, '')
+
+    def test_unrelated_host_and_suffix_cannot_become_fixed_origin(self):
+        self.start_stub()
+        self.tunnel._consume('Available on the internet:\nhttps://laptop.example.ts.net:8443.evil.org\nhttps://evil.org:8443\n')
+        self.assertEqual(self.urls, [])
+
+    def test_missing_tool_does_not_download_or_modify_services(self):
+        with patch('trading_helper.remote_tunnel.tailscale_path', return_value=''), \
+             patch.object(self.tunnel.process, 'start') as start:
+            with self.assertRaisesRegex(ValueError, '安裝 Tailscale'):
+                self.tunnel.start('http://127.0.0.1:8765')
+        start.assert_not_called()
