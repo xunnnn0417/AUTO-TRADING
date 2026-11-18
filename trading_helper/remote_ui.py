@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushB
 
 from .remote_control import MobileServer, RemoteStore
 from .remote_mobile import ASSETS
+from .remote_tunnel import QuickTunnel
 
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
@@ -40,6 +41,10 @@ class RemoteController(QObject):
         self.store = RemoteStore(app.store.path.parent / "mobile-remote.sqlite3")
         self.server = MobileServer(self.store, ASSETS, self)
         self.server.command.connect(self._command)
+        self.tunnel = QuickTunnel(self)
+        self.tunnel.ready.connect(self._tunnel_ready)
+        self.tunnel.failed.connect(self._tunnel_failed)
+        self.temporary_connection = False
         self.active = None
         self.dialog_owner = None
         self.dialog_widgets = {}
@@ -71,6 +76,8 @@ class RemoteController(QObject):
         self.tick()
 
     def stop(self):
+        self.tunnel.stop()
+        self.temporary_connection = False
         self.timer.stop()
         self.heartbeat.stop()
         if self.active:
@@ -78,6 +85,33 @@ class RemoteController(QObject):
                               {"message": "手機連線已關閉，請在電腦核對本次結果；不會重送。"})
             self.active = None
         self.server.stop()
+
+    def start_temporary(self, port=8765):
+        if self.active or self._busy():
+            raise ValueError('電腦正在操作，請完成後再開啟手機連線。')
+        self.stop()
+        # Temporary hostnames cannot restore a browser session after restart.
+        # Never persist one as if it were a stable, configured endpoint.
+        self.store.set_setting('enabled', '0')
+        self.temporary_connection = True
+        try:
+            self.start(port=port)
+            self.tunnel.start(self.server.local_origin)
+        except ValueError:
+            self.stop()
+            raise
+
+    def _tunnel_ready(self, origin):
+        from .remote_control import normalized_origin
+        self.server.public_origin = normalized_origin(origin)
+        self.server.arm_pairing()
+        self.server.changed.emit()
+
+    def _tunnel_failed(self, message):
+        self.stop()
+        self.tunnel.message = message
+        self.app.log(message)
+        self.server.changed.emit()
 
     def _heartbeat(self):
         for sock in list(self.server.sockets):
@@ -436,29 +470,41 @@ class RemoteController(QObject):
     def show_settings(self):
         from .gui import QMessageBox
         from .window_chrome import ThemedDialog
-        from PySide6.QtWidgets import QHBoxLayout, QListWidget, QVBoxLayout
+        from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QListWidget, QVBoxLayout
+        from PySide6.QtCore import Qt
         dialog = ThemedDialog(self.app)
         self.settings_dialog = dialog
         dialog.setWindowTitle("手機連線")
-        dialog.resize(460, 390)
+        dialog.resize(520, 540)
         layout = QVBoxLayout(dialog)
-        note = QLabel("電腦執行操作，手機同步數值與結果。\n外網需先設定 HTTPS 轉送；不會自動開放網路。")
+        note = QLabel("手機開啟下方網址，首次輸入配對碼即可連線。\n臨時連線經 Cloudflare 轉送；停止或重開後網址會改變，需重新配對。")
         note.setWordWrap(True)
         layout.addWidget(note)
-        origin = QLineEdit(self.store.setting("origin"))
-        origin.setPlaceholderText("手機使用的 HTTPS 網址（未設定時僅能本機預覽）")
-        layout.addWidget(origin)
+        quick = QPushButton('啟用手機連線（臨時網址）')
+        layout.addWidget(quick)
+        phone_url = QLineEdit()
+        phone_url.setReadOnly(True)
+        phone_url.setPlaceholderText('啟用後顯示手機可開啟的網址')
+        layout.addWidget(phone_url)
+        copy_url = QPushButton('複製手機網址')
+        layout.addWidget(copy_url)
         status = QLabel()
         status.setWordWrap(True)
-        status.setTextInteractionFlags(status.textInteractionFlags())
+        status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(status)
+        advanced = QGroupBox('本機預覽／已設定的固定網址')
+        advanced_layout = QVBoxLayout(advanced)
+        origin = QLineEdit(self.store.setting("origin"))
+        origin.setPlaceholderText('已設定轉送的固定 HTTPS 網址；本機預覽可留空')
+        advanced_layout.addWidget(origin)
         row = QHBoxLayout()
         toggle = QPushButton("停止連線" if self.server.http.isListening() else "啟用連線")
         pair = QPushButton("產生配對碼")
         preview = QPushButton("本機預覽")
         for button in (toggle, pair, preview):
             row.addWidget(button)
-        layout.addLayout(row)
+        advanced_layout.addLayout(row)
+        layout.addWidget(advanced)
         code = QLabel("配對碼五分鐘有效，只使用一次。")
         layout.addWidget(code)
         devices = QListWidget()
@@ -471,10 +517,17 @@ class RemoteController(QObject):
         def refresh():
             listening = self.server.http.isListening()
             toggle.setText("停止連線" if listening else "啟用連線")
-            pair.setEnabled(listening)
+            ready = listening and (not self.temporary_connection or self.tunnel.connected)
+            quick.setText('停止手機連線' if self.temporary_connection else '啟用手機連線（臨時網址）')
+            pair.setEnabled(ready)
             preview.setEnabled(listening)
             origin.setEnabled(not listening)
-            status.setText((self.server.public_origin or self.server.local_origin) if listening else "尚未啟用")
+            phone_url.setText(self.server.public_origin if ready else '')
+            copy_url.setEnabled(bool(phone_url.text()))
+            status.setText(self.tunnel.message if self.temporary_connection or not listening
+                           else ('固定網址連線已啟用' if self.server.public_origin else '僅限本機預覽，手機尚不能連線'))
+            if self.temporary_connection and self.server.pair_code:
+                code.setText('配對碼：'+self.server.pair_code+'　（五分鐘內輸入）')
             devices.clear()
             for device in self.store.devices():
                 devices.addItem(device["name"])
@@ -492,6 +545,16 @@ class RemoteController(QObject):
                 QMessageBox.warning(dialog, "手機連線", str(exc))
         def arm():
             code.setText("配對碼："+self.server.arm_pairing()+"　（五分鐘內輸入）")
+        def toggle_temporary():
+            try:
+                if self.temporary_connection:
+                    self.stop()
+                else:
+                    self.start_temporary()
+                code.setText('配對碼五分鐘有效，只使用一次。')
+                refresh()
+            except ValueError as exc:
+                QMessageBox.warning(dialog, '手機連線', str(exc))
         def remove():
             entries = self.store.devices()
             index = devices.currentRow()
@@ -503,13 +566,17 @@ class RemoteController(QObject):
             import webbrowser
             webbrowser.open(self.server.local_origin)
         toggle.clicked.connect(toggle_server)
+        quick.clicked.connect(toggle_temporary)
+        copy_url.clicked.connect(lambda: QApplication.clipboard().setText(phone_url.text()))
         pair.clicked.connect(arm)
         revoke.clicked.connect(remove)
         preview.clicked.connect(open_preview)
         close.clicked.connect(dialog.accept)
         self.server.changed.connect(refresh)
+        self.tunnel.changed.connect(refresh)
         refresh()
         dialog.install_chrome()
         dialog.exec()
         self.server.changed.disconnect(refresh)
+        self.tunnel.changed.disconnect(refresh)
         self.settings_dialog = None

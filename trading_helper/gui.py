@@ -904,7 +904,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # *after* QWidget.__init__. Reapply the compact size once shown.
         QTimer.singleShot(80, self._dock_top)
         QTimer.singleShot(350, self.read_sheet)
-        QTimer.singleShot(500, self._resume_mobile_remote)
+        self._mobile_resume_timer = QTimer(self)
+        self._mobile_resume_timer.setSingleShot(True)
+        self._mobile_resume_timer.timeout.connect(self._resume_mobile_remote)
+        self._mobile_resume_timer.start(500)
 
     def _mobile_remote(self):
         from .remote_ui import RemoteController
@@ -2158,7 +2161,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._news_alert_timer.stop()
         if self._news_alert_dialog is not None:
             self._news_alert_dialog.deleteLater()
-        dialog = QMessageBox(self)
+        # A Windows-owned tool window can lift its owner in the Z order.
+        # Keep the notification independent; only "查看消息" opens the app.
+        dialog = QMessageBox()
         self._news_alert_dialog = dialog
         dialog.setWindowTitle('重大消息提醒')
         dialog.setMaximumWidth(520)
@@ -5649,6 +5654,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self._update_in_progress and not self._allow_update_exit:
             event.ignore()
             return
+        self._mobile_resume_timer.stop()
         remote = getattr(self, "remote_controller", None)
         if remote is not None:
             remote.stop()

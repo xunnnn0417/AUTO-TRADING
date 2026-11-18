@@ -167,6 +167,25 @@ class NewsAlertUiTests(unittest.TestCase):
         self.assertFalse(self.w.news_badge.isVisible())
         self.assertIsNone(getattr(self.w, '_news_alert_dialog', None))
 
+    def test_news_popup_is_independent_and_only_view_opens_main(self):
+        news = feeds.Announcement(datetime.now(feeds.UTC), 'Fed', 'FOMC statement')
+        self.w.hide()
+        with patch.object(self.w, 'showNormal') as show, patch.object(self.w, 'raise_') as raise_main:
+            self.w._queue_news_alerts([news])
+            dialog = self.w._news_alert_dialog
+            self.assertIsNone(dialog.parentWidget())
+            self.assertTrue(dialog.isVisible())
+            self.assertFalse(self.w.isVisible())
+            show.assert_not_called()
+            raise_main.assert_not_called()
+            dialog._buttons[1].click()
+            show.assert_not_called()
+            self.w._queue_news_alerts([news])
+            with patch.object(feeds.EconomicCalendar, 'refresh'):
+                self.w._news_alert_dialog._buttons[0].click()
+            show.assert_called_once()
+            self.assertIs(self.w.main_pages.currentWidget(), self.w.news_page)
+
     def test_startup_monitor_works_with_sidebar_off(self):
         self.w.side_panel_checkbox.setChecked(False)
         with patch.object(feeds.EconomicCalendar, 'refresh'):

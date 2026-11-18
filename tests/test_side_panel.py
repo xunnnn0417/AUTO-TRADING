@@ -289,6 +289,34 @@ class SidePanelTests(unittest.TestCase):
         self.assertIn('今日事件範圍', panel.events_button.toolTip())
         self.assertNotIn('提醒交易日', panel.events_button.toolTip())
 
+    def test_news_outside_click_dismisses_only_news_and_preserves_click(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(panel.event_tabs.tabBar(), Qt.LeftButton)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(panel.inputs['daily_pnl'], Qt.LeftButton)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(self.w.parameter_inputs['daily_pnl'], Qt.LeftButton)
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(panel.events_button.isChecked())
+        self.assertTrue(panel.isVisible())
+        self.assertFalse(panel.collapsed)
+        QTest.keyClicks(self.w.parameter_inputs['daily_pnl'], '123')
+        self.assertEqual(self.w.parameter_inputs['daily_pnl'].text(), '123')
+
+    def test_news_switching_to_another_app_dismisses_without_hiding_sidebar(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        QApplication.sendEvent(self.qtapp, QEvent(QEvent.ApplicationDeactivate))
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(panel.events_button.isChecked())
+        self.assertTrue(panel.isVisible())
+        self.assertFalse(panel.collapsed)
+        panel.events_button.setChecked(True)
+        self.assertTrue(panel.event_flyout.isVisible())
+        self.assertFalse(panel.event_status.isChecked())
+
     def test_single_line_event_summary_keeps_full_title_in_tooltip(self):
         panel = self.open_panel()
         now = datetime.now(UTC)

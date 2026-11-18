@@ -261,7 +261,6 @@ class SideQuickPanel(QWidget):
         self.event_flyout.setObjectName('eventFlyout')
         self.event_flyout.setWindowTitle('重大事件')
         self.event_flyout.setAttribute(Qt.WA_TranslucentBackground)
-        self.event_flyout.setAttribute(Qt.WA_ShowWithoutActivating)
         self.event_flyout.installEventFilter(self)
         flyout_layout = QVBoxLayout(self.event_flyout)
         flyout_layout.setContentsMargins(12, 10, 12, 12)
@@ -470,6 +469,8 @@ class SideQuickPanel(QWidget):
             self._hide_warning()
             self.event_status.setChecked(False)
             self._position_event_flyout()
+            self.event_flyout.raise_()
+            self.event_flyout.activateWindow()
             self.calendar.refresh()
 
     def _position_event_flyout(self):
@@ -597,6 +598,17 @@ class SideQuickPanel(QWidget):
             self.collapse_button.releaseMouse()
 
     def eventFilter(self, watched, event):
+        news = getattr(self, 'event_flyout', None)
+        if news is not None and news.isVisible():
+            if event.type() == QEvent.ApplicationDeactivate:
+                self.events_button.setChecked(False)
+            elif event.type() == QEvent.MouseButtonPress:
+                target = watched.window() if isinstance(watched, QWidget) else None
+                if target not in (self, news):
+                    self.events_button.setChecked(False)
+            elif event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self.events_button.setChecked(False)
+                return True
         popup = getattr(self, 'warning_flyout', None)
         if popup is not None and popup.isVisible():
             if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:

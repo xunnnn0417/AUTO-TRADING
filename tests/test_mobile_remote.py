@@ -57,6 +57,24 @@ class RemoteStoreTests(unittest.TestCase):
         self.store.db.commit()
         self.assertIsNone(self.store.authenticate(token))
 
+    def test_pairing_cookie_cannot_authorize_a_different_temporary_hostname(self):
+        device, token = self.store.pair('手機', 'https://first.trycloudflare.com')
+        self.assertEqual(self.store.authenticate(token, 'https://first.trycloudflare.com'), device)
+        self.assertIsNone(self.store.authenticate(token, 'https://second.trycloudflare.com'))
+        self.assertIsNone(self.store.authenticate(token, 'http://127.0.0.1:8765'))
+
+    def test_previous_device_database_migrates_without_erasing_saved_grants(self):
+        legacy = Path(self.temp.name)/'legacy.db'
+        with sqlite3.connect(legacy) as db:
+            db.execute('CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, '
+                       'digest TEXT NOT NULL UNIQUE, expires REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)')
+            db.execute('INSERT INTO devices VALUES (?,?,?,?,?)', ('old','手機',self.store.digest('oldtoken'),time.time()+1000,0))
+        db.close()
+        migrated = RemoteStore(legacy)
+        self.addCleanup(migrated.db.close)
+        self.assertEqual(migrated.authenticate('oldtoken', 'http://127.0.0.1:8765'), 'old')
+        self.assertIsNone(migrated.authenticate('oldtoken', 'https://new.trycloudflare.com'))
+
     def test_unfinished_operation_becomes_unknown_after_restart_not_replayed(self):
         device, _ = self.store.pair("手機")
         self.store.begin(device, "operation-id", "fill_both", "digest")
@@ -206,6 +224,7 @@ class MobileDesktopAdapterTests(unittest.TestCase):
             if widget is not self.w and widget.isVisible() and hasattr(widget, "reject"):
                 widget.reject()
         self.controller.stop()
+        self.w._mobile_resume_timer.stop()
         self.controller.store.db.close()
         fixtures.CompactFollowUpControlsTests.tearDown(self)
 
@@ -330,3 +349,26 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         payload = json.dumps(self.controller.snapshot(), ensure_ascii=False)
         for secret in ("PRIVATE_KEY_FILE", "PRIVATE_SHEET_URL", "secret_calibration"):
             self.assertNotIn(secret, payload)
+
+    def test_temporary_phone_origin_and_pairing_never_replace_saved_fixed_origin(self):
+        self.controller.store.set_setting('origin', 'https://fixed.example.com')
+        with patch.object(self.controller.tunnel, 'start') as start:
+            self.controller.start_temporary(port=0)
+        start.assert_called_once_with(self.controller.server.local_origin)
+        self.assertTrue(self.controller.temporary_connection)
+        self.assertEqual(self.controller.store.setting('enabled'), '0')
+        self.assertEqual(self.controller.server.public_origin, '')
+        self.controller._tunnel_ready('https://example-control.trycloudflare.com')
+        self.assertEqual(self.controller.server.public_origin, 'https://example-control.trycloudflare.com')
+        self.assertEqual(len(self.controller.server.pair_code), 8)
+        self.assertEqual(self.controller.store.setting('origin'), 'https://fixed.example.com')
+        self.controller._tunnel_failed('連線已中斷')
+        self.assertFalse(self.controller.server.http.isListening())
+        self.assertFalse(self.controller.temporary_connection)
+        self.assertEqual(self.controller.server.pair_code, '')
+        self.assertEqual(self.controller.tunnel.message, '連線已中斷')
+
+    def test_closing_desktop_cancels_delayed_mobile_resume(self):
+        self.w._mobile_resume_timer.start(500)
+        self.w.close()
+        self.assertFalse(self.w._mobile_resume_timer.isActive())

@@ -52,12 +52,15 @@ class RemoteStore:
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS devices (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, digest TEXT NOT NULL UNIQUE,
-                expires REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+                expires REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0,
+                origin TEXT NOT NULL DEFAULT '');
             CREATE TABLE IF NOT EXISTS operations (
                 device TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
                 action TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL,
                 created REAL NOT NULL, PRIMARY KEY(device,id));
         """)
+        if 'origin' not in {row[1] for row in self.db.execute('PRAGMA table_info(devices)')}:
+            self.db.execute("ALTER TABLE devices ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
         self.db.execute(
             "UPDATE operations SET status='unknown',result=? WHERE status='running'",
             (json.dumps({"message": "電腦程式曾中斷，請核對結果；不會重送。"}),))
@@ -71,25 +74,30 @@ class RemoteStore:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, value))
 
-    def pair(self, name: str) -> tuple[str, str]:
+    def pair(self, name: str, origin: str = '') -> tuple[str, str]:
         if len(self.devices()) >= 12:
             raise ValueError("已配對裝置過多，請先移除不使用的裝置。")
         device, token = secrets.token_hex(12), secrets.token_urlsafe(32)
         with self.db:
-            self.db.execute("INSERT INTO devices(id,name,digest,expires) VALUES (?,?,?,?)",
-                            (device, name[:32], self.digest(token), time.time()+SESSION_SECONDS))
+            self.db.execute("INSERT INTO devices(id,name,digest,expires,origin) VALUES (?,?,?,?,?)",
+                            (device, name[:32], self.digest(token), time.time()+SESSION_SECONDS, origin))
         return device, token
 
     @staticmethod
     def digest(value: str) -> str:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    def authenticate(self, token: str) -> str | None:
+    def authenticate(self, token: str, origin: str | None = None) -> str | None:
         if not token or len(token) > 100:
             return None
         row = self.db.execute(
-            "SELECT id FROM devices WHERE digest=? AND revoked=0 AND expires>?",
+            "SELECT id,origin FROM devices WHERE digest=? AND revoked=0 AND expires>?",
             (self.digest(token), time.time())).fetchone()
+        # A temporary hostname may later belong to somebody else. A cookie
+        # from that hostname must never authorize a different/new endpoint.
+        if row and origin is not None and row[1] != origin:
+            if row[1] or not origin.startswith('http://127.0.0.1:'):
+                return None
         return row[0] if row else None
 
     def authorized(self, device: str) -> bool:
@@ -289,7 +297,7 @@ class MobileServer(QObject):
                     self._respond(sock, 403, b"Invalid origin")
                     return
                 token = self._cookie_token(headers.get("cookie", ""))
-                if not self.store.authenticate(token):
+                if not self.store.authenticate(token, origin):
                     self._respond(sock, 401, b"Pairing required")
                     return
                 self.pending.discard(sock)
@@ -299,7 +307,7 @@ class MobileServer(QObject):
                 return
             sock.read(end+4+length)
             if method == "GET" and path == "/api/session" and not length:
-                authenticated = self.store.authenticate(self._cookie_token(headers.get("cookie", "")))
+                authenticated = self.store.authenticate(self._cookie_token(headers.get("cookie", "")), origin)
                 self._respond(sock, 200 if authenticated else 401,
                               b'{"paired":true}' if authenticated else b'{"paired":false}',
                               "application/json")
@@ -322,7 +330,7 @@ class MobileServer(QObject):
                 name = payload.get("name", "我的手機")
                 if not isinstance(name, str) or len(name) > 32:
                     raise ValueError()
-                _, token = self.store.pair(name)
+                _, token = self.store.pair(name, origin)
                 self.pair_code = ""
                 secure = "; Secure" if origin.startswith("https:") else ""
                 cookie = f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}{secure}"
@@ -362,7 +370,7 @@ class MobileServer(QObject):
             origin = bytes(request.rawHeader("Origin")).decode("ascii", "ignore")
             host = bytes(request.rawHeader("Host")).decode("ascii", "ignore")
             device = self.store.authenticate(self._cookie_token(
-                bytes(request.rawHeader("Cookie")).decode("ascii", "ignore")))
+                bytes(request.rawHeader("Cookie")).decode("ascii", "ignore")), self._allowed_origin(host))
             if not device or origin != self._allowed_origin(host) or len(self.sockets) >= 8:
                 sock.close()
                 sock.deleteLater()

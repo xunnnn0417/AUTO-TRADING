@@ -1,5 +1,7 @@
 """Native UIA readback is strict and read-only; fake elements only."""
 import unittest
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock,patch
 
@@ -71,8 +73,17 @@ class NativeReadbackTests(unittest.TestCase):
             SimpleNamespace(descendants=lambda:complete),
         ]
         desktop=SimpleNamespace(window=lambda handle:roots.pop(0))
+        # Patching time.sleep also affects emergency-listener background
+        # threads. Keep their real waits; count only this readback operation.
+        sleep = MagicMock()
+        real_sleep, test_thread = time.sleep, threading.get_ident()
+        def wait(seconds):
+            if threading.get_ident() == test_thread:
+                sleep(seconds)
+            else:
+                real_sleep(seconds)
         with patch("pywinauto.Desktop",side_effect=[desktop,desktop]), \
-             patch("trading_helper.windows.time.sleep") as sleep:
+             patch("trading_helper.windows.time.sleep", new=wait):
             snapshot=self.controller.read_fill_snapshot(self.window,points)
         self.assertEqual(snapshot["values"],{
             "lot_input":"0.740","sl_input":"-527","tp_input":"3378",
