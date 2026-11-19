@@ -79,7 +79,7 @@ let pushConfig=null,pushRegistration=null,pushChecking=false;
 const workerReady=('serviceWorker' in navigator&&window.isSecureContext)?navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).then(()=>navigator.serviceWorker.ready):Promise.resolve(null);
 workerReady.catch(()=>{});
 function pushSupport(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);return window.isSecureContext&&'PushManager' in window&&'Notification' in window&&(!ios||standalone());}
-function pushDisplay(enabled,hint=''){$('pushStatus').textContent=enabled?'已啟用':'未啟用';$('pushEnable').hidden=enabled;$('pushDisable').hidden=!enabled;$('pushTest').hidden=!enabled;$('pushHint').textContent=hint;$('pushBell').classList.toggle('enabled',enabled);$('pushBell').setAttribute('aria-label','手機通知設定：'+(enabled?'已啟用':'未啟用'));}
+function pushDisplay(enabled,hint=''){$('pushStatus').textContent=enabled?'已啟用':'未啟用';$('pushEnable').hidden=enabled;$('pushDisable').hidden=!enabled;$('pushTest').hidden=true;$('pushHint').textContent=hint;$('pushBell').classList.toggle('enabled',enabled);$('pushBell').setAttribute('aria-label','手機通知設定：'+(enabled?'已啟用':'未啟用'));}
 async function pushRequest(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok)throw new Error(await response.text());return response.json();}
 async function preparePush(){if(pushChecking)return;pushChecking=true;try{
  if(!pushSupport()){pushDisplay(false,'iPhone 請先加入主畫面，再從圖示開啟以啟用通知。');return;}
@@ -95,7 +95,7 @@ $('pushEnable').onclick=async()=>{if(!pushSupport()){pushDisplay(false,'請先�
  let sub=await pushRegistration.pushManager.getSubscription();
  if(sub&&JSON.stringify(Array.from(new Uint8Array(sub.options.applicationServerKey||[])))!==JSON.stringify(Array.from(key))){await sub.unsubscribe();sub=null;}
  if(!sub)sub=await pushRegistration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
- await pushRequest('/api/notifications',{subscription:sub.toJSON()});pushDisplay(true,'已開啟；可按「測試通知」確認手機是否收到。');
+ await pushRequest('/api/notifications',{subscription:sub.toJSON()});pushDisplay(true,'已開啟手機通知。');
  }catch(error){pushDisplay(false,error.message);}finally{button.disabled=false;}};
 $('pushDisable').onclick=async()=>{const button=$('pushDisable');button.disabled=true;try{await pushRequest('/api/notifications',{subscription:null});if(pushRegistration){const sub=await pushRegistration.pushManager.getSubscription();if(sub)await sub.unsubscribe();}pushDisplay(false);}catch(error){$('pushHint').textContent=error.message;}finally{button.disabled=false;}};
 let pushTestUntil=0,pushTestSending=false;
