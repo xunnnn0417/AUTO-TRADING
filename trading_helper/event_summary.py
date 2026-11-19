@@ -30,11 +30,11 @@ def relevant_announcement(title):
 def event_summary(events, now, settings, day_is_loaded, title=lambda text: text):
     start, end = trading_session(now, settings)
     ordered = sorted(events)
-    today = [event for event in ordered if start <= event.when < end]
+    today = [event for event in ordered if start <= event.when < end and event.source != '休市提醒']
     upcoming = [event for event in ordered if event.when > now]
     remaining_today = [event for event in today if event.when > now]
-    if remaining_today:
-        event = remaining_today[0]
+    if remaining_today or (upcoming and upcoming[0].source == '休市提醒'):
+        event = upcoming[0]
         return f'再過 {countdown(event.when, now).removesuffix("後")} · {format_event_time(event.when)} · {title(event.title)}'
     prefix = ('今日排程尚未完整更新' if not day_is_loaded else
               '今日重大事件已公布' if today else '今日無已知重大排程')

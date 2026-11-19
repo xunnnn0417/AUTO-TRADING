@@ -132,10 +132,10 @@ function showNews(items){const now=Date.now();const upcoming=items.filter(e=>e.s
  const article=node('article');article.style.setProperty('--news-color',/^#[0-9a-f]{6}$/i.test(item.color||'')?item.color:'#aaa5b7');
  const detail=node('details'),summary=node('summary'),identity=JSON.stringify([item.when,item.source,item.original||item.title]);detail.open=newsOpen.has(identity);detail.ontoggle=()=>{if(detail.open)newsOpen.add(identity);else newsOpen.delete(identity);};
  const date=new Date(item.when),time=node('div',undefined,'news-time'),content=node('div',undefined,'news-content');
- time.append(node('small',date.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit',timeZone:'Asia/Taipei'})),node('small',eventTime(item.when)),node('small',date>now?'即將發生':'已公布'));content.append(node('span',item.category||'相關消息','news-category'));summary.append(time,content);
+ time.append(node('small',date.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit',timeZone:'Asia/Taipei'})),node('small',eventTime(item.when)),node('small',item.local_rest?(date>now?'即將休市':'已休市'):(date>now?'即將發生':'已公布')));content.append(node('span',item.category||'相關消息','news-category'));summary.append(time,content);
  const title=node('div',undefined,'news-title');if(Array.isArray(item.parts)){for(const [text,emphasis] of item.parts)title.append(node('span',text,emphasis?'news-keyword':undefined));}else title.textContent=item.title;content.append(title);
  const values=item.values||{},figures=node('div',undefined,'news-figures');for(const [key,label] of [['actual','公布值'],['forecast','預期'],['previous','前值']]){if(typeof values[key]==='string'&&values[key]){const field=node('div');field.append(node('span',label),node('strong',values[key]));figures.append(field);}}if(figures.childElementCount)content.append(figures);
- if(item.scheduled&&new Date(item.when)<=now&&!values.actual)content.append(node('p','來源尚未提供公布值','muted'));content.append(node('small',item.source));
+ if(item.scheduled&&!item.local_rest&&new Date(item.when)<=now&&!values.actual)content.append(node('p','來源尚未提供公布值','muted'));content.append(node('small',item.source));
  const body=node('div',undefined,'news-detail');body.append(node('p',item.details||'來源未提供更多內容'));if(item.original&&item.original!==item.title)body.append(node('p','原文：'+item.original,'muted'));
  detail.append(summary,body);article.append(detail);return article;
  }));if(!rows.length)$(id).append(node('p',id==='newsUpcoming'?'目前沒有載入近期排程':'目前沒有載入相關事件','muted'));}}

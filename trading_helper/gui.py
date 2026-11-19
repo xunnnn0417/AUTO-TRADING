@@ -2146,7 +2146,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if getattr(self, '_event_calendar', None) is None:
             from .calendar_events import EconomicCalendar
             self._event_calendar = EconomicCalendar(
-                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self,
+                rest_settings=lambda: self.store.data.get('ui', {}).get('rest_reminder', {}))
             self._event_calendar.announcements.connect(self._queue_news_alerts)
             self._event_calendar.start()
         return self._event_calendar
@@ -2197,7 +2198,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         for item in items:
             # Scheduled titles have a controlled prefix, time, then headline.
             prefix = item.title.split(' · ',1)[0]
-            phase = ('release' if prefix == '公布時間已到' else 'before') if item.scheduled else 'news'
+            phase = (item.reminder_kind or ('release' if prefix == '公布時間已到' else 'before')) if item.scheduled else 'news'
             groups.setdefault((item.when,phase),[]).append(item)
         lines = []
         for (when,phase), members in groups.items():

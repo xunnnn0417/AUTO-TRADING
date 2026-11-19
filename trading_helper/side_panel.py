@@ -516,12 +516,14 @@ class SideQuickPanel(QWidget):
             self.sync_from_main()
 
     def update_event_summary(self):
+        from .calendar_events import events_for_display
         now = datetime.now(UTC)
-        upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
+        events = events_for_display(self.calendar, now)
+        upcoming = [event for event in events if now < event.when <= now + timedelta(days=45)]
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         settings = self.app.store.data.get('ui', {}).get('trading_day_separator', {})
         start, end = trading_session(now, settings)
-        summary = event_summary(upcoming+[e for e in self.calendar.events if start <= e.when <= now],
+        summary = event_summary(upcoming+[e for e in events if start <= e.when <= now],
                                 now, settings, self.calendar.covers_day(start, end, now), self.calendar.title)
         self.events_button.setText(summary)
         tooltip = (summary+f'\n今日事件範圍：{start:%m/%d %H:%M}–{end:%m/%d %H:%M}（台北，依切日設定）'

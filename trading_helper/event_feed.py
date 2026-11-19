@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget, QSizePolicy,
 )
-from .calendar_events import UTC
+from .calendar_events import UTC, events_for_display
 from .event_summary import relevant_announcement, event_summary, trading_session
 from .ui_theme import themed_icon
 from .news_cards import NewsCards
@@ -55,6 +55,14 @@ class EventFeedView(QWidget):
         self.refresh_button.setToolTip('重新抓取所有消息來源')
         self.refresh_button.clicked.connect(self.manual_refresh)
         header.addWidget(self.refresh_button)
+        owner = getattr(get_calendar, '__self__', None)
+        if not compact and getattr(owner, 'store', None) is not None:
+            self.rest_settings_button = QToolButton()
+            self.rest_settings_button.setText('休市提醒')
+            self.rest_settings_button.setCheckable(True)
+            self.rest_settings_button.setArrowType(Qt.DownArrow)
+            self.rest_settings_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            header.addWidget(self.rest_settings_button)
         if close is not None:
             from .window_chrome import WindowChromeButton
             button = WindowChromeButton('close', self)
@@ -62,6 +70,18 @@ class EventFeedView(QWidget):
             button.clicked.connect(lambda: close(False))
             header.addWidget(button)
         root.addLayout(header)
+        if hasattr(self, 'rest_settings_button'):
+            from .rest_reminder_settings import RestReminderSettings
+            self.rest_editor = RestReminderSettings(
+                lambda: owner.store.data.get('ui', {}).get('rest_reminder', {}), self.save_rest_settings)
+            self.rest_editor.hide()
+            root.addWidget(self.rest_editor)
+            def toggle_rest_settings(opened):
+                if opened:
+                    self.rest_editor.load()
+                self.rest_editor.setVisible(opened)
+                self.rest_settings_button.setArrowType(Qt.UpArrow if opened else Qt.DownArrow)
+            self.rest_settings_button.toggled.connect(toggle_rest_settings)
         self.countdown_label = CountdownLabel()
         root.addWidget(self.countdown_label)
         self.countdown_label.setVisible(show_countdown)
@@ -126,6 +146,23 @@ class EventFeedView(QWidget):
         self.bind()
         self.calendar.refresh(force=True)
 
+    def save_rest_settings(self, value):
+        owner = self._get_calendar.__self__
+        ui = owner.store.data.setdefault('ui', {})
+        previous = ui.get('rest_reminder')
+        ui['rest_reminder'] = value
+        try:
+            owner.save_config()
+        except OSError:
+            if previous is None:
+                ui.pop('rest_reminder', None)
+            else:
+                ui['rest_reminder'] = previous
+            raise
+        self.bind()
+        self.calendar.changed.emit()
+        self.calendar._check_reminders()
+
     def test_announcement(self):
         self.bind()
         self.calendar.preview_announcement()
@@ -150,13 +187,14 @@ class EventFeedView(QWidget):
         store = getattr(owner, 'store', None)
         settings = store.data.get('ui', {}).get('trading_day_separator', {}) if store else {}
         start, end = trading_session(now, settings)
-        self.countdown_label.set_summary(event_summary(self.calendar.events, now, settings,
+        self.countdown_label.set_summary(event_summary(events_for_display(self.calendar, now), now, settings,
             self.calendar.covers_day(start,end,now), self.calendar.title))
 
     def update_events(self):
         self.update_countdown()
         now = datetime.now(UTC)
-        upcoming = sorted(event for event in self.calendar.events if now < event.when <= now + timedelta(days=45))
+        events = events_for_display(self.calendar, now)
+        upcoming = sorted(event for event in events if now < event.when <= now + timedelta(days=45))
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         busy = self.calendar._busy
         self.refresh_button.setEnabled(not busy)
@@ -164,15 +202,17 @@ class EventFeedView(QWidget):
         def title(original):
             shown = self.calendar.title(original)
             return shown + ('〔機翻〕' if original in self.calendar.translations else '')
-        self.event_rows.set_entries([(e.when, e.currency+' · '+e.source, e.title, title(e.title), True, '即將發生', e.details)
+        self.event_rows.set_entries([(e.when, e.currency+' · '+e.source, e.title, title(e.title), True,
+                                     '即將休市' if e.source == '休市提醒' else '即將發生', e.details)
                                     for e in upcoming[:20]], '目前載入資料沒有近期排程；請查看來源更新狀態。')
         recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title, e.details)
-                  for e in self.calendar.events if now-timedelta(hours=72) <= e.when <= now]
+                  for e in events if now-timedelta(hours=72) <= e.when <= now]
         recent += [(n.when, n.source, n.title, n.details) for n in self.calendar.news
                    if now-timedelta(hours=72) <= n.when <= now
                    and relevant_announcement(n.title)]
         recent = sorted(set(recent), reverse=True)[:24]
-        self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source, '已公布', details)
+        self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source,
+                                    '已休市' if source.startswith('休市提醒 · ') else '已公布', details)
                                    for when, source, original, details in recent],
                                   '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
         self.news_rows.setToolTip('')

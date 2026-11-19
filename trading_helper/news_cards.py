@@ -85,7 +85,9 @@ class NewsCards(QTextBrowser):
             when, source, original, shown, scheduled, state = row[:6]
             content = row[6] if len(row) > 6 else ''
             assessment = assess_headline(original, scheduled=scheduled)
-            color = assessment.color
+            local_rest = '休市提醒' in source
+            color = '#aaa5b7' if local_rest else assessment.color
+            category = '休市提醒' if local_rest else assessment.category
             identity = (when, source, original)
             opened = identity in self._open_details
             details = (f'<p style="margin:6px 0 0;color:#aaa5b7">原文：{escape(original)}'
@@ -107,7 +109,7 @@ class NewsCards(QTextBrowser):
                 f'<td width="3" bgcolor="{color}"></td><td width="{gutter}"></td>'
                 f'<td width="{time_width}" valign="top" style="white-space:nowrap"><span style="color:#eeedf3;{time_style}">{when.astimezone(TAIPEI):%m/%d}</span>'
                 f'<br><span style="color:#aaa5b7;{time_style}">{format_event_time(when)}<br>{escape(state)}</span></td>'
-                f'<td valign="top"><p style="margin:0;color:{color};font-size:11px">{escape(assessment.category)}</p>'
+                f'<td valign="top"><p style="margin:0;color:{color};font-size:11px">{escape(category)}</p>'
                 f'<p style="margin:{title_margin}px 0;font-size:{headline_size}px">{highlight_title(shown, color)}</p>{result}'
                 f'<span style="color:#aaa5b7;font-size:11px">{escape(source)}</span>　'
                 f'<a href="detail:{index}" style="color:#aaa5b7;text-decoration:none;font-size:11px">'

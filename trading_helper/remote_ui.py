@@ -267,7 +267,7 @@ class RemoteController(QObject):
         news = []
         if calendar is not None:
             from datetime import datetime, timedelta, timezone
-            from .calendar_events import publication_values
+            from .calendar_events import publication_values, events_for_display
             from .news_relevance import assess_headline, KEYWORDS
             def news_item(event, scheduled):
                 title = calendar.title(event.title)
@@ -278,11 +278,12 @@ class RemoteController(QObject):
                     end = match.end()
                 parts.append((title[end:],False))
                 return dict(when=event.when.isoformat(), title=title, original=event.title, source=event.source,
-                    scheduled=scheduled, details=event.details, category=assessment.category,
-                    color=assessment.color, parts=parts,
+                    scheduled=scheduled, details=event.details, local_rest=event.source == '休市提醒',
+                    category='休市提醒' if event.source == '休市提醒' else assessment.category,
+                    color='#aaa5b7' if event.source == '休市提醒' else assessment.color, parts=parts,
                     values=publication_values(event.details) if scheduled else {})
             recent = datetime.now(timezone.utc)-timedelta(days=1)
-            for event in sorted(event for event in calendar.events
+            for event in sorted(event for event in events_for_display(calendar, datetime.now(timezone.utc))
                                 if recent <= event.when <= datetime.now(timezone.utc)+timedelta(days=45))[:60]:
                 news.append(news_item(event, True))
             for event in calendar.news[:30]:

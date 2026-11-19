@@ -63,6 +63,7 @@ class Announcement:
     title: str
     details: str = field(default='', compare=False)
     scheduled: bool = field(default=False, compare=False)
+    reminder_kind: str = field(default='', compare=False)
 
 
 def format_event_time(when):
@@ -86,6 +87,27 @@ def scheduled_reminders(calendar, now):
         elif -60 <= delta <= 0:
             yield ('release', item, '重大事件公布時間已到',
                    f'公布時間已到 · {text}', item.when.timestamp()+180)
+    from .rest_reminders import normalize_settings, rest_occurrences
+    settings = getattr(calendar, 'rest_settings', lambda: {})()
+    for when in rest_occurrences(settings, now):
+        for minutes in normalize_settings(settings)['minutes']:
+            trigger = when-timedelta(minutes=minutes)
+            if 0 <= (now-trigger).total_seconds() <= 60 and now < when:
+                item = CalendarEvent(when, '本機', '休市', '休市提醒', '依自訂時間提醒；不會自動平倉。')
+                yield (f'rest:{minutes}', item, '休市前提醒',
+                       f'{minutes} 分鐘後休市 · {format_event_time(when)} · 休市提醒',
+                       min(when.timestamp(), trigger.timestamp()+180))
+
+
+def events_for_display(calendar, now):
+    """Local reminders are virtual rows; never mix them into fetched source caches."""
+    from .rest_reminders import rest_occurrences
+    times = rest_occurrences(getattr(calendar, 'rest_settings', lambda: {})(), now)
+    future = [when for when in times if when > now]
+    recent = [when for when in times if now-timedelta(hours=24) <= when <= now]
+    shown = recent+future[:1]
+    return sorted(list(calendar.events)+[CalendarEvent(when, '本機', '休市', '休市提醒',
+        '依自訂時間提醒；不會自動平倉。') for when in shown])
 
 
 def source_text(raw):
@@ -242,8 +264,9 @@ class EconomicCalendar(QObject):
     translated = Signal(object)
     announcements = Signal(object)
 
-    def __init__(self, path: Path, parent=None):
+    def __init__(self, path: Path, parent=None, *, rest_settings=None):
         super().__init__(parent)
+        self.rest_settings = rest_settings or (lambda: {})
         self.path = path
         self.events: list[CalendarEvent] = []
         self.news: list[Announcement] = []
@@ -352,7 +375,7 @@ class EconomicCalendar(QObject):
             identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
             if identity not in self._seen_reminders:
                 self._seen_reminders[identity] = None
-                alerts.append(Announcement(item.when, item.source, body, scheduled=True))
+                alerts.append(Announcement(item.when, item.source, body, scheduled=True, reminder_kind=kind))
         if alerts:
             self._seen_reminders = dict(list(self._seen_reminders.items())[-500:])
             self._save_cache()
@@ -605,12 +628,12 @@ class EconomicCalendar(QObject):
         return lines
 
     def _save_cache(self) -> None:
-        if self.fetched_at is None:
+        if self.fetched_at is None and not self._seen_reminders:
             return
         try:
             if not self._events_by_source['ff'] and self.events:
                 self._events_by_source['ff'] = [e for e in self.events if e.source == 'Forex Factory']
-            if not self.source_times:
+            if not self.source_times and self.fetched_at is not None:
                 self.source_times['ff'] = self.fetched_at
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps({
