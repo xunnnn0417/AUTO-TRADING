@@ -364,17 +364,19 @@ class MobileServer(QObject):
                     self._respond(sock, 403, b'Invalid origin')
                     return
                 try:
+                    test_result = {}
                     if method == 'POST':
                         value = json.loads(raw[end+4:end+4+length])
                         if path.endswith('/test'):
                             if value != {}:
                                 raise ValueError('通知設定格式不正確。')
-                            self.notifications.test(device, origin)
+                            test_result = self.notifications.test(device, origin)
                         else:
                             if not isinstance(value, dict) or set(value) != {'subscription'}:
                                 raise ValueError('通知設定格式不正確。')
                             self.notifications.subscription(device, origin, value['subscription'])
                     body = dict(enabled=self.notifications.subscribed(device, origin))
+                    body.update(test_result)
                     if method == 'GET':
                         body['publicKey'] = self.notifications.public_key()
                     self._respond(sock, 200, json.dumps(body).encode(), 'application/json')

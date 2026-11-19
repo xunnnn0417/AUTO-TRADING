@@ -83,6 +83,40 @@ class SidePanelTests(unittest.TestCase):
             panel.fill_button.click()
         launch.assert_called_once_with(('internal', 'external'))
 
+    def test_sidebar_stage_mirrors_options_and_uses_main_setting_flow(self):
+        from trading_helper.sheet_preferences import TradeSheetSettings
+        panel = self.open_panel()
+        settings = TradeSheetSettings('第一階段', ('第一階段','真金階段'),
+                                     dict(C2=False,B6=False,E14=True))
+        self.w._show_trade_sheet_settings((self.w._trade_settings_context(),settings,''))
+        with patch.object(self.w, '_confirm_trade_setting') as change:
+            panel.sync_from_main()
+            change.assert_not_called()
+            self.assertEqual(panel.stage_selector.currentText(),'第一階段')
+            panel.stage_selector.setCurrentText('真金階段')
+            change.assert_called_once_with('A4','真金階段')
+        self.w._trade_settings_busy = True
+        panel.sync_from_main()
+        self.assertFalse(panel.stage_selector.isEnabled())
+        self.w._trade_settings_busy = False
+
+    def test_sidebar_has_only_one_seconds_countdown_without_more_source_requests(self):
+        panel = self.open_panel()
+        now = datetime.now(UTC)
+        panel.calendar.events = [CalendarEvent(now+timedelta(seconds=42),'USD','CPI')]
+        with patch('trading_helper.side_panel.datetime') as clock, \
+                patch.object(panel.calendar,'refresh') as refresh:
+            clock.now.return_value = now
+            panel.update_event_summary()
+            self.assertIn('42 秒',panel.events_button.text())
+            clock.now.return_value = now+timedelta(seconds=1)
+            panel.update_event_summary()
+            self.assertIn('41 秒',panel.events_button.text())
+            refresh.assert_not_called()
+        self.assertEqual(panel.summary_timer.interval(),1000)
+        self.assertTrue(panel.event_view.countdown_label.isHidden())
+        self.assertFalse(panel.event_view.countdown_timer.isActive())
+
     def test_profile_values_ruler_and_enabled_state_are_mirrored(self):
         panel = self.open_panel()
         self.w.instruction = sample()

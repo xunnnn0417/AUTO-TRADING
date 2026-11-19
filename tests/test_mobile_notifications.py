@@ -160,10 +160,19 @@ class MobileNotificationTests(unittest.TestCase):
     def test_test_notification_is_rate_limited_and_targets_only_requesting_phone(self):
         other, _ = self.store.pair('另一支手機', self.origin)
         self.service.subscription(other, self.origin, self.sub)
-        self.service.test(self.device, self.origin)
-        self.service.test(self.device, self.origin)
+        with patch('trading_helper.remote_notifications.time.time', return_value=self.now):
+            first = self.service.test(self.device, self.origin)
+        with patch('trading_helper.remote_notifications.time.time', return_value=self.now+2):
+            second = self.service.test(self.device, self.origin)
+        self.assertEqual(first, dict(queued=True,cooldown=10))
+        self.assertEqual(second, dict(queued=False,cooldown=8))
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual(self.store.db.execute('SELECT device FROM push_deliveries').fetchone()[0], self.device)
+        with patch('trading_helper.remote_notifications.time.time', return_value=self.now+10):
+            again = self.service.test(self.device, self.origin)
+        self.assertTrue(again['queued'])
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len({json.loads(r[1])['tag'] for r in self.rows()}),2)
 
     def test_test_and_new_headline_dispatch_without_waiting_for_next_poll(self):
         with patch.object(self.service, '_dispatch') as dispatch:

@@ -34,7 +34,7 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <p id="operation" class="muted" aria-live="polite"></p></section>
 <button id="installHelp" class="text-button">加入手機桌面說明</button>
 <section id="newsSection" hidden><div class="news-heading"><h2>消息</h2><div class="news-actions">
-<button id="pushBell" aria-label="手機通知設定：未啟用" aria-expanded="false" aria-controls="notificationSettings"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg></button>
+<button id="pushBell" aria-label="手機通知設定：未啟用" aria-expanded="false" aria-controls="notificationSettings"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg></button>
 <button id="newsRefresh" class="subtle" data-control>重整</button></div>
 <div id="notificationSettings" role="group" aria-label="手機通知設定" hidden><div class="notification-title">手機通知 <span id="pushStatus">未啟用</span></div>
 <p class="muted">提醒突發重大消息、公布前十分鐘及公布當下。電腦程式須保持開啟。</p>
@@ -98,7 +98,9 @@ $('pushEnable').onclick=async()=>{if(!pushSupport()){pushDisplay(false,'請先�
  await pushRequest('/api/notifications',{subscription:sub.toJSON()});pushDisplay(true,'已開啟；可按「測試通知」確認手機是否收到。');
  }catch(error){pushDisplay(false,error.message);}finally{button.disabled=false;}};
 $('pushDisable').onclick=async()=>{const button=$('pushDisable');button.disabled=true;try{await pushRequest('/api/notifications',{subscription:null});if(pushRegistration){const sub=await pushRegistration.pushManager.getSubscription();if(sub)await sub.unsubscribe();}pushDisplay(false);}catch(error){$('pushHint').textContent=error.message;}finally{button.disabled=false;}};
-$('pushTest').onclick=async()=>{const button=$('pushTest');button.disabled=true;try{await pushRequest('/api/notifications/test',{});$('pushHint').textContent='已排入測試通知；請查看手機通知。';}catch(error){$('pushHint').textContent=error.message;}finally{button.disabled=false;}};
+let pushTestUntil=0,pushTestSending=false;
+function testCooldown(){const seconds=Math.max(0,Math.ceil((pushTestUntil-Date.now())/1000));$('pushTest').disabled=pushTestSending||seconds>0;$('pushTest').textContent=pushTestSending?'發送中…':seconds?'測試通知（'+seconds+'秒）':'測試通知';}
+$('pushTest').onclick=async()=>{if(pushTestSending||Date.now()<pushTestUntil)return;pushTestSending=true;testCooldown();try{const result=await pushRequest('/api/notifications/test',{});pushTestUntil=Date.now()+(result.cooldown||10)*1000;$('pushHint').textContent=result.queued===false?'請等按鈕倒數結束後再測試。':'已送出測試請求；手機顯示時間依系統與網路而定。';}catch(error){$('pushHint').textContent=error.message;}finally{pushTestSending=false;testCooldown();}};
 installCard();
 const optionNames={auto_entry:"自動進場",auto_sync:"同步 SL／TP","rule:C2":"來回打","rule:B6":"最小交易日目標","rule:E14":"固定場內止盈"};
 function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
@@ -128,10 +130,11 @@ function showNews(items){const now=Date.now();const upcoming=items.filter(e=>e.s
  for(const [id,rows] of [["newsUpcoming",upcoming],["newsPublished",published]]){$(id).replaceChildren(...rows.map(item=>{
  const article=node('article');article.style.setProperty('--news-color',/^#[0-9a-f]{6}$/i.test(item.color||'')?item.color:'#aaa5b7');
  const detail=node('details'),summary=node('summary'),identity=JSON.stringify([item.when,item.source,item.original||item.title]);detail.open=newsOpen.has(identity);detail.ontoggle=()=>{if(detail.open)newsOpen.add(identity);else newsOpen.delete(identity);};
- summary.append(node('small',new Date(item.when).toLocaleString()+' · '+item.source),node('span',item.category||'相關消息','news-category'));
- const title=node('div',undefined,'news-title');if(Array.isArray(item.parts)){for(const [text,emphasis] of item.parts)title.append(node('span',text,emphasis?'news-keyword':undefined));}else title.textContent=item.title;summary.append(title);
- const values=item.values||{},figures=node('div',undefined,'news-figures');for(const [key,label] of [['actual','公布值'],['forecast','預期'],['previous','前值']]){if(typeof values[key]==='string'&&values[key]){const field=node('div');field.append(node('span',label),node('strong',values[key]));figures.append(field);}}if(figures.childElementCount)summary.append(figures);
- if(item.scheduled&&new Date(item.when)<=now&&!values.actual)summary.append(node('p','來源尚未提供公布值','muted'));
+ const date=new Date(item.when),time=node('div',undefined,'news-time'),content=node('div',undefined,'news-content');
+ time.append(node('small',date.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})),node('small',date.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})),node('small',date>now?'即將發生':'已公布'));content.append(node('span',item.category||'相關消息','news-category'));summary.append(time,content);
+ const title=node('div',undefined,'news-title');if(Array.isArray(item.parts)){for(const [text,emphasis] of item.parts)title.append(node('span',text,emphasis?'news-keyword':undefined));}else title.textContent=item.title;content.append(title);
+ const values=item.values||{},figures=node('div',undefined,'news-figures');for(const [key,label] of [['actual','公布值'],['forecast','預期'],['previous','前值']]){if(typeof values[key]==='string'&&values[key]){const field=node('div');field.append(node('span',label),node('strong',values[key]));figures.append(field);}}if(figures.childElementCount)content.append(figures);
+ if(item.scheduled&&new Date(item.when)<=now&&!values.actual)content.append(node('p','來源尚未提供公布值','muted'));content.append(node('small',item.source));
  const body=node('div',undefined,'news-detail');body.append(node('p',item.details||'來源未提供更多內容'));if(item.original&&item.original!==item.title)body.append(node('p','原文：'+item.original,'muted'));
  detail.append(summary,body);article.append(detail);return article;
  }));if(!rows.length)$(id).append(node('p',id==='newsUpcoming'?'目前沒有載入近期排程':'目前沒有載入相關事件','muted'));}}
@@ -152,7 +155,9 @@ function render(s){state=s;const ready=connected()&&!working;$("stageLabel").tex
  drawRuler(s.ruler,s.ruler_revision);refreshNews();
  showDialog(s.dialog);health();}
 function health(){const online=connected();const text=!online?(connecting?"正在連線…":!$("pairing").hidden?"首次使用或配對已失效，請輸入配對碼":"連線中斷，正在重新連線…"):state?state.health:"正在取得電腦狀態";const bad=!online||rtt>1000||!state||state.health!=="正常";$("health").textContent=!online?(connecting?"連線中":"未連線"):!bad?"正常":state&&state.busy?"操作中":"需留意";$("health").title=text;$("health").classList.toggle("bad",bad);$("healthDetail").textContent=text+(online&&rtt>1000?" · 連線稍慢":"");$("healthDetail").hidden=!bad;if(!online)disable();
- if(state){refreshNews();const next=state.news.filter(e=>e.scheduled&&new Date(e.when)>new Date()).sort((a,b)=>new Date(a.when)-new Date(b.when))[0];if(next){const minutes=Math.ceil((new Date(next.when)-Date.now())/60000);const text="還有 "+Math.floor(minutes/1440)+"天 "+Math.floor(minutes%1440/60)+"時 "+minutes%60+"分 · "+next.title;$("nextEvent").textContent=text;$("nextEvent").title=text;}else $("nextEvent").textContent=state.news_error||"目前沒有可用的即將公布排程";}}
+ refreshNews();updateCountdown();}
+function updateCountdown(){if(!state)return;const next=state.news.filter(e=>e.scheduled&&new Date(e.when)>Date.now()).sort((a,b)=>new Date(a.when)-new Date(b.when))[0];if(next){const seconds=Math.max(0,Math.ceil((new Date(next.when)-Date.now())/1000)),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60);const text='再過 '+(hours?hours+' 小時 ':'')+(hours||minutes?minutes+' 分 ':'')+seconds%60+' 秒 · '+next.title;$('nextEvent').textContent=text;$('nextEvent').title=text;}else $('nextEvent').textContent=state.news_error||'目前沒有可用的即將公布排程';}
+setInterval(()=>{updateCountdown();testCooldown();},1000);
 function refreshNews(){if(!state)return;const key=JSON.stringify(state.news)+':'+state.news.filter(item=>new Date(item.when)<=Date.now()).length;if(key!==newsSignature){newsSignature=key;showNews(state.news);}}
 function retryConnection(){if(reconnectTimer||!$("pairing").hidden||document.hidden)return;health();
  reconnectTimer=setTimeout(()=>{reconnectTimer=null;connect();},retryDelay);retryDelay=Math.min(10000,retryDelay*2);}
@@ -199,7 +204,7 @@ CSS += '.workspace-tabs{display:flex;gap:24px;border-bottom:1px solid #34303d;ma
 CSS += '''
 .news-heading{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px}
 .news-actions{display:flex;align-items:center;gap:8px}.news-heading h2{margin:6px 0}
-#pushBell{position:relative;min-height:34px;width:34px;padding:6px;background:transparent}
+#pushBell{position:relative;min-height:30px;width:30px;padding:5px;background:transparent;border:0;color:#aaa2b7}
 #pushBell svg{vertical-align:middle}#pushBell.enabled::after{content:"";position:absolute;right:4px;top:4px;width:5px;height:5px;background:#82c69e;border-radius:50%}
 #pushBell[aria-expanded=true]{border-color:#a58bdc;background:#282330}
 #notificationSettings{position:absolute;right:0;top:calc(100% + 8px);width:min(290px,calc(100vw - 40px));z-index:20;padding:14px;background:#15131b;border:1px solid #443b52;border-radius:10px;box-shadow:0 10px 30px #0007}
@@ -207,14 +212,15 @@ CSS += '''
 .news-countdown{background:#17141e;border:1px solid #38313f;border-radius:8px;padding:10px 12px;margin:14px 0 16px;font-size:12px;color:#c9bed9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .news-subtabs{display:flex;gap:22px;border-bottom:1px solid #34303d}.news-subtabs button{background:transparent;border:0;border-radius:0;color:#aaa2b7;padding:7px 0 10px;min-height:36px;font-size:12px}
 .news-subtabs button[aria-selected=true]{color:#f2edf9;border-bottom:2px solid #aa91ee}
-#newsUpcoming,#newsPublished{padding-top:14px}article{border:0;border-bottom:1px solid #29262f;border-left:2px solid var(--news-color,#aaa5b7);padding:0;margin:0 0 5px}
-article details{padding:0;margin:0;border:0}article summary{position:relative;list-style:none;padding:9px 25px 9px 10px;color:#ece8f3}
+#newsUpcoming,#newsPublished{padding-top:14px}article{border:0;border-left:2px solid var(--news-color,#aaa5b7);padding:0;margin:0 0 8px;-webkit-user-select:none;user-select:none}
+article details{padding:0;margin:0;border:0}article summary{position:relative;display:grid;grid-template-columns:52px minmax(0,1fr);gap:8px;list-style:none;padding:5px 22px 5px 8px;color:#ece8f3}
+.news-time small{display:block;white-space:nowrap;margin-bottom:2px}.news-content{min-width:0}.news-content>small{display:block;margin-top:5px}
 article summary::-webkit-details-marker{display:none}article summary::after{content:"";position:absolute;right:10px;top:33px;width:5px;height:5px;border-right:1px solid #a49aae;border-bottom:1px solid #a49aae;transform:rotate(45deg)}
 article details[open] summary::after{transform:rotate(225deg)}article small{margin-bottom:3px;font-size:11px;color:#aaa1b8}
 .news-category,.news-keyword{color:var(--news-color,#aaa5b7)}.news-category{font-size:11px}.news-title{margin-top:4px;font-size:12px;font-weight:400}
 .news-figures{display:flex;gap:12px;margin-top:8px}.news-figures>div{flex:1;min-width:0;border-left:1px solid #37313f;padding-left:10px}.news-figures>div:first-child{border:0;padding-left:0}
 .news-figures span{display:block;font-size:11px;color:#aaa1b8}.news-figures strong{display:block;font-size:14px;font-weight:400;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.news-detail{margin:0 10px;padding:8px 0 10px;border-top:1px solid #2d2735;overflow-wrap:anywhere}.news-detail p{margin:4px 0}
+.news-detail{margin:0 10px 0 68px;padding:5px 0 8px;overflow-wrap:anywhere}.news-detail p{margin:4px 0}
 @media(pointer:coarse){#pushBell{width:44px;min-height:44px}.news-subtabs button{min-height:44px}}
 '''
 

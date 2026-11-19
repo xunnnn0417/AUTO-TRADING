@@ -32,7 +32,8 @@ class CountdownLabel(QLabel):
 
 
 class EventFeedView(QWidget):
-    def __init__(self, get_calendar, parent=None, *, title='消息與事件', close=None, compact=False):
+    def __init__(self, get_calendar, parent=None, *, title='消息與事件', close=None, compact=False,
+                 show_countdown=True):
         super().__init__(parent)
         self._get_calendar = get_calendar
         self.calendar = None
@@ -63,6 +64,11 @@ class EventFeedView(QWidget):
         root.addLayout(header)
         self.countdown_label = CountdownLabel()
         root.addWidget(self.countdown_label)
+        self.countdown_label.setVisible(show_countdown)
+        self._show_countdown = show_countdown
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.setInterval(1000)
+        self.countdown_timer.timeout.connect(self.update_countdown)
         self.event_tabs = QTabWidget()
         self.event_rows, self.news_rows = (NewsCards(compact=compact) for _ in range(2))
         for caption, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
@@ -129,12 +135,15 @@ class EventFeedView(QWidget):
         self.event_status.setChecked(False)
         self.poll()
         self.timer.start()
+        if self._show_countdown:
+            self.countdown_timer.start()
 
     def hideEvent(self, event):
         self.timer.stop()
+        self.countdown_timer.stop()
         super().hideEvent(event)
 
-    def update_events(self):
+    def update_countdown(self):
         self.bind()
         now = datetime.now(UTC)
         owner = getattr(self._get_calendar, '__self__', None)
@@ -143,6 +152,10 @@ class EventFeedView(QWidget):
         start, end = trading_session(now, settings)
         self.countdown_label.set_summary(event_summary(self.calendar.events, now, settings,
             self.calendar.covers_day(start,end,now), self.calendar.title))
+
+    def update_events(self):
+        self.update_countdown()
+        now = datetime.now(UTC)
         upcoming = sorted(event for event in self.calendar.events if now < event.when <= now + timedelta(days=45))
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         busy = self.calendar._busy

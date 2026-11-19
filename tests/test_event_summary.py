@@ -57,4 +57,4 @@ class EventSummaryTests(unittest.TestCase):
 
     def test_long_countdown_retains_minutes(self):
         now = datetime(2026, 11, 16, 12, tzinfo=TAIPEI)
-        self.assertEqual(countdown(now+timedelta(days=2, hours=3, minutes=17), now), '2 天 3 小時 17 分後')
+        self.assertEqual(countdown(now+timedelta(days=2, hours=3, minutes=17, seconds=9), now), '51 小時 17 分 9 秒後')

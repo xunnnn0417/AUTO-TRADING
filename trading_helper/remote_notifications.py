@@ -9,6 +9,8 @@ import sqlite3
 import sys
 import threading
 import time
+from math import ceil
+from uuid import uuid4
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,14 +159,20 @@ class MobileNotifications(QObject):
         if not self.subscribed(device, origin):
             raise ValueError('請先啟用通知。')
         now = time.time()
+        last = self.store.db.execute('''SELECT MAX(created) FROM push_deliveries
+            WHERE device=? AND event LIKE 'test-%' ''', (device,)).fetchone()[0]
+        if last and now-last < 10:
+            return dict(queued=False, cooldown=ceil(10-(now-last)))
+        identity = 'test-'+uuid4().hex
         payload = dict(title='對沖小幫手測試通知', body='手機通知已接通。',
-                       tag='helper-notification-test', kind='test', expires=now+60)
+                       tag=identity, kind='test', expires=now+60)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
                 (device,event,origin,payload,expires,created) VALUES (?,?,?,?,?,?)''',
-                (device, f'test-{int(now//60)}', origin, json.dumps(payload, ensure_ascii=False), now+60,now))
+                (device, identity, origin, json.dumps(payload, ensure_ascii=False), now+60,now))
         self.origin = origin
         self._dispatch(now)
+        return dict(queued=True, cooldown=10)
 
     def _receive_news(self, items):
         if self.enabled:

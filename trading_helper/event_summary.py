@@ -44,4 +44,5 @@ def event_summary(events, now, settings, day_is_loaded, title=lambda text: text)
     when = event.when.astimezone(TAIPEI)
     offset = (when.date()-now.astimezone(TAIPEI).date()).days
     day = '今日' if offset == 0 else '明日' if offset == 1 else when.strftime('%m/%d')
-    return f'{prefix} · 下一場：{day} {when:%H:%M}｜{title(event.title)}'
+    remaining = countdown(event.when, now).removesuffix('後')
+    return f'{prefix} · 下一場：{day} {when:%H:%M} · 再過 {remaining}｜{title(event.title)}'

@@ -167,6 +167,26 @@ class NewsAlertUiTests(unittest.TestCase):
         self.assertFalse(self.w.news_badge.isVisible())
         self.assertIsNone(getattr(self.w, '_news_alert_dialog', None))
 
+    def test_countdown_ticks_without_rebuilding_rows_or_fetching_sources(self):
+        with patch.object(feeds.EconomicCalendar,'refresh'):
+            self.w.switch_workspace('消息')
+        view = self.w.news_feed
+        now = datetime.now(feeds.UTC)
+        view.calendar.events = [feeds.CalendarEvent(now+timedelta(seconds=45),'USD','CPI')]
+        with patch('trading_helper.event_feed.datetime') as clock, \
+                patch.object(view.calendar,'refresh') as refresh, \
+                patch.object(view.event_rows,'set_entries') as render:
+            clock.now.return_value = now
+            view.update_countdown()
+            self.assertIn('45 秒',view.countdown_label.toolTip())
+            clock.now.return_value = now+timedelta(seconds=1)
+            view.update_countdown()
+            self.assertIn('44 秒',view.countdown_label.toolTip())
+            refresh.assert_not_called()
+            render.assert_not_called()
+        self.assertTrue(view.countdown_timer.isActive())
+        self.assertEqual(view.countdown_timer.interval(),1000)
+
     def test_news_popup_is_centered_when_collapsed_and_adjacent_when_expanded(self):
         news = feeds.Announcement(datetime.now(feeds.UTC),'Fed','FOMC statement')
         with patch.object(feeds.EconomicCalendar,'refresh'):

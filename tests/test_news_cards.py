@@ -18,7 +18,7 @@ class NewsCardTests(unittest.TestCase):
                          {'forecast':'-12 萬人', 'previous':'11 萬人'})
         self.assertEqual(publication_values('來源沒有提供數值'), {})
 
-    def test_clicking_headline_toggles_details_but_selecting_text_does_not(self):
+    def test_clicking_headline_toggles_details_and_drag_or_double_click_never_selects(self):
         view = NewsCards(compact=True)
         self.addCleanup(view.close)
         view.resize(380, 330)
@@ -43,6 +43,11 @@ class NewsCardTests(unittest.TestCase):
         QTest.mouseMove(view.viewport(), end)
         QTest.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
         self.assertNotIn(original, view.text())
+        self.assertFalse(view.textCursor().hasSelection())
+        QTest.mouseDClick(view.viewport(), Qt.LeftButton, pos=start)
+        self.assertFalse(view.textCursor().hasSelection())
+        self.assertFalse(view.textInteractionFlags() & Qt.TextSelectableByMouse)
+        self.assertFalse(view.textInteractionFlags() & Qt.TextSelectableByKeyboard)
 
     def test_published_result_and_per_event_details_are_source_text_only(self):
         view = NewsCards()

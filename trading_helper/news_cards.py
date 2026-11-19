@@ -15,6 +15,7 @@ class NewsCards(QTextBrowser):
         self.setFrameShape(QFrame.NoFrame)
         self.setOpenLinks(False)
         self.setOpenExternalLinks(False)
+        self.setTextInteractionFlags(Qt.LinksAccessibleByMouse | Qt.LinksAccessibleByKeyboard)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.document().setDocumentMargin(2 if compact else 4)
         self.setStyleSheet('QTextBrowser { border:0; background:transparent; color:#eeedf3; }')
@@ -40,6 +41,11 @@ class NewsCards(QTextBrowser):
             if self.document().documentLayout().frameBoundingRect(frame).contains(point):
                 self._toggle_details(QUrl(f'detail:{index}'))
                 return
+
+    def mouseDoubleClickEvent(self, event):
+        # A rapid second click must not select a word or toggle the row twice.
+        self._press_position = None
+        event.accept()
 
     def loadResource(self, resource_type, url):
         return None  # Feed titles cannot load files, images or remote resources.

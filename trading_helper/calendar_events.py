@@ -222,16 +222,13 @@ def countdown(when: datetime, now: datetime) -> str:
     seconds = (when - now).total_seconds()
     if seconds <= 0:
         return '已發布'
-    minutes = ceil(seconds / 60)
-    if minutes <= 1:
-        return '1 分鐘內'
-    days, remaining = divmod(minutes, 1440)
-    hours, minutes = divmod(remaining, 60)
-    if days:
-        return f'{days} 天 {hours} 小時 {minutes} 分後'
+    hours, remaining = divmod(ceil(seconds), 3600)
+    minutes, seconds = divmod(remaining, 60)
     if hours:
-        return f'{hours} 小時 {minutes} 分後'
-    return f'{minutes} 分鐘後'
+        return f'{hours} 小時 {minutes} 分 {seconds} 秒後'
+    if minutes:
+        return f'{minutes} 分 {seconds} 秒後'
+    return f'{seconds} 秒後'
 
 
 class EconomicCalendar(QObject):
