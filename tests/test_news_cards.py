@@ -10,6 +10,26 @@ from trading_helper.news_cards import NewsCards
 
 
 class NewsCardTests(unittest.TestCase):
+    def test_fast_second_click_closes_headline_or_link_without_selecting_text(self):
+        for compact in (False, True):
+            for target in ('美國消費者物價指數', '查看原文'):
+                with self.subTest(compact=compact,target=target):
+                    view = NewsCards(compact=compact)
+                    self.addCleanup(view.close)
+                    view.resize(380,330)
+                    view.show()
+                    original = 'Example CPI original'
+                    view.set_entries([(datetime.now(UTC),'來源',original,'美國消費者物價指數',
+                                       True,'即將發生','預期：2.8%')],'')
+                    self.app.processEvents()
+                    point = view.cursorRect(view.document().find(target)).center()
+                    QTest.mouseClick(view.viewport(),Qt.LeftButton,pos=point)
+                    self.assertIn(original,view.text())
+                    QTest.mouseDClick(view.viewport(),Qt.LeftButton,pos=point)
+                    QTest.mouseRelease(view.viewport(),Qt.LeftButton,pos=point)
+                    self.assertNotIn(original,view.text())
+                    self.assertFalse(view.textCursor().hasSelection())
+
     def test_publication_values_are_separate_and_never_invent_missing_data(self):
         from trading_helper.calendar_events import publication_values
         self.assertEqual(publication_values('公布值：2.7% 預期：2.8% 前值：2.9%'),

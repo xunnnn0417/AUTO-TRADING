@@ -36,7 +36,7 @@ class ScheduleReminderTests(unittest.TestCase):
             restored._check_reminders(now + timedelta(minutes=10, seconds=5))
             self.assertEqual(len(seen), 2)
             self.assertIn('公布時間已到', seen[-1].title)
-            self.assertIn('確認公布結果', seen[-1].title)
+            self.assertNotIn('請查看消息確認公布結果', seen[-1].title)
 
     def test_missing_stale_error_or_old_schedule_never_notifies(self):
         now = datetime.now(timezone.utc)

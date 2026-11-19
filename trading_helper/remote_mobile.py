@@ -124,6 +124,7 @@ function drawRuler(value,version){const el=$("ruler");el.hidden=!value;
  if(version&&version!==rulerSignature){rulerSignature=version;el.src="/api/ruler.png?v="+version;}
  $("rulerNote").textContent="";}
 const newsOpen=new Set();
+function eventTime(when){return new Date(when).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'Asia/Taipei'});}
 function showNews(items){const now=Date.now();const upcoming=items.filter(e=>e.scheduled&&new Date(e.when)>now).sort((a,b)=>new Date(a.when)-new Date(b.when));
  const published=items.filter(e=>new Date(e.when)<=now).sort((a,b)=>new Date(b.when)-new Date(a.when));
  const identities=new Set(items.map(item=>JSON.stringify([item.when,item.source,item.original||item.title])));for(const key of newsOpen)if(!identities.has(key))newsOpen.delete(key);
@@ -131,7 +132,7 @@ function showNews(items){const now=Date.now();const upcoming=items.filter(e=>e.s
  const article=node('article');article.style.setProperty('--news-color',/^#[0-9a-f]{6}$/i.test(item.color||'')?item.color:'#aaa5b7');
  const detail=node('details'),summary=node('summary'),identity=JSON.stringify([item.when,item.source,item.original||item.title]);detail.open=newsOpen.has(identity);detail.ontoggle=()=>{if(detail.open)newsOpen.add(identity);else newsOpen.delete(identity);};
  const date=new Date(item.when),time=node('div',undefined,'news-time'),content=node('div',undefined,'news-content');
- time.append(node('small',date.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})),node('small',date.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})),node('small',date>now?'即將發生':'已公布'));content.append(node('span',item.category||'相關消息','news-category'));summary.append(time,content);
+ time.append(node('small',date.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit',timeZone:'Asia/Taipei'})),node('small',eventTime(item.when)),node('small',date>now?'即將發生':'已公布'));content.append(node('span',item.category||'相關消息','news-category'));summary.append(time,content);
  const title=node('div',undefined,'news-title');if(Array.isArray(item.parts)){for(const [text,emphasis] of item.parts)title.append(node('span',text,emphasis?'news-keyword':undefined));}else title.textContent=item.title;content.append(title);
  const values=item.values||{},figures=node('div',undefined,'news-figures');for(const [key,label] of [['actual','公布值'],['forecast','預期'],['previous','前值']]){if(typeof values[key]==='string'&&values[key]){const field=node('div');field.append(node('span',label),node('strong',values[key]));figures.append(field);}}if(figures.childElementCount)content.append(figures);
  if(item.scheduled&&new Date(item.when)<=now&&!values.actual)content.append(node('p','來源尚未提供公布值','muted'));content.append(node('small',item.source));
@@ -156,7 +157,7 @@ function render(s){state=s;const ready=connected()&&!working;$("stageLabel").tex
  showDialog(s.dialog);health();}
 function health(){const online=connected();const text=!online?(connecting?"正在連線…":!$("pairing").hidden?"首次使用或配對已失效，請輸入配對碼":"連線中斷，正在重新連線…"):state?state.health:"正在取得電腦狀態";const bad=!online||rtt>1000||!state||state.health!=="正常";$("health").textContent=!online?(connecting?"連線中":"未連線"):!bad?"正常":state&&state.busy?"操作中":"需留意";$("health").title=text;$("health").classList.toggle("bad",bad);$("healthDetail").textContent=text+(online&&rtt>1000?" · 連線稍慢":"");$("healthDetail").hidden=!bad;if(!online)disable();
  refreshNews();updateCountdown();}
-function updateCountdown(){if(!state)return;const next=state.news.filter(e=>e.scheduled&&new Date(e.when)>Date.now()).sort((a,b)=>new Date(a.when)-new Date(b.when))[0];if(next){const seconds=Math.max(0,Math.ceil((new Date(next.when)-Date.now())/1000)),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60);const text='再過 '+(hours?hours+' 小時 ':'')+(hours||minutes?minutes+' 分 ':'')+seconds%60+' 秒 · '+next.title;$('nextEvent').textContent=text;$('nextEvent').title=text;}else $('nextEvent').textContent=state.news_error||'目前沒有可用的即將公布排程';}
+function updateCountdown(){if(!state)return;const next=state.news.filter(e=>e.scheduled&&new Date(e.when)>Date.now()).sort((a,b)=>new Date(a.when)-new Date(b.when))[0];if(next){const seconds=Math.max(0,Math.ceil((new Date(next.when)-Date.now())/1000)),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60);const text='再過 '+(hours?hours+' 小時 ':'')+(hours||minutes?minutes+' 分 ':'')+seconds%60+' 秒 · '+eventTime(next.when)+' · '+next.title;$('nextEvent').textContent=text;$('nextEvent').title=text+'（台北時間）';}else $('nextEvent').textContent=state.news_error||'目前沒有可用的即將公布排程';}
 setInterval(()=>{updateCountdown();testCooldown();},1000);
 function refreshNews(){if(!state)return;const key=JSON.stringify(state.news)+':'+state.news.filter(item=>new Date(item.when)<=Date.now()).length;if(key!==newsSignature){newsSignature=key;showNews(state.news);}}
 function retryConnection(){if(reconnectTimer||!$("pairing").hidden||document.hidden)return;health();

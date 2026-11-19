@@ -65,6 +65,11 @@ class Announcement:
     scheduled: bool = field(default=False, compare=False)
 
 
+def format_event_time(when):
+    local = when.astimezone(TAIPEI)
+    return f'{local.hour % 12 or 12}:{local.minute:02} {"AM" if local.hour < 12 else "PM"}'
+
+
 def scheduled_reminders(calendar, now):
     """Same fresh schedule and timing policy for desktop and phone alerts."""
     for item in calendar.events:
@@ -74,13 +79,13 @@ def scheduled_reminders(calendar, now):
                 or not timedelta(0) <= now-fetched <= SOURCE_TTLS[key]):
             continue
         delta = (item.when-now).total_seconds()
-        text = f'{item.when.astimezone(TAIPEI):%H:%M} · {calendar.title(item.title)}'
+        text = f'{format_event_time(item.when)} · {calendar.title(item.title)}'
         if 0 < delta <= 600:
             yield ('before', item, '重大事件即將公布',
                    f'{max(1, ceil(delta/60))} 分鐘後公布 · {text}', item.when.timestamp())
         elif -60 <= delta <= 0:
             yield ('release', item, '重大事件公布時間已到',
-                   f'公布時間已到 · {text}；請查看消息確認公布結果。', item.when.timestamp()+180)
+                   f'公布時間已到 · {text}', item.when.timestamp()+180)
 
 
 def source_text(raw):

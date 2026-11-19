@@ -21,6 +21,34 @@ from PySide6.QtCore import QObject, Signal
 PUSH_HOSTS = {'web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com'}
 
 
+def delivery_groups(rows):
+    """Group one phone's same-time alerts, retaining individual queue receipts."""
+    groups = {}
+    for row in rows:
+        device, event, raw, _expires, subscription = row
+        payload = json.loads(raw)
+        when = datetime.fromisoformat(payload['when']) if payload.get('when') else event
+        key = (device, subscription, payload['kind'], when)
+        groups.setdefault(key, []).append(row)
+    return list(groups.values())
+
+
+def combined_payload(rows):
+    payload = json.loads(rows[0][2])
+    if len(rows) > 1:
+        from .calendar_events import format_event_time
+        prefix = payload['body'].split(' · ',1)[0] if payload['kind'] != 'breaking' else '突發重大消息'
+        heading = f'{prefix} · {format_event_time(datetime.fromisoformat(payload["when"]))} · {len(rows)} 則'
+        names = list(dict.fromkeys(json.loads(row[2])['headline'] for row in rows))
+        body = heading+'\n'+'\n'.join('• '+name for name in names)
+        payload.update(body=body if len(body)<=300 else body[:299]+'…',
+                       tag=hashlib.sha256('\n'.join(sorted(row[1] for row in rows)).encode()).hexdigest(),
+                       expires=min(row[3] for row in rows))
+    payload.pop('when',None)
+    payload.pop('headline',None)
+    return payload
+
+
 def load_webpush():
     # Source installs may keep optional dependencies in LAB's private vendor
     # directory. Portable releases install the pinned requirements normally.
@@ -183,7 +211,8 @@ class MobileNotifications(QObject):
     def _enqueue(self, kind, item, title, body, now, expires):
         identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
         payload = json.dumps(dict(title=title, body=body[:300], tag=identity, kind=kind,
-                                  expires=expires), ensure_ascii=False)
+                                  expires=expires, when=item.when.isoformat(),
+                                  headline=self.calendar.title(item.title)), ensure_ascii=False)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
                 (device,event,origin,payload,expires,created)
@@ -229,7 +258,10 @@ class MobileNotifications(QObject):
                 FROM push_deliveries q JOIN push_subscriptions p ON p.device=q.device AND p.origin=q.origin
                 JOIN devices d ON d.id=q.device WHERE q.status='pending' AND q.expires>?
                 AND q.retry<=? AND q.attempts<3 AND q.origin=? AND d.revoked=0 AND d.expires>?
-                LIMIT 12''', (now, now, self.origin, now)).fetchall()
+                ORDER BY q.created,q.rowid''', (now, now, self.origin, now)).fetchall()
+            # Limit deliveries, not members: a simultaneous release must not
+            # split simply because its thirteenth item crosses a batch limit.
+            rows = [row for group in delivery_groups(rows)[:12] for row in group]
             for device, event, *_ in rows:
                 self.store.db.execute('UPDATE push_deliveries SET attempts=attempts+1,retry=?,started=? WHERE device=? AND event=?',
                                       (now+60, now, device, event))
@@ -244,11 +276,13 @@ class MobileNotifications(QObject):
         generation = self._generation if generation is None else generation
         origin = self.origin if origin is None else origin
         results = []
-        for device, event, raw, expires, subscription in rows:
+        for group in delivery_groups(rows):
             if not self.enabled or generation != self._generation or origin != self.origin:
                 break
-            if expires <= time.time():
+            group = [row for row in group if row[3] > time.time()]
+            if not group:
                 continue
+            device, _event, _raw, _expires, subscription = group[0]
             # Recheck revocation and subscription changes immediately before delivery.
             code = 0
             try:
@@ -259,11 +293,14 @@ class MobileNotifications(QObject):
                         (device, subscription, origin, time.time())).fetchone()
                 if not allowed:
                     continue
-                code = send_notification(json.loads(subscription), json.loads(raw), private, expires-time.time())
+                payload = combined_payload(group)
+                code = send_notification(json.loads(subscription), payload, private,
+                                         min(row[3] for row in group)-time.time())
             except Exception as exc:
                 response = getattr(exc, 'response', None)
                 code = int(getattr(response, 'status_code', 0) or 0)
-            results.append((device, event, subscription, code, json.loads(raw)['kind']))
+            results.extend((device,event,subscription,code,json.loads(raw)['kind'])
+                           for _device,event,raw,_expires,_sub in group)
         try:
             self.completed.emit(results)
         except RuntimeError:

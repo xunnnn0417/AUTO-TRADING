@@ -1,7 +1,7 @@
 """Read-only event wording for the helper's configured trading-day interval."""
 from datetime import datetime, timedelta
 
-from .calendar_events import TAIPEI, countdown
+from .calendar_events import TAIPEI, countdown, format_event_time
 from .trading_day import trading_day_key
 from .news_relevance import assess_headline
 
@@ -35,7 +35,7 @@ def event_summary(events, now, settings, day_is_loaded, title=lambda text: text)
     remaining_today = [event for event in today if event.when > now]
     if remaining_today:
         event = remaining_today[0]
-        return f'再過 {countdown(event.when, now).removesuffix("後")} · {title(event.title)}'
+        return f'再過 {countdown(event.when, now).removesuffix("後")} · {format_event_time(event.when)} · {title(event.title)}'
     prefix = ('今日排程尚未完整更新' if not day_is_loaded else
               '今日重大事件已公布' if today else '今日無已知重大排程')
     if not upcoming:
@@ -45,4 +45,4 @@ def event_summary(events, now, settings, day_is_loaded, title=lambda text: text)
     offset = (when.date()-now.astimezone(TAIPEI).date()).days
     day = '今日' if offset == 0 else '明日' if offset == 1 else when.strftime('%m/%d')
     remaining = countdown(event.when, now).removesuffix('後')
-    return f'{prefix} · 下一場：{day} {when:%H:%M} · 再過 {remaining}｜{title(event.title)}'
+    return f'{prefix} · 下一場：{day} {format_event_time(event.when)} · 再過 {remaining}｜{title(event.title)}'

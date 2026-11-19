@@ -2175,7 +2175,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         if self._news_alert_dialog is not None and self._news_alert_dialog.isVisible():
             return
-        from .calendar_events import TAIPEI
+        from .calendar_events import format_event_time
         items, self._pending_news_alerts = self._pending_news_alerts, []
         self._news_popup_items = items
         self._news_alert_timer.stop()
@@ -2193,12 +2193,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.setIcon(QMessageBox.Warning)
         dialog._primary_text.setTextFormat(Qt.PlainText)
         service = self._get_event_calendar()
-        from .news_relevance import assess_headline
-        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source} · {assess_headline(item.title, scheduled=item.scheduled).category}\n{service.title(item.title)}'
-                 for item in items[:3]]
-        extra = f'\n另有 {len(items)-3} 則，請查看消息。' if len(items) > 3 else ''
-        dialog.setText('以下消息可能影響黃金短期波動：\n\n'+'\n\n'.join(lines)+extra)
-        dialog.setInformativeText('消息可能延遲或漏報；不會自動更動交易。')
+        groups = {}
+        for item in items:
+            # Scheduled titles have a controlled prefix, time, then headline.
+            prefix = item.title.split(' · ',1)[0]
+            phase = ('release' if prefix == '公布時間已到' else 'before') if item.scheduled else 'news'
+            groups.setdefault((item.when,phase),[]).append(item)
+        lines = []
+        for (when,phase), members in groups.items():
+            prefix = members[0].title.split(' · ',1)[0] if phase != 'news' else '重大消息'
+            header = f'{prefix} · {format_event_time(when)}'
+            if len(members)>1:
+                header += f' · {len(members)} 則'
+            names = [item.title.split(' · ',2)[-1] if item.scheduled else service.title(item.title)
+                     for item in members]
+            lines.append(header+'\n'+'\n'.join('• '+name for name in dict.fromkeys(names)))
+        dialog.setText('\n\n'.join(lines))
         view = dialog.addButton('查看消息', QMessageBox.ActionRole)
         dialog.addButton('知道了', QMessageBox.AcceptRole)
         def finished(_result):

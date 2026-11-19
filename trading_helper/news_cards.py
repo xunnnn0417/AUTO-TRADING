@@ -4,7 +4,7 @@ from html import escape
 from PySide6.QtCore import Qt, QUrl, QPointF
 from PySide6.QtWidgets import QApplication, QFrame, QTextBrowser
 
-from .calendar_events import TAIPEI, publication_values
+from .calendar_events import TAIPEI, publication_values, format_event_time
 from .news_relevance import assess_headline, highlight_title
 
 
@@ -43,9 +43,9 @@ class NewsCards(QTextBrowser):
                 return
 
     def mouseDoubleClickEvent(self, event):
-        # A rapid second click must not select a word or toggle the row twice.
-        self._press_position = None
-        event.accept()
+        # Qt sends a double-click instead of the second press. Keep it a
+        # normal press so each release toggles, without enabling text selection.
+        self.mousePressEvent(event)
 
     def loadResource(self, resource_type, url):
         return None  # Feed titles cannot load files, images or remote resources.
@@ -106,7 +106,7 @@ class NewsCards(QTextBrowser):
                 f'<table width="100%" cellspacing="0" cellpadding="0"><tr>'
                 f'<td width="3" bgcolor="{color}"></td><td width="{gutter}"></td>'
                 f'<td width="{time_width}" valign="top" style="white-space:nowrap"><span style="color:#eeedf3;{time_style}">{when.astimezone(TAIPEI):%m/%d}</span>'
-                f'<br><span style="color:#aaa5b7;{time_style}">{when.astimezone(TAIPEI):%H:%M}<br>{escape(state)}</span></td>'
+                f'<br><span style="color:#aaa5b7;{time_style}">{format_event_time(when)}<br>{escape(state)}</span></td>'
                 f'<td valign="top"><p style="margin:0;color:{color};font-size:11px">{escape(assessment.category)}</p>'
                 f'<p style="margin:{title_margin}px 0;font-size:{headline_size}px">{highlight_title(shown, color)}</p>{result}'
                 f'<span style="color:#aaa5b7;font-size:11px">{escape(source)}</span>　'

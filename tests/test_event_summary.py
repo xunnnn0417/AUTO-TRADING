@@ -2,11 +2,17 @@
 import unittest
 from datetime import datetime, timedelta
 
-from trading_helper.calendar_events import CalendarEvent, countdown
+from trading_helper.calendar_events import CalendarEvent, countdown, format_event_time
 from trading_helper.event_summary import TAIPEI, event_summary, relevant_announcement, trading_session
 
 
 class EventSummaryTests(unittest.TestCase):
+    def test_am_pm_time_handles_midnight_noon_and_timezone_conversion(self):
+        local = datetime(2026,11,19,tzinfo=TAIPEI)
+        for hour, expected in ((0,'12:30 AM'),(9,'9:30 AM'),(12,'12:30 PM'),(21,'9:30 PM')):
+            self.assertEqual(format_event_time(local.replace(hour=hour,minute=30)),expected)
+        from datetime import timezone
+        self.assertEqual(format_event_time(local.replace(hour=21,minute=30).astimezone(timezone.utc)), '9:30 PM')
     def test_routine_central_bank_administration_is_not_marked_market_news(self):
         self.assertTrue(relevant_announcement('FOMC statement'))
         self.assertTrue(relevant_announcement('Monetary policy and inflation'))
@@ -35,7 +41,7 @@ class EventSummaryTests(unittest.TestCase):
         event = CalendarEvent(datetime(2026, 11, 17, 21, 30, tzinfo=TAIPEI), 'USD', 'CPI')
         result = event_summary([event], now, {}, True)
         self.assertIn('今日無已知重大排程', result)
-        self.assertIn('明日 21:30', result)
+        self.assertIn('明日 9:30 PM', result)
         self.assertNotIn('\n', result)
         unknown = event_summary([event], now, {}, False)
         self.assertIn('尚未完整更新', unknown)
@@ -47,13 +53,13 @@ class EventSummaryTests(unittest.TestCase):
                   CalendarEvent(datetime(2026, 11, 25, 21, 30, tzinfo=TAIPEI), 'USD', 'GDP')]
         result = event_summary(events, now, {}, True)
         self.assertIn('今日重大事件已公布', result)
-        self.assertIn('11/25 21:30', result)
+        self.assertIn('11/25 9:30 PM', result)
         self.assertIn('下一場', result)
 
     def test_session_break_does_not_hide_next_known_release(self):
         now = datetime(2026, 11, 17, 6, 30, tzinfo=TAIPEI)
         event = CalendarEvent(now+timedelta(minutes=10), 'USD', 'CPI')
-        self.assertIn('今日 06:40', event_summary([event], now, {}, True))
+        self.assertIn('今日 6:40 AM', event_summary([event], now, {}, True))
 
     def test_long_countdown_retains_minutes(self):
         now = datetime(2026, 11, 16, 12, tzinfo=TAIPEI)

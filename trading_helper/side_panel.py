@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QStyle, QStyleOptionToolButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .calendar_events import TAIPEI, UTC
+from .calendar_events import TAIPEI, UTC, format_event_time
 from .event_summary import event_summary, trading_session
 from .progress_ruler import AccountRuler, money
 from .ui_theme import themed_icon
@@ -527,7 +527,7 @@ class SideQuickPanel(QWidget):
         tooltip = (summary+f'\n今日事件範圍：{start:%m/%d %H:%M}–{end:%m/%d %H:%M}（台北，依切日設定）'
                    '\n按一下查看詳情。'+ ('\n部分來源資料待更新。' if stale else ''))
         for event in upcoming[:6]:
-            tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d %H:%M} · {event.currency} · {self.calendar.title(event.title)}'
+            tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d} {format_event_time(event.when)} · {event.currency} · {self.calendar.title(event.title)}'
         self.events_button.setToolTip(tooltip)
 
     def update_events(self):

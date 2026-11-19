@@ -107,6 +107,49 @@ class MobileNotificationTests(unittest.TestCase):
         self.assertEqual([json.loads(row[1])['kind'] for row in self.rows()], ['before', 'release'])
         self.assertIn('公布時間', json.loads(self.rows()[-1][1])['title'])
         self.assertNotIn('實際值', json.loads(self.rows()[-1][1])['body'])
+        self.assertNotIn('請查看消息確認公布結果', json.loads(self.rows()[-1][1])['body'])
+
+    def test_simultaneous_release_members_share_one_delivery_and_all_keep_receipts(self):
+        from test_mobile_remote import wait_for
+        when = datetime.fromtimestamp(self.now+590,timezone.utc)
+        names = [f'指標{i:02}' for i in range(13)]
+        self.calendar.events = [CalendarEvent(when,'USD',name) for name in names]
+        self.service.poll(self.calendar,self.origin,self.now)
+        self.assertEqual(len(self.rows()),13)
+        with patch('trading_helper.remote_notifications.send_notification',return_value=201) as send:
+            MobileNotifications._dispatch(self.service,self.now)
+            self.assertTrue(wait_for(lambda: not self.service._busy))
+            self.assertEqual(send.call_count,1)
+            payload = send.call_args.args[1]
+            self.assertIn('13 則',payload['body'])
+            for name in names:self.assertIn(name,payload['body'])
+            self.assertTrue(all(row[2]=='sent' for row in self.rows()))
+            MobileNotifications._dispatch(self.service,self.now+61)
+            self.assertEqual(send.call_count,1)
+
+    def test_grouping_keeps_phones_phases_and_different_times_separate(self):
+        from trading_helper.remote_notifications import delivery_groups
+        when = datetime.fromtimestamp(self.now,timezone.utc)
+        def row(event,device='one',kind='release',time_value=when):
+            return (device,event,json.dumps(dict(kind=kind,when=time_value.isoformat())),self.now+180,'subscription')
+        rows = [row('a'),row('b',time_value=when.astimezone(timezone(timedelta(hours=8)))),
+                row('c',device='two'),row('d',kind='before'),row('e',time_value=when+timedelta(seconds=1))]
+        self.assertEqual([len(group) for group in delivery_groups(rows)],[2,1,1,1])
+
+    def test_group_retry_uses_same_tag_and_stops_after_three_provider_attempts(self):
+        from test_mobile_remote import wait_for
+        when = datetime.fromtimestamp(self.now+590,timezone.utc)
+        self.calendar.events = [CalendarEvent(when,'USD',name) for name in ('CPI','PPI')]
+        self.service.poll(self.calendar,self.origin,self.now)
+        with patch('trading_helper.remote_notifications.send_notification',return_value=429) as send:
+            for attempt in range(3):
+                MobileNotifications._dispatch(self.service,self.now+61*attempt)
+                self.assertTrue(wait_for(lambda: not self.service._busy))
+            self.assertEqual(send.call_count,3)
+            self.assertEqual(len({call.args[1]['tag'] for call in send.call_args_list}),1)
+            self.assertTrue(all(row[2]=='failed' for row in self.rows()))
+            MobileNotifications._dispatch(self.service,self.now+190)
+            self.assertEqual(send.call_count,3)
 
     def test_stale_missing_source_error_and_old_releases_do_not_notify(self):
         self.calendar.events = [CalendarEvent(datetime.fromtimestamp(self.now-70, timezone.utc), 'USD', 'CPI')]

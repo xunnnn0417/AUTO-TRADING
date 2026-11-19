@@ -167,6 +167,21 @@ class NewsAlertUiTests(unittest.TestCase):
         self.assertFalse(self.w.news_badge.isVisible())
         self.assertIsNone(getattr(self.w, '_news_alert_dialog', None))
 
+    def test_same_time_scheduled_alerts_share_one_heading_and_keep_all_five_names(self):
+        when = datetime.now(feeds.UTC)
+        time_text = feeds.format_event_time(when)
+        items = [feeds.Announcement(when,'Forex Factory',
+                 f'公布時間已到 · {time_text} · 指標{i}',scheduled=True) for i in range(5)]
+        self.w._queue_news_alerts(items)
+        dialog = self.w._news_alert_dialog
+        text = dialog._primary_text.text()
+        self.assertEqual(text.count(time_text),1)
+        self.assertIn('5 則',text)
+        for i in range(5):self.assertIn(f'指標{i}',text)
+        self.assertNotIn('請查看消息確認公布結果',text)
+        self.assertTrue(dialog.isVisible())
+        dialog.close()
+
     def test_countdown_ticks_without_rebuilding_rows_or_fetching_sources(self):
         with patch.object(feeds.EconomicCalendar,'refresh'):
             self.w.switch_workspace('消息')
