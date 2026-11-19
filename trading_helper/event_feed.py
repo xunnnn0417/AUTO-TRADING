@@ -9,6 +9,7 @@ from .calendar_events import UTC, events_for_display
 from .event_summary import relevant_announcement, event_summary, trading_session
 from .ui_theme import themed_icon
 from .news_cards import NewsCards
+from .compact_controls import SmallDisclosureButton
 
 
 class CountdownLabel(QLabel):
@@ -57,11 +58,9 @@ class EventFeedView(QWidget):
         header.addWidget(self.refresh_button)
         owner = getattr(get_calendar, '__self__', None)
         if not compact and getattr(owner, 'store', None) is not None:
-            self.rest_settings_button = QToolButton()
+            self.rest_settings_button = SmallDisclosureButton()
             self.rest_settings_button.setText('休市提醒')
             self.rest_settings_button.setCheckable(True)
-            self.rest_settings_button.setArrowType(Qt.DownArrow)
-            self.rest_settings_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             header.addWidget(self.rest_settings_button)
         if close is not None:
             from .window_chrome import WindowChromeButton
@@ -80,7 +79,7 @@ class EventFeedView(QWidget):
                 if opened:
                     self.rest_editor.load()
                 self.rest_editor.setVisible(opened)
-                self.rest_settings_button.setArrowType(Qt.UpArrow if opened else Qt.DownArrow)
+                self.rest_settings_button.update()
             self.rest_settings_button.toggled.connect(toggle_rest_settings)
         self.countdown_label = CountdownLabel()
         root.addWidget(self.countdown_label)
@@ -194,6 +193,8 @@ class EventFeedView(QWidget):
         self.update_countdown()
         now = datetime.now(UTC)
         events = events_for_display(self.calendar, now)
+        if hasattr(self, 'rest_editor'):
+            self.rest_editor.update_schedule(now)
         upcoming = sorted(event for event in events if now < event.when <= now + timedelta(days=45))
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         busy = self.calendar._busy

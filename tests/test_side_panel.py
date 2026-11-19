@@ -100,6 +100,24 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel.stage_selector.isEnabled())
         self.w._trade_settings_busy = False
 
+    def test_stage_popup_keyboard_selection_keeps_the_shared_stage_action(self):
+        from trading_helper.sheet_preferences import TradeSheetSettings
+        panel = self.open_panel()
+        settings = TradeSheetSettings('第一階段', ('第一階段', '真金階段'), dict(C2=False, B6=False, E14=True))
+        self.w._show_trade_sheet_settings((self.w._trade_settings_context(), settings, ''))
+        panel.sync_from_main()
+        combo = panel.stage_selector
+        with patch.object(self.w, '_confirm_trade_setting') as change:
+            combo.showPopup()
+            self.qtapp.processEvents()
+            self.assertTrue(combo.view().isVisible())
+            QTest.keyClick(combo.view(), Qt.Key_Down)
+            QTest.keyClick(combo.view(), Qt.Key_Return)
+            self.qtapp.processEvents()
+            self.assertFalse(combo.view().isVisible())
+            self.assertEqual(combo.currentText(), '真金階段')
+            change.assert_called_once_with('A4', '真金階段')
+
     def test_sidebar_has_only_one_seconds_countdown_without_more_source_requests(self):
         panel = self.open_panel()
         now = datetime.now(UTC)

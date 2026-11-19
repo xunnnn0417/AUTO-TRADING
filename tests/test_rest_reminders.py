@@ -20,26 +20,35 @@ class RestReminderTests(unittest.TestCase):
 
     def test_default_is_disabled_and_invalid_settings_are_rejected(self):
         self.assertFalse(normalize_settings({})['enabled'])
-        for change in (dict(time='25:00'), dict(minutes=[0]), dict(minutes=[1441]),
-                       dict(minutes=['30']), dict(days=[]), dict(days=[7]), dict(enabled='yes')):
+        for change in (dict(minutes=[0]), dict(minutes=[1441]),
+                       dict(minutes=['30']), dict(minutes=list(range(1, 10))), dict(enabled='yes')):
             value = self.settings()
             value.update(change)
             with self.subTest(change=change), self.assertRaises(ValueError):
                 normalize_settings(value)
 
-    def test_custom_time_weekdays_and_midnight_offsets(self):
-        now = datetime(2026, 11, 22, 23, 45, tzinfo=TAIPEI)  # Sunday
-        value = dict(enabled=True, time='00:15', minutes=[30, 60, 30], days=[0])
+    def test_automatic_winter_summer_and_weekend_schedule(self):
+        value = dict(enabled=True, minutes=[30, 60, 30])
         self.assertEqual(normalize_settings(value)['minutes'], [60, 30])
-        occurrences = rest_occurrences(value, now)
-        self.assertEqual(min(t for t in occurrences if t > now), now.replace(day=23, hour=0, minute=15))
-        with tempfile.TemporaryDirectory() as folder:
-            service = EconomicCalendar(Path(folder)/'events.json', rest_settings=lambda: value)
-            self.addCleanup(service.close)
-            due = list(scheduled_reminders(service, now))
-            self.assertEqual([row[0] for row in due], ['rest:30'])
-            self.assertIn('30 分鐘後休市', due[0][3])
-            self.assertIn('12:15 AM', due[0][3])
+        for now, expected in ((datetime(2026, 11, 20, 1, tzinfo=TAIPEI), (20, 6)),
+                              (datetime(2026, 6, 19, 1, tzinfo=TAIPEI), (19, 5)),
+                              (datetime(2026, 11, 22, 1, tzinfo=TAIPEI), (24, 6)),
+                              (datetime(2026, 3, 9, 1, tzinfo=TAIPEI), (10, 5)),
+                              (datetime(2026, 11, 2, 1, tzinfo=TAIPEI), (3, 6))):
+            with self.subTest(now=now):
+                next_close = min(t for t in rest_occurrences(value, now) if t > now)
+                self.assertEqual((next_close.day, next_close.hour), expected)
+                self.assertNotIn(next_close.weekday(), (0, 6))
+
+    def test_legacy_time_and_days_no_longer_override_automatic_schedule(self):
+        now = datetime(2026, 11, 22, 23, tzinfo=TAIPEI)
+        value = self.settings()
+        value.update(time='00:15', days=[0])
+        normalized = normalize_settings(value)
+        self.assertNotIn('time', normalized)
+        self.assertNotIn('days', normalized)
+        next_close = min(t for t in rest_occurrences(value, now) if t > now)
+        self.assertEqual((next_close.day, next_close.hour), (24, 6))
 
     def test_offset_window_no_late_catchup_and_no_after_close_alert(self):
         now = datetime(2026, 11, 20, 5, tzinfo=TAIPEI)
@@ -70,6 +79,6 @@ class RestReminderTests(unittest.TestCase):
 
     def test_disabled_or_corrupt_saved_values_never_schedule(self):
         now = datetime(2026, 11, 20, 5, tzinfo=TAIPEI)
-        for value in ({}, dict(enabled=True, time='bad'), dict(enabled=False)):
+        for value in ({}, dict(enabled=True, minutes=[0]), dict(enabled=False)):
             with self.subTest(value=value):
                 self.assertEqual(rest_occurrences(value, now), [])

@@ -109,10 +109,12 @@ class MobileNotificationTests(unittest.TestCase):
         self.assertNotIn('實際值', json.loads(self.rows()[-1][1])['body'])
         self.assertNotIn('請查看消息確認公布結果', json.loads(self.rows()[-1][1])['body'])
 
-    def test_custom_rest_schedule_uses_same_phone_queue_and_stays_deduplicated(self):
-        from trading_helper.calendar_events import TAIPEI
-        close = (datetime.fromtimestamp(self.now, TAIPEI)+timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
-        config = dict(enabled=True, time='06:00', minutes=[60, 30], days=[close.weekday()])
+    def test_automatic_rest_schedule_uses_same_phone_queue_and_stays_deduplicated(self):
+        from trading_helper.calendar_events import TAIPEI, format_event_time
+        from trading_helper.rest_reminders import rest_occurrences
+        config = dict(enabled=True, minutes=[60, 30])
+        now = datetime.fromtimestamp(self.now, TAIPEI)
+        close = next(t for t in rest_occurrences(config, now) if t > now+timedelta(hours=2))
         self.calendar.rest_settings = lambda: config
         first = close.timestamp()-3600
         self.service.poll(self.calendar, self.origin, first)
@@ -121,7 +123,7 @@ class MobileNotificationTests(unittest.TestCase):
         payloads = [json.loads(row[1]) for row in self.rows()]
         self.assertEqual([p['kind'] for p in payloads], ['rest:60', 'rest:30'])
         self.assertTrue(all(p['title'] == '休市前提醒' for p in payloads))
-        self.assertIn('6:00 AM', payloads[0]['body'])
+        self.assertIn(format_event_time(close), payloads[0]['body'])
         self.assertNotIn('公布', payloads[0]['body'])
         config['enabled'] = False
         self.service.poll(self.calendar, self.origin, first+1810)

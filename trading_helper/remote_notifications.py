@@ -235,11 +235,12 @@ class MobileNotifications(QObject):
             return
         now = time.time() if now is None else now
         # A disabled/edited local schedule must not send queued retries from its old settings.
-        from .rest_reminders import normalize_settings
+        from .rest_reminders import normalize_settings, rest_occurrences
         try:
             rest = normalize_settings(getattr(calendar, 'rest_settings', lambda: {})())
         except ValueError:
             rest = {'enabled': False}
+        rest_times = rest_occurrences(rest, datetime.fromtimestamp(now, timezone.utc))
         with self.store.db:
             pending = self.store.db.execute("SELECT device,event,payload FROM push_deliveries WHERE status='pending'").fetchall()
             for device, event, raw in pending:
@@ -248,8 +249,7 @@ class MobileNotifications(QObject):
                     continue
                 from .calendar_events import TAIPEI
                 when = datetime.fromisoformat(payload['when']).astimezone(TAIPEI)
-                if (not rest['enabled'] or when.strftime('%H:%M') != rest['time']
-                        or when.weekday() not in rest['days']
+                if (not rest['enabled'] or when not in rest_times
                         or payload['kind'] not in {f'rest:{n}' for n in rest['minutes']}):
                     self.store.db.execute("UPDATE push_deliveries SET status='cancelled' WHERE device=? AND event=?",
                                           (device, event))

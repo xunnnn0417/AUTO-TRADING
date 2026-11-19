@@ -1,11 +1,17 @@
-"""Compact settings editor for local rest reminders, used on the main news page."""
-from PySide6.QtCore import QLocale, QTime
+"""Automatic gold rest schedule with preset/custom advance reminders."""
+from datetime import datetime
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QTimeEdit, QLineEdit, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QLineEdit, QPushButton,
+    QMenu, QToolButton, QWidgetAction,
 )
 
-from .rest_reminders import normalize_settings
+from .calendar_events import UTC, format_event_time
+from .compact_controls import SmallDisclosureButton
+from .rest_reminders import normalize_settings, rest_occurrences
 from .ui_theme import install_checkmark_only_indicator
+
+PRESETS = {30: '30 分鐘', 60: '1 小時', 90: '1.5 小時', 120: '2 小時'}
 
 
 class RestReminderSettings(QWidget):
@@ -14,56 +20,78 @@ class RestReminderSettings(QWidget):
         self.get_settings, self.save_settings = get_settings, save_settings
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 6, 10, 8)
-        root.setSpacing(6)
+        root.setSpacing(7)
         row = QHBoxLayout()
         self.enabled = QCheckBox('啟用休市提醒')
         row.addWidget(self.enabled)
+        self.schedule_label = QLabel()
         row.addSpacing(12)
-        row.addWidget(QLabel('休市時間（台北）'))
-        self.clock = QTimeEdit()
-        self.clock.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
-        self.clock.setDisplayFormat('h:mm AP')
-        self.clock.setMinimumHeight(30)
-        self.clock.setStyleSheet('QTimeEdit { background:#1b1b25; color:#eeedf3; '
-                                 'border:1px solid #393743; border-radius:7px; padding:4px 8px; }')
-        self.clock.setAccessibleName('休市時間（台北）')
-        row.addWidget(self.clock)
+        row.addWidget(self.schedule_label)
         row.addStretch()
         root.addLayout(row)
         row = QHBoxLayout()
-        row.addWidget(QLabel('提前分鐘'))
-        self.minutes = QLineEdit()
-        self.minutes.setMaximumWidth(140)
-        self.minutes.setAccessibleName('提前提醒分鐘')
-        self.minutes.setPlaceholderText('60, 30')
-        row.addWidget(self.minutes)
-        row.addWidget(QLabel('逗號分隔，最多 8 個'))
-        row.addStretch()
-        root.addLayout(row)
-        row = QHBoxLayout()
-        row.addWidget(QLabel('休市日'))
-        self.days = []
-        for name in '一二三四五六日':
-            check = QCheckBox(name)
-            check.setAccessibleName('星期'+name+'休市')
-            self.days.append(check)
-            row.addWidget(check)
-        for check in [self.enabled, *self.days]:
-            install_checkmark_only_indicator(check)
-        row.addStretch()
+        row.addWidget(QLabel('提前提醒'))
+        self.advance_button = SmallDisclosureButton()
+        self.advance_button.setAccessibleName('選擇提前提醒時間')
+        self.advance_button.setPopupMode(QToolButton.InstantPopup)
+        self.advance_menu = QMenu(self)
+        self.advance_menu.setStyleSheet('QMenu {background:#17151e;color:#eae4f2;'
+                                       'border:1px solid #3c3548;border-radius:7px;padding:4px;}')
+        choices = QWidget()
+        menu_layout = QVBoxLayout(choices)
+        menu_layout.setContentsMargins(9, 5, 9, 5)
+        menu_layout.setSpacing(8)
+        self.presets = {}
+        for minutes, caption in PRESETS.items():
+            check = QCheckBox(caption)
+            check.toggled.connect(self.update_selection)
+            self.presets[minutes] = check
+            menu_layout.addWidget(check)
+        self.custom = QCheckBox('自訂')
+        self.custom.toggled.connect(self.update_selection)
+        menu_layout.addWidget(self.custom)
+        action = QWidgetAction(self.advance_menu)
+        action.setDefaultWidget(choices)
+        self.advance_menu.addAction(action)
+        self.advance_button.setMenu(self.advance_menu)
+        row.addWidget(self.advance_button)
+        self.custom_input = QLineEdit()
+        self.custom_input.setPlaceholderText('分鐘，例如 15, 45')
+        self.custom_input.setAccessibleName('自訂提前分鐘')
+        self.custom_input.setMaximumWidth(190)
+        row.addWidget(self.custom_input)
         self.save_button = QPushButton('儲存')
         self.save_button.clicked.connect(self.save)
         row.addWidget(self.save_button)
+        row.addStretch()
         root.addLayout(row)
-        row = QHBoxLayout()
-        note = QLabel('依平台休市當天的日期與時間設定；只提醒，不會平倉。')
+        for check in [self.enabled, self.custom, *self.presets.values()]:
+            install_checkmark_only_indicator(check)
+        note = QLabel('夏／冬令自動調整；假日與平台時段可能不同。只提醒，不會平倉。')
         note.setProperty('muted', True)
-        row.addWidget(note)
+        root.addWidget(note)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        root.addLayout(row)
         root.addWidget(self.status)
         self.load()
+
+    def update_schedule(self, now=None):
+        now = now or datetime.now(UTC)
+        next_close = next(t for t in rest_occurrences(dict(enabled=True), now) if t > now)
+        self.schedule_label.setText(f'下次黃金例行休市：{next_close:%m/%d} {format_event_time(next_close)}（台北）')
+
+    def update_selection(self):
+        # Signals can fire while the preset checkboxes are still being built.
+        if not hasattr(self, 'custom_input'):
+            return
+        custom = self.custom.isChecked()
+        self.custom_input.setVisible(custom)
+        for check in self.presets.values():
+            check.setEnabled(not custom)
+        selected = [caption for minutes, caption in reversed(PRESETS.items()) if self.presets[minutes].isChecked()]
+        text = '自訂' if custom else '、'.join(selected) if len(selected) <= 2 else f'已選 {len(selected)} 個時間'
+        self.advance_button.setText(text or '請選擇')
+        self.advance_button.setToolTip('自訂分鐘' if custom else '、'.join(selected))
 
     def load(self):
         try:
@@ -73,23 +101,28 @@ class RestReminderSettings(QWidget):
             value = normalize_settings({})
             message = '設定無效，請重新設定並儲存。'
         self.enabled.setChecked(value['enabled'])
-        self.clock.setTime(QTime.fromString(value['time'], 'HH:mm'))
-        self.minutes.setText(', '.join(map(str, value['minutes'])))
-        for day, check in enumerate(self.days):
-            check.setChecked(day in value['days'])
+        for minutes, check in self.presets.items():
+            check.setChecked(minutes in value['minutes'] and not value['custom'])
+        self.custom.setChecked(value['custom'])
+        self.custom_input.setText(', '.join(map(str, value['minutes'])) if value['custom'] else '')
+        self.update_selection()
+        self.update_schedule()
         self.status.setText(message)
 
     def save(self):
         try:
-            raw = self.minutes.text().replace('，', ',').split(',')
-            if any(not item.strip().isascii() or not item.strip().isdigit() for item in raw):
-                raise ValueError('提前分鐘請填數字，以逗號分隔。')
-            value = normalize_settings(dict(enabled=self.enabled.isChecked(),
-                time=self.clock.time().toString('HH:mm'), minutes=[int(item) for item in raw],
-                days=[i for i, check in enumerate(self.days) if check.isChecked()]))
+            minutes = [n for n, check in self.presets.items() if check.isChecked()]
+            if self.custom.isChecked():
+                raw = self.custom_input.text().replace('，', ',').split(',')
+                if any(not item.strip().isascii() or not item.strip().isdigit() for item in raw):
+                    raise ValueError('提前分鐘請填數字，以逗號分隔。')
+                minutes = [int(item) for item in raw]
+            if not minutes:
+                raise ValueError('請至少選擇一個提醒時間。')
+            value = normalize_settings(dict(enabled=self.enabled.isChecked(), minutes=minutes,
+                                            custom=self.custom.isChecked()))
             self.save_settings(value)
         except (ValueError, OSError) as exc:
             self.status.setText(str(exc) if isinstance(exc, ValueError) else '儲存失敗，請重試。')
             return
-        self.minutes.setText(', '.join(map(str, value['minutes'])))
         self.status.setText('已儲存。' if value['enabled'] else '已關閉休市提醒。')

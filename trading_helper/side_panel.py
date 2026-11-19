@@ -16,6 +16,7 @@ from .event_summary import event_summary, trading_session
 from .progress_ruler import AccountRuler, money
 from .ui_theme import themed_icon
 from .sidebar_geometry import ensure_native_sidebar
+from .compact_controls import HoverStageCombo
 
 
 class EventFlyout(QFrame):
@@ -154,14 +155,10 @@ class SideQuickPanel(QWidget):
         row.setSpacing(6)
         title = QLabel('對沖小幫手')
         title.setStyleSheet('font-size: 13px; font-weight: 600;')
-        self.stage_selector = type(app.stage_selector)()
+        self.stage_selector = HoverStageCombo()
         self.stage_selector.setObjectName('sideStageSelector')
         self.stage_selector.setAccessibleName('側邊階段')
         self.stage_selector.setPlaceholderText('尚未讀取')
-        self.stage_selector.setFixedHeight(24)
-        self.stage_selector.setFixedWidth(86)
-        self.stage_selector.setStyleSheet('QComboBox {font-size:10px;color:#b8a8d5;'
-                                         'background:transparent;border:0;padding:2px 16px 2px 0;}')
         self.stage_selector.currentTextChanged.connect(self._stage_selected)
         row.addWidget(title)
         row.addWidget(self.stage_selector, 0, Qt.AlignBottom)

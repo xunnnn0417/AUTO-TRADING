@@ -93,9 +93,10 @@ def scheduled_reminders(calendar, now):
         for minutes in normalize_settings(settings)['minutes']:
             trigger = when-timedelta(minutes=minutes)
             if 0 <= (now-trigger).total_seconds() <= 60 and now < when:
-                item = CalendarEvent(when, '本機', '休市', '休市提醒', '依自訂時間提醒；不會自動平倉。')
+                item = CalendarEvent(when, '本機', '黃金例行休市', '休市提醒',
+                                     '依美國夏／冬令時間計算；假日與平台時段可能不同。不會自動平倉。')
                 yield (f'rest:{minutes}', item, '休市前提醒',
-                       f'{minutes} 分鐘後休市 · {format_event_time(when)} · 休市提醒',
+                       f'{minutes} 分鐘後例行休市 · {format_event_time(when)} · 黃金例行休市',
                        min(when.timestamp(), trigger.timestamp()+180))
 
 
@@ -106,8 +107,8 @@ def events_for_display(calendar, now):
     future = [when for when in times if when > now]
     recent = [when for when in times if now-timedelta(hours=24) <= when <= now]
     shown = recent+future[:1]
-    return sorted(list(calendar.events)+[CalendarEvent(when, '本機', '休市', '休市提醒',
-        '依自訂時間提醒；不會自動平倉。') for when in shown])
+    return sorted(list(calendar.events)+[CalendarEvent(when, '本機', '黃金例行休市', '休市提醒',
+        '依美國夏／冬令時間計算；假日與平台時段可能不同。不會自動平倉。') for when in shown])
 
 
 def source_text(raw):
