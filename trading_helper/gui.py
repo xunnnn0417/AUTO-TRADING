@@ -2194,7 +2194,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog._primary_text.setTextFormat(Qt.PlainText)
         service = self._get_event_calendar()
         from .news_relevance import assess_headline
-        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source} · {assess_headline(item.title).category}\n{service.title(item.title)}'
+        lines = [f'{item.when.astimezone(TAIPEI):%H:%M} · {item.source} · {assess_headline(item.title, scheduled=item.scheduled).category}\n{service.title(item.title)}'
                  for item in items[:3]]
         extra = f'\n另有 {len(items)-3} 則，請查看消息。' if len(items) > 3 else ''
         dialog.setText('以下消息可能影響黃金短期波動：\n\n'+'\n\n'.join(lines)+extra)
@@ -5747,9 +5747,9 @@ class CalibrationDialog(ThemedDialog):
         self._calibration_content = content
         self._calibration_content_layout = content_layout
         descriptions = {
-            "cTrader": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
-            "MT5": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
-            "TradingView": "此平台使用手動校準；請按各欄位右側的「手動擷取」。",
+            "cTrader": "將交易平台最大化，再依序校準。",
+            "MT5": "將交易平台最大化，再依序校準。",
+            "TradingView": "按欄位右側「手動擷取」校準。",
         }
         content_layout.addWidget(QLabel(descriptions.get(platform, "選擇項目後校準；舊設定會保留到你主動變更。")))
         self.radios: dict[str, QRadioButton] = {}
@@ -5897,19 +5897,17 @@ class CalibrationDialog(ThemedDialog):
                 else:
                     card_layout.addWidget(radio)
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 0:
-                card_layout.addWidget(QLabel("第 1 步：校準主視窗的「新訂單」按鈕。"))
+                card_layout.addWidget(QLabel("請顯示 MT5 主視窗。"))
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 1:
                 card_layout.addWidget(QLabel(
-                    "請先開啟 MT5「新訂單」視窗，再按自動尋找。"
+                    "先開啟 MT5「新訂單」視窗。"
                 ))
                 card_layout.addWidget(QLabel(
-                    "BTCUSD／ETHUSD 測試必須分別校準左側 Bid 與右側 Ask；"
-                    "請讓黃色框只框住各自的完整報價數字。"
+                    "Bid／Ask 須分開框住完整數字。"
                 ))
             if platform == "cTrader" and stage_index == 0:
                 ctrader_hint = QLabel(
-                    "請先展開止盈／止損欄並保持展開，再找或擷取下單按鈕。"
-                    "收起時按鈕位置可能改變。"
+                    "請保持止盈／止損欄展開，避免下單按鈕移位。"
                 )
                 ctrader_hint.setWordWrap(True)
                 ctrader_hint.setObjectName("ctraderOrderPanelCalibrationHint")
@@ -5917,12 +5915,10 @@ class CalibrationDialog(ThemedDialog):
             if set(stage_keys)==set(POSITION_GRID_KEYS):
                 row_name="TP" if platform=="cTrader" else "SL"
                 card_layout.addWidget(QLabel(
-                    "先顯示 Positions／交易列表，再校準進場價、手數與訂單列；"
-                    f"雙擊訂單列的 {row_name} 欄可開啟修改視窗。"
+                    f"先顯示持倉列表；雙擊 {row_name} 欄可開啟修改視窗。"
                 ))
                 close_help = QLabel(
-                    "自動尋找不到時，手動擷取持倉列最右側的平倉按鈕；"
-                    "擷取後以黃框核對，不會點擊或平倉。"
+                    "找不到時，手動擷取持倉列最右側平倉按鈕，再以黃框核對；不會點擊或平倉。"
                 )
                 close_help.setWordWrap(True)
                 close_help.setObjectName("positionCloseCalibrationHelp")
@@ -5930,8 +5926,7 @@ class CalibrationDialog(ThemedDialog):
                 card_layout.addWidget(close_help)
             elif set(stage_keys)==set(POSITION_EDIT_KEYS):
                 card_layout.addWidget(QLabel(
-                    "你必須先自行雙擊持倉列開啟修改視窗，再掃止損、止盈、確認按鈕。"
-                    "本功能不會點擊 Protect／Modify。"
+                    "請先手動開啟持倉修改視窗，再尋找欄位。"
                 ))
             if platform != "TradingView":
                 scan = QPushButton("自動尋找欄位", page)
@@ -5940,8 +5935,7 @@ class CalibrationDialog(ThemedDialog):
                 card_layout.addWidget(scan)
             else:
                 card_layout.addWidget(QLabel(
-                    "TradingView 尚無可靠的一鍵 UIA 掃描。"
-                    "先以手動校準，不會假裝已自動找到位置。"
+                    "請逐一手動擷取欄位。"
                 ))
             self._stage_keys.append(tuple(stage_keys))
             self._stage_titles.append(title)
@@ -7300,22 +7294,16 @@ class PostEntryCalibrationDialog(ThemedDialog):
         self.last_report: PostEntryReport | None = None
         body = QVBoxLayout(self)
         body.addWidget(QLabel(
-            "① 在 cTrader 打開 Positions（持倉）分頁；"
-            "使用模擬帳戶或已經存在的持倉。\n"
-            "② 按「開始辨識持倉欄位」即可，程式會定期檢查。\n"
-            "0 筆會繼續等待；1 筆會停止並顯示候選；"
-            "多筆會停止請你確認。\n"
-            "此功能不會下單、雙擊持倉、修改止損或儲存位置。"
+            "顯示持倉列表後開始辨識；沒有持倉時會等待，多筆時請先確認。\n"
+            "僅辨識位置，不下單、不修改持倉。"
         ))
-        self.status_label = QLabel("尚未開始。若目前沒有持倉，可以先關閉此視窗。")
+        self.status_label = QLabel("尚未開始")
         body.addWidget(self.status_label)
         self.results = QPlainTextEdit(self)
         self.results.setReadOnly(True)
         self.results.setPlainText(
-            "目前尚未開始。\n"
-            "先在 cTrader 顯示 Positions（持倉）分頁，"
-            "再按「開始辨識持倉欄位」。\n"
-            "沒有持倉時可以先離開，不需要為了校準開真倉。"
+            "先顯示 cTrader 持倉列表，再按「開始辨識持倉欄位」。\n"
+            "無持倉可先關閉，不必為校準開倉。"
         )
         body.addWidget(self.results)
         self.watch_timer = QTimer(self)
@@ -7403,18 +7391,15 @@ class PostEntryCalibrationDialog(ThemedDialog):
         self.last_report = report
         if report.state == "empty":
             self.results.setPlainText(
-                "目前 0 筆持倉。程式會繼續等待；"
-                "你不用重複按掃描，也不需要為了校準建立真實訂單。"
+                "目前沒有持倉，會繼續等待；不必為校準開倉。"
             )
         elif report.state == "multiple":
             self.results.setPlainText(
-                "偵測到多筆持倉。已停止自動選取，"
-                "避免誤認另一筆交易；請先自行確認目標。"
+                "有多筆持倉，請先確認要校準哪一筆。"
             )
         elif report.state == "unknown":
             self.results.setPlainText(
-                "暫時看不到可靠的持倉列表。"
-                "請先把 cTrader 的 Positions 分頁打開，再按開始辨識。"
+                "讀不到持倉列表，請開啟 Positions 分頁再試。"
             )
         else:
             self.results.setPlainText(report.as_text())

@@ -62,6 +62,25 @@ class Announcement:
     source: str
     title: str
     details: str = field(default='', compare=False)
+    scheduled: bool = field(default=False, compare=False)
+
+
+def scheduled_reminders(calendar, now):
+    """Same fresh schedule and timing policy for desktop and phone alerts."""
+    for item in calendar.events:
+        key = next((key for key, name in SOURCE_NAMES.items() if name == item.source), None)
+        fetched = calendar.source_times.get(key)
+        if (not fetched or key in calendar.source_errors
+                or not timedelta(0) <= now-fetched <= SOURCE_TTLS[key]):
+            continue
+        delta = (item.when-now).total_seconds()
+        text = f'{item.when.astimezone(TAIPEI):%H:%M} · {calendar.title(item.title)}'
+        if 0 < delta <= 600:
+            yield ('before', item, '重大事件即將公布',
+                   f'{max(1, ceil(delta/60))} 分鐘後公布 · {text}', item.when.timestamp())
+        elif -60 <= delta <= 0:
+            yield ('release', item, '重大事件公布時間已到',
+                   f'公布時間已到 · {text}；請查看消息確認公布結果。', item.when.timestamp()+180)
 
 
 def source_text(raw):
@@ -239,12 +258,16 @@ class EconomicCalendar(QObject):
         self._source_failures = {}
         self._retry_at = {}
         self._seen_news = {}
+        self._seen_reminders = {}
         self._probe_log_error = False
         self.refresh_timer = QTimer(self)
         self._polling_enabled = False
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.setTimerType(Qt.PreciseTimer)
         self.refresh_timer.timeout.connect(lambda: self._poll())
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.setInterval(1000)
+        self.reminder_timer.timeout.connect(lambda: self._check_reminders())
 
         self.received.connect(self._apply)
         self.translated.connect(self._apply_translations)
@@ -254,6 +277,10 @@ class EconomicCalendar(QObject):
                 if not isinstance(payload, dict):
                     raise ValueError('事件快取格式不符')
                 if payload.get('version') == 2:
+                    reminders = payload.get('seen_reminders', [])
+                    if isinstance(reminders, list):
+                        self._seen_reminders = dict.fromkeys(v for v in reminders[-500:]
+                            if isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v))
                     seen = payload.get('seen_announcements', [])
                     if isinstance(seen, list):
                         self._seen_news = dict.fromkeys(v for v in seen[-500:]
@@ -304,6 +331,22 @@ class EconomicCalendar(QObject):
         if not self._closed:
             self._polling_enabled = True
             self.refresh_timer.start(NEWS_POLL_MS)
+            self.reminder_timer.start()
+
+    def _check_reminders(self, now=None):
+        if self._closed:
+            return
+        now = datetime.now(UTC) if now is None else now
+        alerts = []
+        for kind, item, _title, body, _expires in scheduled_reminders(self, now):
+            identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
+            if identity not in self._seen_reminders:
+                self._seen_reminders[identity] = None
+                alerts.append(Announcement(item.when, item.source, body, scheduled=True))
+        if alerts:
+            self._seen_reminders = dict(list(self._seen_reminders.items())[-500:])
+            self._save_cache()
+            self.announcements.emit(alerts)
 
     def _poll(self) -> None:
         self.refresh()
@@ -563,6 +606,7 @@ class EconomicCalendar(QObject):
             self.path.write_text(json.dumps({
                 'version': 2,
                 'seen_announcements': list(self._seen_news),
+                'seen_reminders': list(self._seen_reminders),
                 'ff_coverage': [value.isoformat() for value in self._ff_coverage] if self._ff_coverage else None,
                 'translations': dict(list(self.translations.items())[-500:]),
                 'translation_day': self._translation_day,
@@ -579,4 +623,5 @@ class EconomicCalendar(QObject):
     def close(self) -> None:
         self._polling_enabled = False
         self.refresh_timer.stop()
+        self.reminder_timer.stop()
         self._closed = True

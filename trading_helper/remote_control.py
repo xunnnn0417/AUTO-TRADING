@@ -180,6 +180,8 @@ class MobileServer(QObject):
         super().__init__(parent)
         use_windows_native_tls()
         self.store, self.assets = store, assets
+        from .remote_notifications import MobileNotifications
+        self.notifications = MobileNotifications(store, self)
         self.http = QTcpServer(self)
         self.websockets = QWebSocketServer("對沖小幫手", QWebSocketServer.NonSecureMode, self)
         self.http.newConnection.connect(self._http_connection)
@@ -208,9 +210,11 @@ class MobileServer(QObject):
         self.public_origin = normalized_origin(public_origin) if public_origin else ""
         if not self.http.listen(QHostAddress.SpecialAddress.LocalHost, port):
             raise ValueError("手機連線入口無法開啟，可能已有其他程式使用此連接埠。")
+        self.notifications.enabled = True
         self.changed.emit()
 
     def stop(self):
+        self.notifications.stop()
         self.http.close()
         for sock in list(self.pending):
             sock.abort()
@@ -345,6 +349,39 @@ class MobileServer(QObject):
                 self._respond(sock, 200 if authenticated else 401,
                               b'{"paired":true}' if authenticated else b'{"paired":false}',
                               "application/json")
+                return
+            if (path == '/api/notifications' and method in ('GET', 'POST')
+                    or path == '/api/notifications/test' and method == 'POST'):
+                device = self.store.authenticate(self._cookie_token(headers.get('cookie', '')), origin)
+                if not device:
+                    self._respond(sock, 401, b'Pairing required')
+                    return
+                if not origin.startswith('https://'):
+                    self._respond(sock, 400, '通知需要固定 HTTPS 入口。'.encode())
+                    return
+                if method == 'POST' and (headers.get('origin') != origin
+                        or headers.get('content-type', '').split(';')[0] != 'application/json'):
+                    self._respond(sock, 403, b'Invalid origin')
+                    return
+                try:
+                    if method == 'POST':
+                        value = json.loads(raw[end+4:end+4+length])
+                        if path.endswith('/test'):
+                            if value != {}:
+                                raise ValueError('通知設定格式不正確。')
+                            self.notifications.test(device, origin)
+                        else:
+                            if not isinstance(value, dict) or set(value) != {'subscription'}:
+                                raise ValueError('通知設定格式不正確。')
+                            self.notifications.subscription(device, origin, value['subscription'])
+                    body = dict(enabled=self.notifications.subscribed(device, origin))
+                    if method == 'GET':
+                        body['publicKey'] = self.notifications.public_key()
+                    self._respond(sock, 200, json.dumps(body).encode(), 'application/json')
+                except (ImportError, OSError):
+                    self._respond(sock, 503, '通知元件無法載入，請更新電腦程式。'.encode())
+                except ValueError as exc:
+                    self._respond(sock, 400, str(exc).encode())
                 return
             if method == 'GET' and re.fullmatch(r'/api/ruler.png\?v=[a-f0-9]{16}', path) and not length:
                 authenticated = self.store.authenticate(self._cookie_token(headers.get('cookie', '')), origin)

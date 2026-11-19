@@ -546,6 +546,11 @@ QDialog[appDialogChrome="true"] {
     border-radius: 6px;
 }
 QDialog QWidget { color: #d8d5df; }
+QDialog QScrollArea#phoneSettingsScroll,
+QDialog QWidget#phoneSettingsBody {
+    background: #101014;
+    border: none;
+}
 QDialog QLabel#messageIcon {
     background: #282631;
     border: 1px solid #413d4b;

@@ -170,6 +170,36 @@ class MobileTransportTests(unittest.TestCase):
         self.assertNotIn(b'fetch', raw)
         self.assertEqual(self.http('GET', '/api/session')[0], 401)
 
+    def test_notification_api_requires_paired_same_origin_phone(self):
+        origin = 'https://phone.example'
+        self.server.public_origin = origin
+        device, token = self.store.pair('通知測試', origin)
+        headers = {'Host': 'phone.example', 'Cookie': 'helper_remote='+token,
+                   'Origin': origin, 'Content-Type': 'application/json'}
+        self.assertEqual(self.http('GET', '/api/notifications', headers={'Host': 'phone.example'})[0], 401)
+        status, _, raw = self.http('GET', '/api/notifications', headers=headers)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(raw)['enabled'])
+        self.assertIn('publicKey', json.loads(raw))
+        for key in ('push_private_key', token):
+            self.assertNotIn(key.encode(), raw)
+        from test_mobile_notifications import subscription
+        _, sub = subscription()
+        body = json.dumps({'subscription': sub})
+        self.assertEqual(self.http('POST', '/api/notifications', body,
+                                   dict(headers, Origin='https://other.example'))[0], 403)
+        self.assertFalse(self.server.notifications.subscribed(device, origin))
+        self.assertEqual(self.http('POST', '/api/notifications', body, headers)[0], 200)
+        self.assertTrue(self.server.notifications.subscribed(device, origin))
+        self.assertEqual(self.http('POST', '/api/notifications/test', '{}', headers)[0], 200)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM push_deliveries').fetchone()[0], 1)
+        self.assertEqual(self.http('POST', '/api/notifications', '{"subscription":null}', headers)[0], 200)
+        self.assertFalse(self.server.notifications.subscribed(device, origin))
+        self.assertEqual(self.http('POST', '/api/notifications/test', '{}', headers)[0], 400)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM operations').fetchone()[0], 0)
+        self.store.revoke(device)
+        self.assertEqual(self.http('GET', '/api/notifications', headers=headers)[0], 401)
+
     def test_shared_ruler_image_is_not_served_to_unpaired_clients(self):
         self.server.ruler_image = b'<svg xmlns="http://www.w3.org/2000/svg"><text>private</text></svg>'
         path = '/api/ruler.png?v='+'a'*16
@@ -582,7 +612,16 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         self.assertTrue(revoke.isVisible())
         self.controller.server.changed.emit()
         self.assertTrue(revoke.isVisible())
-        devices.clearSelection()
+        QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
+                         pos=devices.visualItemRect(devices.item(0)).center())
+        self.assertFalse(devices.selectedItems())
+        self.assertFalse(revoke.isVisible())
+        QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
+                         pos=devices.visualItemRect(devices.item(0)).center())
+        self.assertTrue(revoke.isVisible())
+        self.controller.server.changed.emit()
+        QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
+                         pos=devices.visualItemRect(devices.item(0)).center())
         self.assertFalse(revoke.isVisible())
 
     def test_mobile_news_bounds_dates_and_omits_price_recaps(self):

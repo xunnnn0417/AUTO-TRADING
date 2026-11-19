@@ -9,8 +9,8 @@ import time
 import math
 from dataclasses import asdict
 
-from PySide6.QtCore import QObject, QSignalBlocker, QTimer
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QPushButton, QTextBrowser
+from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Qt
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QListWidget, QPushButton, QTextBrowser
 
 from .remote_control import MobileServer, RemoteStore
 from .remote_mobile import ASSETS
@@ -19,6 +19,19 @@ from .remote_tunnel import QuickTunnel, FixedTunnel
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
            "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news"}
+
+
+class DeviceList(QListWidget):
+    """Single selection with a second click to deselect the same phone."""
+
+    def mousePressEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        if event.button() == Qt.LeftButton and (item is None or item.isSelected()):
+            self.clearSelection()
+            self.setCurrentRow(-1)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 def interactive_desktop() -> bool:
@@ -156,6 +169,7 @@ class RemoteController(QObject):
         self.server.changed.emit()
 
     def _heartbeat(self):
+        self.server.notifications.poll(getattr(self.app, '_event_calendar', None), self.server.public_origin)
         for sock in list(self.server.sockets):
             self.server.send(sock, {"type": "heartbeat", "time": time.time()})
 
@@ -525,7 +539,7 @@ class RemoteController(QObject):
         import webbrowser
         from .gui import QMessageBox
         from .window_chrome import ThemedDialog
-        from .ui_theme import themed_icon
+        from .ui_theme import themed_icon, DIALOG_THEME
         from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QListWidget, QVBoxLayout, QScrollArea, QWidget
         from PySide6.QtCore import Qt
         if self.settings_dialog is not None:
@@ -534,16 +548,20 @@ class RemoteController(QObject):
             self.settings_dialog.activateWindow()
             return
         dialog = ThemedDialog(self.app)
+        dialog.setStyleSheet(DIALOG_THEME)
         self.settings_dialog = dialog
         dialog.setWindowModality(Qt.NonModal)
         dialog.setWindowTitle('手機連線')
         dialog.resize(520, 540)
         root = QVBoxLayout(dialog)
         scroll = QScrollArea()
+        scroll.setObjectName('phoneSettingsScroll')
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
+        body.setObjectName('phoneSettingsBody')
+        body.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         scroll.setWidget(body)
@@ -610,7 +628,7 @@ class RemoteController(QObject):
         code_row.addWidget(pair)
         layout.addLayout(code_row)
         layout.addWidget(QLabel('已配對裝置'))
-        devices = QListWidget()
+        devices = DeviceList()
         devices.setFixedHeight(80)
         layout.addWidget(devices)
         revoke = QPushButton('移除選取的手機')

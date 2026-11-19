@@ -33,6 +33,10 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <div id="options" class="options"></div></details></section>
 <button id="installHelp" class="text-button">加入手機桌面說明</button>
 <section id="newsSection" hidden><div class="row"><h2>消息</h2><button id="newsRefresh" class="subtle" data-control>重新整理</button></div>
+<details id="notificationSettings"><summary>手機通知 · <span id="pushStatus">未啟用</span></summary>
+<p class="muted">提醒突發重大消息、公布前十分鐘及公布當下。電腦程式須保持開啟。</p>
+<button id="pushEnable" class="subtle">啟用通知</button><button id="pushDisable" class="subtle" hidden>關閉通知</button>
+<button id="pushTest" class="subtle" hidden>測試通知</button><p id="pushHint" class="muted"></p></details>
 <p id="nextEvent" class="muted">尚未取得事件</p><h3>即將發生</h3><div id="newsUpcoming"></div><h3>已公布／新聞</h3><div id="newsPublished"></div></section>
 <p id="operation" class="muted" aria-live="polite"></p><button id="stop" hidden>停止本次操作</button>
 </main>
@@ -66,7 +70,30 @@ window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();ins
 window.addEventListener('appinstalled',()=>{installPrompt=null;installCard();});
 $('install').onclick=installApp;$('installHelp').onclick=installApp;
 $('installDismiss').onclick=()=>{try{localStorage.setItem('installDismissed','1');}catch(error){}$('installCard').hidden=true;};
-if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).catch(()=>{});
+let pushConfig=null,pushRegistration=null,pushChecking=false;
+const workerReady=('serviceWorker' in navigator&&window.isSecureContext)?navigator.serviceWorker.register('/sw.js',{updateViaCache:'none'}).then(()=>navigator.serviceWorker.ready):Promise.resolve(null);
+workerReady.catch(()=>{});
+function pushSupport(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);return window.isSecureContext&&'PushManager' in window&&'Notification' in window&&(!ios||standalone());}
+function pushDisplay(enabled,hint=''){$('pushStatus').textContent=enabled?'已啟用':'未啟用';$('pushEnable').hidden=enabled;$('pushDisable').hidden=!enabled;$('pushTest').hidden=!enabled;$('pushHint').textContent=hint;}
+async function pushRequest(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok)throw new Error(await response.text());return response.json();}
+async function preparePush(){if(pushChecking)return;pushChecking=true;try{
+ if(!pushSupport()){pushDisplay(false,'iPhone 請先加入主畫面，再從圖示開啟以啟用通知。');return;}
+ pushConfig=await pushRequest('/api/notifications');pushRegistration=await workerReady;
+ const sub=pushRegistration&&await pushRegistration.pushManager.getSubscription();
+ pushDisplay(!!(pushConfig.enabled&&sub&&Notification.permission==='granted'),Notification.permission==='denied'?'通知已被系統封鎖，請到手機設定開啟。':'');
+ }catch(error){pushDisplay(false,error.message);}finally{pushChecking=false;}}
+$('pushEnable').onclick=async()=>{if(!pushSupport()){pushDisplay(false,'請先加入手機主畫面，再從圖示開啟。');return;}
+ const button=$('pushEnable');button.disabled=true;
+ try{const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('尚未允許通知，可稍後再開啟。');
+ if(!pushConfig)pushConfig=await pushRequest('/api/notifications');pushRegistration=await workerReady;if(!pushRegistration)throw new Error('通知元件尚未就緒，請重新整理。');
+ const key=Uint8Array.from(atob(pushConfig.publicKey.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+ let sub=await pushRegistration.pushManager.getSubscription();
+ if(sub&&JSON.stringify(Array.from(new Uint8Array(sub.options.applicationServerKey||[])))!==JSON.stringify(Array.from(key))){await sub.unsubscribe();sub=null;}
+ if(!sub)sub=await pushRegistration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+ await pushRequest('/api/notifications',{subscription:sub.toJSON()});pushDisplay(true,'已開啟；可按「測試通知」確認手機是否收到。');
+ }catch(error){pushDisplay(false,error.message);}finally{button.disabled=false;}};
+$('pushDisable').onclick=async()=>{const button=$('pushDisable');button.disabled=true;try{await pushRequest('/api/notifications',{subscription:null});if(pushRegistration){const sub=await pushRegistration.pushManager.getSubscription();if(sub)await sub.unsubscribe();}pushDisplay(false);}catch(error){$('pushHint').textContent=error.message;}finally{button.disabled=false;}};
+$('pushTest').onclick=async()=>{const button=$('pushTest');button.disabled=true;try{await pushRequest('/api/notifications/test',{});$('pushHint').textContent='已排入測試通知；請查看手機通知。';}catch(error){$('pushHint').textContent=error.message;}finally{button.disabled=false;}};
 installCard();
 const optionNames={auto_entry:"自動進場",auto_sync:"同步 SL／TP","rule:C2":"來回打","rule:B6":"最小交易日目標","rule:E14":"固定場內止盈"};
 function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
@@ -119,7 +146,7 @@ async function connect(){const attempt=++connectionAttempt;clearTimeout(reconnec
  try{const session=await fetch("/api/session",{credentials:"same-origin",cache:"no-store",signal:abort.signal});if(attempt!==connectionAttempt)return;
  if(session.status===401){$("pairing").hidden=false;connecting=false;health();return;}if(!session.ok)throw new Error("連線失敗");}
  catch(error){if(attempt===connectionAttempt){connecting=false;retryConnection();}return;}finally{clearTimeout(timeout);}
- $("pairing").hidden=true;const current=new WebSocket(location.origin.replace(/^http/,"ws")+"/ws");socket=current;
+ $("pairing").hidden=true;preparePush();const current=new WebSocket(location.origin.replace(/^http/,"ws")+"/ws");socket=current;
  const handshake=setTimeout(()=>{if(socket===current&&!connected())current.close();},8000);
  current.onmessage=event=>{if(socket!==current)return;clearTimeout(handshake);connecting=false;retryDelay=1000;seen=Date.now();const message=JSON.parse(event.data);if(message.type==="state"){revision=message.revision;lease=message.lease;$("pairing").hidden=true;render(message.state);result(message.operation);}
  else if(message.type==="result"){const p=pending.get(message.operation.id);if(p){clearTimeout(p.timer);pending.delete(message.operation.id);p.resolve(message);}result(message.operation);}
@@ -136,6 +163,8 @@ function workspace(news){$("trade").hidden=news;$("newsSection").hidden=!news;$(
 $("tradeTab").onclick=()=>workspace(false);$("newsTab").onclick=()=>workspace(true);
 window.addEventListener('scroll',updateBackTop,{passive:true});
 $('backTop').onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+if(location.hash==='#news')workspace(true);
+if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',event=>{if(event.data&&event.data.type==='open-news')workspace(true);});
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!connected())connect();});window.addEventListener("online",()=>{if(!connected())connect();});window.addEventListener("pageshow",e=>{if(e.persisted&&!connected())connect();});
 setInterval(()=>{health();if(connected())socket.send(JSON.stringify({type:"ping",echo:Date.now()}));else if(socket&&!connecting){socket.close();}else if(!connecting)retryConnection();},1500);disable();connect();
 '''
@@ -175,8 +204,17 @@ ASSETS = {
     "/icon-180.png": ("image/png", _icon_png(180)),
     "/icon-192.png": ("image/png", _icon_png(192)),
     "/icon-512.png": ("image/png", _icon_png(512)),
-    # No offline cache or fetch handler: reconnect always reads the live PC;
-    # no trading data, credentials, or pending command is stored in this worker.
-    "/sw.js": ("text/javascript; charset=utf-8", "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));"),
+    # No fetch handler/cache, credentials or pending trading command in this worker.
+    "/sw.js": ("text/javascript; charset=utf-8", '''self.addEventListener('install',()=>self.skipWaiting());
+self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+self.addEventListener('push',event=>{let data={};try{data=event.data.json();if(!data||typeof data!=='object')data={};}catch(error){}
+const stale=typeof data.expires==='number'&&data.expires*1000<Date.now();
+event.waitUntil(self.registration.showNotification(String(data.title||'對沖小幫手').slice(0,80),{
+body:stale?'較早的提醒，請開啟消息查看最新狀況。':String(data.body||'有新的消息，請開啟查看。').slice(0,300),
+icon:'/icon-192.png',badge:'/icon-192.png',tag:String(data.tag||'helper-news').slice(0,80),data:{page:'news'}}));});
+self.addEventListener('notificationclick',event=>{event.notification.close();event.waitUntil((async()=>{
+const pages=await clients.matchAll({type:'window',includeUncontrolled:true});
+const page=pages.find(p=>new URL(p.url).origin===self.location.origin);
+if(page){await page.focus();page.postMessage({type:'open-news'});}else await clients.openWindow('/#news');})());});'''),
     "/manifest.webmanifest": ("application/manifest+json", '{"id":"/","name":"對沖小幫手","short_name":"對沖小幫手","start_url":"/","scope":"/","display":"standalone","background_color":"#09090c","theme_color":"#101015","icons":[{"src":"/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}'),
 }
