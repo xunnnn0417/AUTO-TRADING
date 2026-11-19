@@ -167,6 +167,26 @@ class NewsAlertUiTests(unittest.TestCase):
         self.assertFalse(self.w.news_badge.isVisible())
         self.assertIsNone(getattr(self.w, '_news_alert_dialog', None))
 
+    def test_news_popup_is_centered_when_collapsed_and_adjacent_when_expanded(self):
+        news = feeds.Announcement(datetime.now(feeds.UTC),'Fed','FOMC statement')
+        with patch.object(feeds.EconomicCalendar,'refresh'):
+            self.w.toggle_side_panel(True)
+        panel = self.w.side_panel
+        self.w.hide()
+        for collapsed in (True,False):
+            panel.set_collapsed(collapsed)
+            self.qtapp.processEvents()
+            self.w._queue_news_alerts([news])
+            dialog = self.w._news_alert_dialog
+            area = panel.screen().availableGeometry()
+            self.assertFalse(self.w.isVisible())
+            if collapsed:
+                self.assertLessEqual(abs(dialog.geometry().center().x()-area.center().x()),1)
+                self.assertLessEqual(abs(dialog.geometry().center().y()-area.center().y()),1)
+            else:
+                self.assertEqual(dialog.x(),max(area.left(),panel.x()-dialog.width()-10))
+            dialog.close()
+
     def test_news_popup_is_independent_and_only_view_opens_main(self):
         news = feeds.Announcement(datetime.now(feeds.UTC), 'Fed', 'FOMC statement')
         self.w.hide()

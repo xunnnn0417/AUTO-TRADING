@@ -187,6 +187,14 @@ def parse_events(rows: object) -> list[CalendarEvent]:
     return sorted(events)
 
 
+def publication_values(details: str) -> dict[str, str]:
+    """Split the source's existing labeled values without guessing numbers."""
+    keys = {'公布值':'actual', '實際':'actual', '預期':'forecast', '前值':'previous'}
+    pattern = r'(公布值|實際|預期|前值)\s*[：:]\s*(.*?)(?=\s*(?:公布值|實際|預期|前值)\s*[：:]|$)'
+    return {keys[label]: value.strip() for label,value in re.findall(pattern, details, re.S)
+            if value.strip()}
+
+
 def parse_market_news(raw: bytes, source: str) -> list[Announcement]:
     return [item for item in parse_announcements(raw, source)
             if MARKET_TOPICS.search(item.title) or assess_headline(item.title).notify]

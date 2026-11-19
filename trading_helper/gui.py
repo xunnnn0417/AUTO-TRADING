@@ -2212,12 +2212,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         dialog.finished.connect(finished)
         dialog.adjustSize()
         panel = getattr(self, 'side_panel', None)
+        expanded = panel is not None and panel.isVisible() and not panel.collapsed
         screen = panel.screen() if panel is not None and panel.isVisible() else self.screen()
         if screen is not None:
             area = screen.availableGeometry()
-            anchor = panel.geometry() if panel is not None and panel.isVisible() else self.geometry()
-            x = anchor.left()-dialog.width()-10 if panel is not None and panel.isVisible() else anchor.center().x()-dialog.width()//2
-            y = anchor.top() if panel is not None and panel.isVisible() else anchor.center().y()-dialog.height()//2
+            anchor = panel.geometry() if expanded else area
+            x = anchor.left()-dialog.width()-10 if expanded else area.center().x()-dialog.width()//2
+            y = anchor.top() if expanded else area.center().y()-dialog.height()//2
             dialog.move(max(area.left(), min(x, area.right()-dialog.width()+1)),
                         max(area.top(), min(y, area.bottom()-dialog.height()+1)))
         dialog.show()

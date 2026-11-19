@@ -15,6 +15,7 @@ from .calendar_events import TAIPEI, UTC
 from .event_summary import event_summary, trading_session
 from .progress_ruler import AccountRuler, money
 from .ui_theme import themed_icon
+from .sidebar_geometry import ensure_native_sidebar
 
 
 class EventFlyout(QFrame):
@@ -345,6 +346,8 @@ class SideQuickPanel(QWidget):
         self.event_timer.stop()
 
     def sync_from_main(self):
+        if self.isVisible() and not self._handle_dragging:
+            self.dock()
         app = self.app
         busy = bool(app._active_tasks or app._parameter_write_active
                     or app._trade_settings_busy or app._update_in_progress
@@ -542,6 +545,10 @@ class SideQuickPanel(QWidget):
         area = self._screen.availableGeometry()
         self.move(area.right() - self.width() + 1,
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
+        if self.isVisible():
+            ensure_native_sidebar(self, self._screen,
+                max(area.top(), min(self._y, area.bottom()-self.height()+1)),
+                self.app.store.path.parent/'diagnostics'/'side-panel-geometry.json')
         self._position_event_flyout()
         self._position_warning_flyout()
 

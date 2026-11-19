@@ -165,6 +165,17 @@ class MobileNotificationTests(unittest.TestCase):
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual(self.store.db.execute('SELECT device FROM push_deliveries').fetchone()[0], self.device)
 
+    def test_test_and_new_headline_dispatch_without_waiting_for_next_poll(self):
+        with patch.object(self.service, '_dispatch') as dispatch:
+            self.service.test(self.device,self.origin)
+            dispatch.assert_called_once()
+            dispatch.reset_mock()
+            self.service.poll(self.calendar,self.origin,self.now)
+            dispatch.reset_mock()
+            self.calendar.announcements.emit([Announcement(datetime.now(timezone.utc),
+                                             '香港電台國際','美軍突然空襲伊朗基地')])
+            dispatch.assert_called_once()
+
     def test_worker_sends_off_ui_thread_marks_success_and_does_not_repeat(self):
         from PySide6.QtTest import QTest
         from test_mobile_remote import wait_for
@@ -174,6 +185,10 @@ class MobileNotificationTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not self.service._busy))
             self.assertEqual(send.call_count, 1)
             self.assertEqual(self.rows()[0][2], 'sent')
+            log = json.loads((Path(self.temp.name)/'diagnostics'/'mobile-notifications.json').read_text())[-1]
+            self.assertEqual(log['attempts'],1)
+            self.assertGreaterEqual(log['queue_ms'],0)
+            self.assertGreaterEqual(log['completion_ms'],0)
             MobileNotifications._dispatch(self.service, self.now+65)
             QTest.qWait(20)
             self.assertEqual(send.call_count, 1)

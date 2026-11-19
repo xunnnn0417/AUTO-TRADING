@@ -102,6 +102,9 @@ class MobileTransportTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = RemoteStore(Path(self.temp.name)/"remote.db")
         self.server = MobileServer(self.store, ASSETS)
+        push = patch.object(self.server.notifications, '_dispatch')
+        push.start()
+        self.addCleanup(push.stop)
         self.server.start(port=0)
         self.server.publish({"health": "正常", "value": "測試"})
 
@@ -192,6 +195,7 @@ class MobileTransportTests(unittest.TestCase):
         self.assertEqual(self.http('POST', '/api/notifications', body, headers)[0], 200)
         self.assertTrue(self.server.notifications.subscribed(device, origin))
         self.assertEqual(self.http('POST', '/api/notifications/test', '{}', headers)[0], 200)
+        self.server.notifications._dispatch.assert_called_once()
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM push_deliveries').fetchone()[0], 1)
         self.assertEqual(self.http('POST', '/api/notifications', '{"subscription":null}', headers)[0], 200)
         self.assertFalse(self.server.notifications.subscribed(device, origin))
@@ -623,6 +627,29 @@ class MobileDesktopAdapterTests(unittest.TestCase):
         QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
                          pos=devices.visualItemRect(devices.item(0)).center())
         self.assertFalse(revoke.isVisible())
+
+    def test_device_actions_stay_in_the_selected_row_without_resizing_dialog(self):
+        from PySide6.QtWidgets import QListWidget, QPushButton
+        self.controller.store.pair('備用手機')
+        self.controller.show_settings()
+        self.qtapp.processEvents()
+        dialog = self.controller.settings_dialog
+        self.addCleanup(dialog.close)
+        devices = dialog.findChild(QListWidget)
+        height = dialog.height()
+        for index in (0,1,0):
+            QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
+                             pos=devices.visualItemRect(devices.item(index)).center())
+            self.qtapp.processEvents()
+            button = devices.itemWidget(devices.item(index)).findChild(QPushButton,'phoneRevoke')
+            self.assertTrue(button.isVisible())
+            self.assertEqual(dialog.height(),height)
+            QTest.mouseClick(devices.viewport(), gui.Qt.LeftButton,
+                             pos=devices.visualItemRect(devices.item(index)).center())
+            self.qtapp.processEvents()
+            self.assertFalse(devices.selectedItems())
+            self.assertFalse(button.isVisible())
+            self.assertEqual(dialog.height(),height)
 
     def test_mobile_news_bounds_dates_and_omits_price_recaps(self):
         from datetime import datetime, timedelta, timezone

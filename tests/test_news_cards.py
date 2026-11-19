@@ -1,6 +1,8 @@
 """The same rich list renders source-safe cards in both message surfaces."""
 import unittest
 from datetime import datetime
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication
 from trading_helper.calendar_events import UTC, parse_market_news
@@ -8,13 +10,48 @@ from trading_helper.news_cards import NewsCards
 
 
 class NewsCardTests(unittest.TestCase):
+    def test_publication_values_are_separate_and_never_invent_missing_data(self):
+        from trading_helper.calendar_events import publication_values
+        self.assertEqual(publication_values('公布值：2.7% 預期：2.8% 前值：2.9%'),
+                         {'actual':'2.7%', 'forecast':'2.8%', 'previous':'2.9%'})
+        self.assertEqual(publication_values('預期：-12 萬人 前值：11 萬人'),
+                         {'forecast':'-12 萬人', 'previous':'11 萬人'})
+        self.assertEqual(publication_values('來源沒有提供數值'), {})
+
+    def test_clicking_headline_toggles_details_but_selecting_text_does_not(self):
+        view = NewsCards(compact=True)
+        self.addCleanup(view.close)
+        view.resize(380, 330)
+        view.show()
+        original = 'Example CPI source headline'
+        view.set_entries([(datetime.now(UTC), '資料來源', original, '美國消費者物價指數',
+                           True, '即將發生', '預期：2.8% 前值：2.9%')], '')
+        self.app.processEvents()
+        cursor = view.document().find('美國消費者物價指數')
+        point = view.cursorRect(cursor).center()
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+        self.assertIn(original, view.text())
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+        self.assertNotIn(original, view.text())
+        cursor = view.document().find('美國消費者物價指數')
+        cursor.setPosition(cursor.selectionStart())
+        view.setTextCursor(cursor)
+        start = view.cursorRect(cursor).center()
+        cursor.movePosition(cursor.MoveOperation.Right, cursor.MoveMode.MoveAnchor, 4)
+        end = view.cursorRect(cursor).center()
+        QTest.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+        QTest.mouseMove(view.viewport(), end)
+        QTest.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+        self.assertNotIn(original, view.text())
+
     def test_published_result_and_per_event_details_are_source_text_only(self):
         view = NewsCards()
         self.addCleanup(view.close)
         now = datetime.now(UTC)
         view.set_entries([(now, '來源', 'CPI', 'CPI', True, '已公布', '公布值：2.4%　預期：2.5%'),
                           (now, '來源', 'GDP', 'GDP', True, '已公布', '')], '')
-        self.assertIn('公布值：2.4%', view.text())
+        self.assertIn('公布值\n2.4%', view.text())
+        self.assertIn('預期\n2.5%', view.text())
         view.anchorClicked.emit(QUrl('detail:1'))
         self.assertIn('來源尚未提供公布結果', view.text())
         self.assertEqual(view.toolTip(), '')

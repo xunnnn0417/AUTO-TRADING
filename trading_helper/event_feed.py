@@ -3,12 +3,32 @@ from datetime import datetime, timedelta
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget, QSizePolicy,
 )
 from .calendar_events import UTC
-from .event_summary import relevant_announcement
+from .event_summary import relevant_announcement, event_summary, trading_session
 from .ui_theme import themed_icon
 from .news_cards import NewsCards
+
+
+class CountdownLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._summary = ''
+        self.setObjectName('newsCountdown')
+        self.setFixedHeight(36)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setStyleSheet('background:#17151e;border:1px solid #36313f;border-radius:7px;'
+                           'padding:6px 10px;color:#c7bed5;font-size:12px;')
+
+    def set_summary(self, text):
+        self._summary = text
+        self.setToolTip(text)
+        self.setText(self.fontMetrics().elidedText(text, Qt.ElideRight, max(0,self.width()-22)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.set_summary(self._summary)
 
 
 class EventFeedView(QWidget):
@@ -41,9 +61,12 @@ class EventFeedView(QWidget):
             button.clicked.connect(lambda: close(False))
             header.addWidget(button)
         root.addLayout(header)
+        self.countdown_label = CountdownLabel()
+        root.addWidget(self.countdown_label)
         self.event_tabs = QTabWidget()
         self.event_rows, self.news_rows = (NewsCards(compact=compact) for _ in range(2))
         for caption, label in zip(('即將發生', '已公布／新聞'), (self.event_rows, self.news_rows)):
+            label.setViewportMargins(0, 10, 0, 0)
             self.event_tabs.addTab(label, caption)
         root.addWidget(self.event_tabs, 1)
         self.event_status = QToolButton()
@@ -114,6 +137,12 @@ class EventFeedView(QWidget):
     def update_events(self):
         self.bind()
         now = datetime.now(UTC)
+        owner = getattr(self._get_calendar, '__self__', None)
+        store = getattr(owner, 'store', None)
+        settings = store.data.get('ui', {}).get('trading_day_separator', {}) if store else {}
+        start, end = trading_session(now, settings)
+        self.countdown_label.set_summary(event_summary(self.calendar.events, now, settings,
+            self.calendar.covers_day(start,end,now), self.calendar.title))
         upcoming = sorted(event for event in self.calendar.events if now < event.when <= now + timedelta(days=45))
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         busy = self.calendar._busy

@@ -9,7 +9,7 @@ import time
 import math
 from dataclasses import asdict
 
-from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Qt
+from PySide6.QtCore import QObject, QSignalBlocker, QTimer, Qt, QSize
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QListWidget, QPushButton, QTextBrowser
 
 from .remote_control import MobileServer, RemoteStore
@@ -267,17 +267,29 @@ class RemoteController(QObject):
         news = []
         if calendar is not None:
             from datetime import datetime, timedelta, timezone
+            from .calendar_events import publication_values
+            from .news_relevance import assess_headline, KEYWORDS
+            def news_item(event, scheduled):
+                title = calendar.title(event.title)
+                assessment = assess_headline(event.title, scheduled=scheduled)
+                parts, end = [], 0
+                for match in KEYWORDS.finditer(title):
+                    parts.extend(((title[end:match.start()],False),(match.group(),True)))
+                    end = match.end()
+                parts.append((title[end:],False))
+                return dict(when=event.when.isoformat(), title=title, original=event.title, source=event.source,
+                    scheduled=scheduled, details=event.details, category=assessment.category,
+                    color=assessment.color, parts=parts,
+                    values=publication_values(event.details) if scheduled else {})
             recent = datetime.now(timezone.utc)-timedelta(days=1)
             for event in sorted(event for event in calendar.events
                                 if recent <= event.when <= datetime.now(timezone.utc)+timedelta(days=45))[:60]:
-                news.append(dict(when=event.when.isoformat(), title=calendar.title(event.title),
-                                 source=event.source, scheduled=True, details=event.details))
+                news.append(news_item(event, True))
             for event in calendar.news[:30]:
                 from .news_relevance import assess_headline
                 if not recent <= event.when <= datetime.now(timezone.utc) or not assess_headline(event.title).notify:
                     continue
-                news.append(dict(when=event.when.isoformat(), title=calendar.title(event.title),
-                                 source=event.source, scheduled=False, details=event.details))
+                news.append(news_item(event, False))
         ruler = app.account_ruler.state
         if ruler != getattr(self, '_ruler_state', None):
             from .progress_ruler import render_mobile_ruler
@@ -631,10 +643,6 @@ class RemoteController(QObject):
         devices = DeviceList()
         devices.setFixedHeight(80)
         layout.addWidget(devices)
-        revoke = QPushButton('移除選取的手機')
-        revoke.setObjectName('phoneRevoke')
-        revoke.hide()
-        layout.addWidget(revoke)
 
         def fit():
             if self.settings_dialog is not dialog:
@@ -669,8 +677,12 @@ class RemoteController(QObject):
                 code.setText('新手機請按右側重整；已配對手機可直接連線。')
 
         def selection_changed():
-            revoke.setVisible(bool(devices.selectedItems()))
-            QTimer.singleShot(0, fit)
+            for index in range(devices.count()):
+                item = devices.item(index)
+                row = devices.itemWidget(item)
+                if row is not None:
+                    row.findChild(QPushButton, 'phoneRevoke').setVisible(item.isSelected())
+                    row.setStyleSheet('background:'+('#2b2535' if item.isSelected() else '#101014')+';')
         devices.itemSelectionChanged.connect(selection_changed)
 
         def refresh():
@@ -697,13 +709,35 @@ class RemoteController(QObject):
             status.setText('固定入口已建立，請用手機掃碼。' if ready else self.fixed_tunnel.message)
             update_code()
             selected = {item.data(Qt.UserRole) for item in devices.selectedItems()}
-            with QSignalBlocker(devices):
-                devices.clear()
-                for device in self.store.devices():
-                    devices.addItem(device['name'])
-                    item = devices.item(devices.count()-1)
-                    item.setData(Qt.UserRole, device['id'])
-                    item.setSelected(device['id'] in selected)
+            signature = [(device['id'],device['name']) for device in self.store.devices()]
+            if signature != getattr(devices, '_device_signature', None):
+                devices._device_signature = signature
+                with QSignalBlocker(devices):
+                    devices.clear()
+                    for device_id, name in signature:
+                        devices.addItem(name)
+                        item = devices.item(devices.count()-1)
+                        item.setData(Qt.UserRole, device_id)
+                        item.setSizeHint(QSize(0,36))
+                        row = QWidget()
+                        row.setAutoFillBackground(True)
+                        row_layout = QHBoxLayout(row)
+                        row_layout.setContentsMargins(8,2,4,2)
+                        name_label = QLabel(name)
+                        name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                        row_layout.addWidget(name_label,1)
+                        slot = QWidget()
+                        slot.setFixedSize(30,30)
+                        revoke = QPushButton(slot)
+                        revoke.setObjectName('phoneRevoke')
+                        revoke.setFixedSize(28,28)
+                        revoke.setIcon(themed_icon('trash'))
+                        revoke.setAccessibleName('移除'+name)
+                        revoke.setToolTip('移除此手機的連線授權')
+                        revoke.clicked.connect(remove)
+                        row_layout.addWidget(slot)
+                        devices.setItemWidget(item,row)
+                        item.setSelected(device_id in selected)
             selection_changed()
 
         def start_fixed():
@@ -734,7 +768,6 @@ class RemoteController(QObject):
         fixed_start.clicked.connect(start_fixed)
         stop.clicked.connect(stop_connection)
         pair.clicked.connect(arm)
-        revoke.clicked.connect(remove)
         self.server.changed.connect(refresh)
         self.tunnel.changed.connect(refresh)
         self.fixed_tunnel.changed.connect(refresh)

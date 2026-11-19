@@ -102,6 +102,11 @@ class MobileNotifications(QObject):
                 retry REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
                 PRIMARY KEY(device,event));
         ''')
+        columns = {row[1] for row in store.db.execute('PRAGMA table_info(push_deliveries)')}
+        for name in ('created','started'):
+            if name not in columns:
+                store.db.execute(f'ALTER TABLE push_deliveries ADD COLUMN {name} REAL NOT NULL DEFAULT 0')
+        store.db.commit()
         self.completed.connect(self._complete)
         self.calendar = None
         self.origin = ''
@@ -156,12 +161,16 @@ class MobileNotifications(QObject):
                        tag='helper-notification-test', kind='test', expires=now+60)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
-                (device,event,origin,payload,expires) VALUES (?,?,?,?,?)''',
-                (device, f'test-{int(now//60)}', origin, json.dumps(payload, ensure_ascii=False), now+60))
+                (device,event,origin,payload,expires,created) VALUES (?,?,?,?,?,?)''',
+                (device, f'test-{int(now//60)}', origin, json.dumps(payload, ensure_ascii=False), now+60,now))
+        self.origin = origin
+        self._dispatch(now)
 
     def _receive_news(self, items):
         if self.enabled:
             self._news = (self._news + [item for item in items if not item.scheduled])[-20:]
+            if self._news:
+                self.poll(self.calendar,self.origin)
 
     def _enqueue(self, kind, item, title, body, now, expires):
         identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
@@ -169,10 +178,10 @@ class MobileNotifications(QObject):
                                   expires=expires), ensure_ascii=False)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
-                (device,event,origin,payload,expires)
-                SELECT p.device,?,p.origin,?,? FROM push_subscriptions p
+                (device,event,origin,payload,expires,created)
+                SELECT p.device,?,p.origin,?,?,? FROM push_subscriptions p
                 JOIN devices d ON d.id=p.device WHERE p.origin=? AND d.revoked=0 AND d.expires>?''',
-                (identity, payload, expires, self.origin, now))
+                (identity, payload, expires, now, self.origin, now))
 
     def poll(self, calendar, origin, now=None):
         if not self.enabled or not origin.startswith('https://'):
@@ -188,7 +197,8 @@ class MobileNotifications(QObject):
             self._dispatch(time.time() if now is None else now)
             return
         now = time.time() if now is None else now
-        if now-self._last_poll < 5:
+        if now-self._last_poll < 5 and not self._news:
+            self._dispatch(now)
             return
         self._last_poll = now
         from .calendar_events import SOURCE_NAMES, scheduled_reminders
@@ -213,8 +223,8 @@ class MobileNotifications(QObject):
                 AND q.retry<=? AND q.attempts<3 AND q.origin=? AND d.revoked=0 AND d.expires>?
                 LIMIT 12''', (now, now, self.origin, now)).fetchall()
             for device, event, *_ in rows:
-                self.store.db.execute('UPDATE push_deliveries SET attempts=attempts+1,retry=? WHERE device=? AND event=?',
-                                      (now+60, device, event))
+                self.store.db.execute('UPDATE push_deliveries SET attempts=attempts+1,retry=?,started=? WHERE device=? AND event=?',
+                                      (now+60, now, device, event))
         if not rows:
             return
         self._busy = True
@@ -265,14 +275,20 @@ class MobileNotifications(QObject):
                 if code in (404, 410):
                     self.store.db.execute('DELETE FROM push_subscriptions WHERE device=? AND subscription=?',
                                           (device, subscription))
-                self._diagnostic(kind, status, code)
+                timing = self.store.db.execute('SELECT created,started,attempts FROM push_deliveries WHERE device=? AND event=?',
+                                               (device,event)).fetchone()
+                self._diagnostic(kind, status, code, timing)
 
-    def _diagnostic(self, kind, status, code):
+    def _diagnostic(self, kind, status, code, timing=None):
         path = self.db_path.parent / 'diagnostics' / 'mobile-notifications.json'
         try:
             rows = json.loads(path.read_text(encoding='utf-8')) if path.exists() else []
             rows = rows if isinstance(rows, list) else []
-            rows.append(dict(time=datetime.now(timezone.utc).isoformat(), kind=kind, status=status, http=code))
+            record = dict(time=datetime.now(timezone.utc).isoformat(), kind=kind, status=status, http=code)
+            if timing and timing[0] and timing[1]:
+                record.update(queue_ms=max(0,round((timing[1]-timing[0])*1000)),
+                              completion_ms=max(0,round((time.time()-timing[1])*1000)), attempts=timing[2])
+            rows.append(record)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(rows[-100:]), encoding='utf-8')
         except (OSError, ValueError):

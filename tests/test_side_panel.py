@@ -46,6 +46,18 @@ class SidePanelTests(unittest.TestCase):
             self.assertLessEqual(panel.frameGeometry().right(), area.right())
             self.assertGreaterEqual(panel.frameGeometry().left(), area.left())
 
+    def test_periodic_sync_repairs_native_drift_even_without_qt_move_events(self):
+        panel = self.open_panel()
+        with patch('trading_helper.side_panel.ensure_native_sidebar') as repair:
+            panel.sync_from_main()
+            repair.assert_called_once()
+            self.assertIs(repair.call_args.args[0], panel)
+            panel._handle_dragging = True
+            repair.reset_mock()
+            panel.sync_from_main()
+            repair.assert_not_called()
+            panel._handle_dragging = False
+
     def test_shared_drafts_placeholders_and_enter_use_existing_update_flow(self):
         panel = self.open_panel()
         self.w.instruction = sample()
