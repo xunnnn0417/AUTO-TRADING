@@ -29,12 +29,15 @@ class NewsWorkspaceTests(unittest.TestCase):
             self.w.toggle_side_panel(True)
             panel = self.w.side_panel
             self.assertIs(service, panel.calendar)
+            self.assertTrue(panel.event_rows.compact)
+            self.assertFalse(self.w.news_feed.event_rows.compact)
             now = datetime.now(UTC)
             service.events = [CalendarEvent(now+timedelta(hours=1), 'USD', '<b>CPI</b>')]
             service.source_times = dict.fromkeys(SOURCE_URLS, now)
             service.changed.emit()
-            self.assertEqual(self.w.news_feed.event_rows.textFormat(), Qt.PlainText)
+            self.assertFalse(self.w.news_feed.event_rows.openExternalLinks())
             self.assertIn('<b>CPI</b>', self.w.news_feed.event_rows.text())
+            self.assertIn('&lt;b&gt;', self.w.news_feed.event_rows.toHtml())
             self.assertEqual(panel.event_rows.text(), self.w.news_feed.event_rows.text())
             panel.close()
             self.assertFalse(service._closed)

@@ -18,6 +18,14 @@ from .auto_entry import DemoAccount, Position
 from .test_mode import effective_test_symbol
 from .phase_timing_report import timed_call
 from .windows import AutomationError, WindowInfo, WindowController
+from .uia_inventory import fresh_controls, ACCOUNT_ID, PLACE_ORDER_ID
+
+CTRADER_DESCRIPTIONS = {
+    "GOLD": "Gold vs US Dollar", "XAUUSD": "Gold vs US Dollar",
+    "XAGUSD": "Silver vs US Dollar", "SILVER": "Silver vs US Dollar",
+    "EURUSD": "Euro vs US Dollar", "BTCUSD": "Bitcoin vs US Dollar",
+    "ETHUSD": "Ethereum vs US Dollar",
+}
 
 
 class DemoUiBrokerPort:
@@ -84,6 +92,13 @@ class DemoUiBrokerPort:
     def set_expected_symbol(self, symbol: str) -> None:
         self._expected_symbol=str(symbol or "").strip().upper()
 
+    def _fresh_form_controls(self, window):
+        from pywinauto import Desktop
+        description = CTRADER_DESCRIPTIONS.get(self._test_symbol_override or self._expected_symbol)
+        return fresh_controls(Desktop(backend='uia').window(handle=window.handle),
+                              text_ids=(ACCOUNT_ID,), text_names=(description,),
+                              button_ids=(PLACE_ORDER_ID,))
+
     def set_expected_accounts(
         self, accounts: dict[tuple[str,str],DemoAccount]
     ) -> None:
@@ -138,16 +153,7 @@ class DemoUiBrokerPort:
                 )
             return
         from pywinauto import Desktop
-        descriptions={
-            "GOLD":"Gold vs US Dollar",
-            "XAUUSD":"Gold vs US Dollar",
-            "XAGUSD":"Silver vs US Dollar",
-            "SILVER":"Silver vs US Dollar",
-            "EURUSD":"Euro vs US Dollar",
-            "BTCUSD":"Bitcoin vs US Dollar",
-            "ETHUSD":"Ethereum vs US Dollar",
-        }
-        wanted=descriptions.get(verification_symbol)
+        wanted=CTRADER_DESCRIPTIONS.get(verification_symbol)
         if not wanted:
             raise AutomationError(
                 f"cTrader 尚未驗證 {verification_symbol} 商品描述欄位，拒絕送單。"
@@ -160,10 +166,9 @@ class DemoUiBrokerPort:
         matches=[
             item for item in controls
             if str(item.element_info.control_type)=="Text"
-            and item.is_visible() and
-            str(item.element_info.automation_id).endswith(
+            and str(item.element_info.automation_id).endswith(
                 "SymbolQuickInfoTemplates__TextBlock_Description_AId"
-            ) and str(item.window_text()).strip()==wanted
+            ) and item.is_visible() and str(item.window_text()).strip()==wanted
             and item.rectangle().left>=1400
             and 145<=item.rectangle().top<=280
         ]
@@ -194,6 +199,8 @@ class DemoUiBrokerPort:
     def _bound(self, platform, role):
         profile=self.automation.config["platforms"][platform]
         pattern=profile["window_title"][role]
+        account=profile.get("account_number",{}).get(role,"")
+        account_options={"expected_account":account} if account else {}
         if (platform in ("cTrader", "GooeyTrade")
                 and isinstance(self.automation.windows, WindowController)):
             # Production entrypoints all share WindowController's
@@ -201,7 +208,11 @@ class DemoUiBrokerPort:
             # shape to preserve offline compatibility without OS windows.
             return profile,self.automation.windows.find_calibrated_main(
                 pattern,profile.get("points",{}).get("lot_input",{}),
-                platform=platform,
+                platform=platform,**account_options,
+            )
+        if "MT5" in platform.upper() and isinstance(self.automation.windows, WindowController):
+            return profile,self.automation.windows.find_broker_main(
+                pattern,platform=platform,**account_options,
             )
         window=self.automation.windows.find(pattern)
         if "MT5" not in platform.upper() and isinstance(window, WindowInfo):
@@ -329,16 +340,13 @@ class DemoUiBrokerPort:
             for attempt in range(attempts):
                 elements=(
                     list(_controls) if _controls is not None
-                    else Desktop(backend="uia").window(
+                    else fresh_controls(Desktop(backend="uia").window(
                         handle=window.handle
-                    ).descendants(
-                        control_type="Text",
-                    )
+                    ), ('Text',), text_ids=(ACCOUNT_ID,), text_names=())
                 )
-                visible=[e for e in elements if e.is_visible()]
-                number_nodes=[e for e in visible if
+                number_nodes=[e for e in elements if
                     str(e.element_info.automation_id)==
-                    "CTraderAccountNumberTextBlock_AId"]
+                    "CTraderAccountNumberTextBlock_AId" and e.is_visible()]
                 if len(number_nodes)>1:
                     raise AutomationError(
                         "cTrader 帳號欄位不唯一，無法安全辨識帳戶。"
@@ -743,6 +751,12 @@ class DemoUiBrokerPort:
 
     def _form_window(self, platform,role, *, allow_absent=False):
         profile,main=self._bound(platform,role)
+        filled=getattr(self.automation,"_last_verified_fills",{})
+        identity=filled.get((platform,role),{}).get("main_window") if isinstance(filled,dict) else None
+        if identity is not None and isinstance(self.automation.windows, WindowController):
+            current=(main.handle,self.automation.windows._window_pid(main.handle))
+            if current!=identity:
+                raise AutomationError("填入後平台視窗已更換，請重新填入並核對；未送單。")
         if "MT5" not in platform.upper():
             return profile,main
         point=profile.get("points",{}).get("lot_input")
@@ -877,9 +891,7 @@ class DemoUiBrokerPort:
             self.automation.emergency.guard()
             self.automation.windows.focus(_window)
             try:
-                _controls = Desktop(backend="uia").window(
-                    handle=_window.handle
-                ).descendants()
+                _controls = self._fresh_form_controls(_window)
             except Exception as exc:
                 raise AutomationError("cTrader 表單讀取失敗，未送單。") from exc
             if not isinstance(_controls, list) or not _controls:
@@ -1000,9 +1012,7 @@ class DemoUiBrokerPort:
             try:
                 from pywinauto import Desktop
                 timestamps["uia_inventory_started"]=time.perf_counter()
-                controls=Desktop(backend="uia").window(
-                    handle=win.handle
-                ).descendants()
+                controls=self._fresh_form_controls(win)
             except Exception as exc:
                 raise AutomationError(
                     "cTrader 送單前無法安全讀取原生 UIA 清單；未送單。"
@@ -1063,9 +1073,9 @@ class DemoUiBrokerPort:
                 raise AutomationError("cTrader 尚未人工校準真正的 Place order。")
             buttons=[b for b in controls
                 if str(b.element_info.control_type)=="Button"
-                and b.is_visible() and b.is_enabled() and
-                str(b.element_info.automation_id)==
+                and str(b.element_info.automation_id)==
                 "Orders_Create_MarketOrderPlaceButtonControl__Button_NewOrdersWindowPlaceOrder_AId"
+                and b.is_visible() and b.is_enabled()
             ]
             if len(buttons)!=1:
                 raise AutomationError("cTrader 找不到唯一 Place order 按鈕。")
@@ -1219,15 +1229,20 @@ class DemoUiBrokerPort:
         self.automation.windows.double_click(
             win,points["position_order_row"]
         )
-        try:
-            modify=self.automation.windows.wait_for_active_window_change(
-                win,timeout=3.0
+        if isinstance(self.automation.windows, WindowController):
+            modify=self.automation.windows.wait_for_broker_modify(
+                win,pos.platform,points["position_sl_input"],timeout=3.0
             )
-        except AutomationError:
-            modify=self.automation.windows.wait_for_window_matching_point_size(
-                points["position_sl_input"],timeout=3.0,
-                exclude_handles={win.handle},
-            )
+        else:
+            try:
+                modify=self.automation.windows.wait_for_active_window_change(
+                    win,timeout=3.0
+                )
+            except AutomationError:
+                modify=self.automation.windows.wait_for_window_matching_point_size(
+                    points["position_sl_input"],timeout=3.0,
+                    exclude_handles={win.handle},
+                )
         for key,value in (
             ("position_sl_input",sl),("position_tp_input",tp)
         ):

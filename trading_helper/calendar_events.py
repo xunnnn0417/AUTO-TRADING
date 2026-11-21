@@ -2,19 +2,27 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
+import time
+import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from datetime import datetime, timedelta, timezone
 from math import ceil
 from pathlib import Path
 from email.utils import parsedate_to_datetime
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from http.client import HTTPException
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
 from .headline_language import local_title, translate_title, valid_translation
+from .news_probe import append_probe
+from .news_relevance import assess_headline
 
 FEED_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 BEA_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
@@ -29,9 +37,10 @@ SOURCE_URLS = {'ff': FEED_URL, 'bea': BEA_URL, 'fed': FED_URL, 'ecb': ECB_URL,
                'rthk_finance': RTHK_FINANCE_URL, 'rthk_world': RTHK_WORLD_URL}
 SOURCE_NAMES = {'ff': 'Forex Factory', 'bea': 'BEA', 'fed': 'Fed', 'ecb': 'ECB',
                 'rthk_finance': '香港電台財經', 'rthk_world': '香港電台國際'}
+NEWS_POLL_MS = 30_000  # Temporary observation trial; backoff always takes precedence.
 SOURCE_TTLS = {'ff': timedelta(minutes=30), 'bea': timedelta(hours=6),
-               'fed': timedelta(minutes=15), 'ecb': timedelta(minutes=15),
-               'rthk_finance': timedelta(minutes=5), 'rthk_world': timedelta(minutes=5)}
+               'fed': timedelta(milliseconds=NEWS_POLL_MS), 'ecb': timedelta(milliseconds=NEWS_POLL_MS),
+               'rthk_finance': timedelta(milliseconds=NEWS_POLL_MS), 'rthk_world': timedelta(milliseconds=NEWS_POLL_MS)}
 MARKET_TOPICS = re.compile(
     '黃金|金價|貴金屬|美元|美匯|美債|國債|收益率|孳息|聯儲|聯準|鮑威爾|央行|利率|減息|加息|'
     '通脹|通膨|物價|非農|就業|失業|零售|GDP|PCE|CPI|PPI|PMI|特朗普|川普|關稅|'
@@ -44,6 +53,7 @@ class CalendarEvent:
     currency: str
     title: str
     source: str = 'Forex Factory'
+    details: str = field(default='', compare=False)
 
 
 @dataclass(frozen=True, order=True)
@@ -51,6 +61,79 @@ class Announcement:
     when: datetime
     source: str
     title: str
+    details: str = field(default='', compare=False)
+    scheduled: bool = field(default=False, compare=False)
+    reminder_kind: str = field(default='', compare=False)
+
+
+def format_event_time(when):
+    local = when.astimezone(TAIPEI)
+    return f'{local.hour % 12 or 12}:{local.minute:02} {"AM" if local.hour < 12 else "PM"}'
+
+
+def scheduled_reminders(calendar, now):
+    """Same fresh schedule and timing policy for desktop and phone alerts."""
+    for item in calendar.events:
+        key = next((key for key, name in SOURCE_NAMES.items() if name == item.source), None)
+        fetched = calendar.source_times.get(key)
+        if (not fetched or key in calendar.source_errors
+                or not timedelta(0) <= now-fetched <= SOURCE_TTLS[key]):
+            continue
+        delta = (item.when-now).total_seconds()
+        text = f'{format_event_time(item.when)} · {calendar.title(item.title)}'
+        if 0 < delta <= 600:
+            yield ('before', item, '重大事件即將公布',
+                   f'{max(1, ceil(delta/60))} 分鐘後公布 · {text}', item.when.timestamp())
+        elif -60 <= delta <= 0:
+            yield ('release', item, '重大事件公布時間已到',
+                   f'公布時間已到 · {text}', item.when.timestamp()+180)
+    from .rest_reminders import normalize_settings, rest_occurrences
+    settings = getattr(calendar, 'rest_settings', lambda: {})()
+    for when in rest_occurrences(settings, now):
+        for minutes in normalize_settings(settings)['minutes']:
+            trigger = when-timedelta(minutes=minutes)
+            if 0 <= (now-trigger).total_seconds() <= 60 and now < when:
+                item = CalendarEvent(when, '本機', '黃金例行休市', '休市提醒',
+                                     '依美國夏／冬令時間計算；假日與平台時段可能不同。不會自動平倉。')
+                yield (f'rest:{minutes}', item, '休市前提醒',
+                       f'{minutes} 分鐘後例行休市 · {format_event_time(when)} · 黃金例行休市',
+                       min(when.timestamp(), trigger.timestamp()+180))
+
+
+def events_for_display(calendar, now):
+    """Local reminders are virtual rows; never mix them into fetched source caches."""
+    from .rest_reminders import rest_occurrences
+    times = rest_occurrences(getattr(calendar, 'rest_settings', lambda: {})(), now)
+    future = [when for when in times if when > now]
+    recent = [when for when in times if now-timedelta(hours=24) <= when <= now]
+    shown = recent+future[:1]
+    return sorted(list(calendar.events)+[CalendarEvent(when, '本機', '黃金例行休市', '休市提醒',
+        '依美國夏／冬令時間計算；假日與平台時段可能不同。不會自動平倉。') for when in shown])
+
+
+def source_text(raw):
+    """Bounded source text only; discard markup, scripts and embedded media."""
+    class PlainText(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts, self.hidden = [], 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in {'script', 'style'}:
+                self.hidden += 1
+            elif tag in {'br', 'p', 'div', 'li'}:
+                self.parts.append(' ')
+
+        def handle_endtag(self, tag):
+            if tag in {'script', 'style'}:
+                self.hidden = max(0, self.hidden-1)
+
+        def handle_data(self, data):
+            if not self.hidden:
+                self.parts.append(data)
+    parser = PlainText()
+    parser.feed(str(raw or '')[:16000])
+    return re.sub(r'\s+', ' ', ''.join(parser.parts)).strip()[:1600]
 
 
 def aware_date(raw: str) -> datetime:
@@ -97,7 +180,8 @@ def parse_announcements(raw: bytes, source: str) -> list[Announcement]:
         try:
             when = parsedate_to_datetime(row.findtext('pubDate') or '')
             if when.tzinfo is not None:
-                items.add(Announcement(when.astimezone(UTC), source, title))
+                items.add(Announcement(when.astimezone(UTC), source, title,
+                                      source_text(row.findtext('description'))))
         except (ValueError, TypeError, OverflowError):
             continue
     return sorted(items, reverse=True)
@@ -121,12 +205,27 @@ def parse_events(rows: object) -> list[CalendarEvent]:
             continue
         if when.tzinfo is None:
             continue
-        events.add(CalendarEvent(when.astimezone(UTC), currency.upper(), title))
+        values = []
+        for key, label in (('actual', '公布值'), ('forecast', '預期'), ('previous', '前值')):
+            value = row.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                values.append(label+'：'+source_text(value)[:100])
+        events.add(CalendarEvent(when.astimezone(UTC), currency.upper(), title,
+                                 details=' '.join(values)))
     return sorted(events)
 
 
+def publication_values(details: str) -> dict[str, str]:
+    """Split the source's existing labeled values without guessing numbers."""
+    keys = {'公布值':'actual', '實際':'actual', '預期':'forecast', '前值':'previous'}
+    pattern = r'(公布值|實際|預期|前值)\s*[：:]\s*(.*?)(?=\s*(?:公布值|實際|預期|前值)\s*[：:]|$)'
+    return {keys[label]: value.strip() for label,value in re.findall(pattern, details, re.S)
+            if value.strip()}
+
+
 def parse_market_news(raw: bytes, source: str) -> list[Announcement]:
-    return [item for item in parse_announcements(raw, source) if MARKET_TOPICS.search(item.title)]
+    return [item for item in parse_announcements(raw, source)
+            if MARKET_TOPICS.search(item.title) or assess_headline(item.title).notify]
 
 
 def calendar_week(rows):
@@ -151,30 +250,30 @@ def countdown(when: datetime, now: datetime) -> str:
     seconds = (when - now).total_seconds()
     if seconds <= 0:
         return '已發布'
-    minutes = ceil(seconds / 60)
-    if minutes <= 1:
-        return '1 分鐘內'
-    days, remaining = divmod(minutes, 1440)
-    hours, minutes = divmod(remaining, 60)
-    if days:
-        return f'{days} 天 {hours} 小時 {minutes} 分後'
+    hours, remaining = divmod(ceil(seconds), 3600)
+    minutes, seconds = divmod(remaining, 60)
     if hours:
-        return f'{hours} 小時 {minutes} 分後'
-    return f'{minutes} 分鐘後'
+        return f'{hours} 小時 {minutes} 分 {seconds} 秒後'
+    if minutes:
+        return f'{minutes} 分 {seconds} 秒後'
+    return f'{seconds} 秒後'
 
 
 class EconomicCalendar(QObject):
     changed = Signal()
     received = Signal(object)
     translated = Signal(object)
+    announcements = Signal(object)
 
-    def __init__(self, path: Path, parent=None):
+    def __init__(self, path: Path, parent=None, *, rest_settings=None):
         super().__init__(parent)
+        self.rest_settings = rest_settings or (lambda: {})
         self.path = path
         self.events: list[CalendarEvent] = []
         self.news: list[Announcement] = []
         self._events_by_source = {'ff': [], 'bea': []}
         self._news_by_source = {key: [] for key in SOURCE_URLS if key not in self._events_by_source}
+        self._preview_news = []
         self.translations = {}
         self._translation_busy = False
         self._translation_enabled = False
@@ -189,6 +288,21 @@ class EconomicCalendar(QObject):
         self._last_attempt: dict[str, datetime] = {}
         self._busy = False
         self._closed = False
+        self._validators = {}
+        self._source_failures = {}
+        self._retry_at = {}
+        self._seen_news = {}
+        self._seen_reminders = {}
+        self._probe_log_error = False
+        self.refresh_timer = QTimer(self)
+        self._polling_enabled = False
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setTimerType(Qt.PreciseTimer)
+        self.refresh_timer.timeout.connect(lambda: self._poll())
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.setInterval(1000)
+        self.reminder_timer.timeout.connect(lambda: self._check_reminders())
+
         self.received.connect(self._apply)
         self.translated.connect(self._apply_translations)
         try:
@@ -197,6 +311,14 @@ class EconomicCalendar(QObject):
                 if not isinstance(payload, dict):
                     raise ValueError('事件快取格式不符')
                 if payload.get('version') == 2:
+                    reminders = payload.get('seen_reminders', [])
+                    if isinstance(reminders, list):
+                        self._seen_reminders = dict.fromkeys(v for v in reminders[-500:]
+                            if isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v))
+                    seen = payload.get('seen_announcements', [])
+                    if isinstance(seen, list):
+                        self._seen_news = dict.fromkeys(v for v in seen[-500:]
+                            if isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v))
                     coverage = payload.get('ff_coverage')
                     if isinstance(coverage, list) and len(coverage) == 2 and all(isinstance(v, str) for v in coverage):
                         begin, end = map(aware_date, coverage)
@@ -215,10 +337,12 @@ class EconomicCalendar(QObject):
                         self.source_times[key] = aware_date(payload['times'][key])
                         if key in self._events_by_source:
                             self._events_by_source[key] = [CalendarEvent(aware_date(row['when']),
-                                row['currency'], str(row['title'])[:180], SOURCE_NAMES[key]) for row in rows]
+                                row['currency'], str(row['title'])[:180], SOURCE_NAMES[key],
+                                source_text(row.get('details', ''))) for row in rows]
                         else:
                             self._news_by_source[key] = [Announcement(aware_date(row['when']),
-                                SOURCE_NAMES[key], str(row['title'])[:300]) for row in rows]
+                                SOURCE_NAMES[key], str(row['title'])[:300],
+                                source_text(row.get('details', ''))) for row in rows]
                 else:
                     self._events_by_source['ff'] = parse_events(payload['rows'])
                     self.source_times['ff'] = aware_date(payload['fetched_at'])
@@ -236,6 +360,43 @@ class EconomicCalendar(QObject):
                     and timedelta(0) <= now-fetched < SOURCE_TTLS['ff']
                     and self._ff_coverage[0] <= start and end <= self._ff_coverage[1])
 
+    def start(self) -> None:
+        # App-owned: automatic checks continue when the sidebar is collapsed/hidden.
+        if not self._closed:
+            self._polling_enabled = True
+            self.refresh_timer.start(NEWS_POLL_MS)
+            self.reminder_timer.start()
+
+    def _check_reminders(self, now=None):
+        if self._closed:
+            return
+        now = datetime.now(UTC) if now is None else now
+        alerts = []
+        for kind, item, _title, body, _expires in scheduled_reminders(self, now):
+            identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
+            if identity not in self._seen_reminders:
+                self._seen_reminders[identity] = None
+                alerts.append(Announcement(item.when, item.source, body, scheduled=True, reminder_kind=kind))
+        if alerts:
+            self._seen_reminders = dict(list(self._seen_reminders.items())[-500:])
+            self._save_cache()
+            self.announcements.emit(alerts)
+
+    def _poll(self) -> None:
+        self.refresh()
+        self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        if self._closed or not self._polling_enabled:
+            return
+        now = datetime.now(UTC)
+        deadlines = [max(
+            self._last_attempt.get(key, self.source_times.get(key, now-SOURCE_TTLS[key]))+SOURCE_TTLS[key],
+            self._retry_at.get(key, now),
+        ) for key in SOURCE_URLS]
+        delay = 1000 if self._busy else max(250, min(NEWS_POLL_MS, ceil((min(deadlines)-now).total_seconds()*1000)))
+        self.refresh_timer.start(delay)
+
     def refresh(self, *, force: bool = False) -> None:
         now = datetime.now(UTC)
         if self._closed or self._busy:
@@ -243,39 +404,83 @@ class EconomicCalendar(QObject):
         self._translation_enabled = True
         self._translate_missing()
         due = [key for key in SOURCE_URLS
-               if force or ((key not in self.source_times or not timedelta(0) <= now-self.source_times[key] < SOURCE_TTLS[key])
-               and (key not in self._last_attempt or now-self._last_attempt[key] >= min(SOURCE_TTLS[key], timedelta(minutes=15))))]
+               if now >= self._retry_at.get(key, now)
+               and (force or key not in self.source_times
+                    or not timedelta(0) <= now-self._last_attempt.get(key, self.source_times[key]) < SOURCE_TTLS[key])]
         if not due:
             return
         self._busy = True
         self._last_attempt.update({key: now for key in due})
         self.changed.emit()
-        threading.Thread(target=self._fetch, args=(due,), daemon=True).start()
+        threading.Thread(target=self._fetch, args=(due,),
+                         kwargs={'entry_point': 'manual' if force else 'automatic'}, daemon=True).start()
 
-    def _read_source(self, key):
+    def _read_source(self, key, *, entry_point='automatic'):
+        started_at, started = datetime.now(UTC), time.perf_counter()
+        details = {'http_status': None, 'bytes': 0}
+        result = self._download_source(key, details)
+        data, error = result[1], result[3]
+        failure_kind = details.pop('failure_kind', 'http_error')
+        outcome = failure_kind if error else ('unchanged' if data is None else 'downloaded')
+        self._probe_log_error = not append_probe(self.path.with_name('news-poll.jsonl'), {
+            'event': 'news_poll_result', 'request_id': uuid.uuid4().hex,
+            'entry_point': entry_point, 'source': key,
+            'started_at': started_at.isoformat(timespec='milliseconds'),
+            'finished_at': datetime.now(UTC).isoformat(timespec='milliseconds'),
+            'duration_ms': round((time.perf_counter()-started)*1000, 2),
+            'outcome': outcome, 'parsed_items': len(data) if data is not None else None,
+            'content_changed': (data != (self._events_by_source if key in self._events_by_source
+                               else self._news_by_source)[key]) if data is not None else False,
+            'error_type': error or None, **details,
+        })
+        return result
+
+    def _download_source(self, key, details):
         try:
-            request = Request(SOURCE_URLS[key], headers={'User-Agent': 'TradingWorkflowHelper/0.1'})
+            headers = {'User-Agent': 'TradingWorkflowHelper/0.1'}
+            headers.update(self._validators.get(key, {}))
+            request = Request(SOURCE_URLS[key], headers=headers)
             with urlopen(request, timeout=8) as response:
+                status = getattr(response, 'status', 200)
+                details['http_status'] = status if isinstance(status, int) else 200
                 raw = response.read(MAX_BYTES + 1)
+                details['bytes'] = len(raw)
+                validators = {}
+                for name, conditional in (('ETag', 'If-None-Match'), ('Last-Modified', 'If-Modified-Since')):
+                    value = response.headers.get(name)
+                    if isinstance(value, str) and 0 < len(value) <= 512 and '\r' not in value and '\n' not in value:
+                        validators[conditional] = value
             if len(raw) > MAX_BYTES:
                 raise ValueError('事件資料過大')
             if key == 'ff':
                 rows = json.loads(raw.decode('utf-8-sig'))
                 data = parse_events(rows)
-                return key, data, datetime.now(UTC), '', calendar_week(rows)
+                return key, data, datetime.now(UTC), '', calendar_week(rows), validators
             elif key == 'bea':
                 data = parse_bea_schedule(json.loads(raw.decode('utf-8-sig')))
             elif key.startswith('rthk_'):
                 data = parse_market_news(raw, SOURCE_NAMES[key])
             else:
                 data = parse_announcements(raw, SOURCE_NAMES[key])
-            return key, data, datetime.now(UTC), ''
-        except (OSError, ValueError, TypeError) as exc:
+            return key, data, datetime.now(UTC), '', None, validators
+        except HTTPError as exc:
+            details['http_status'] = exc.code
+            exc.close()
+            if exc.code == 304 and key in self.source_times:
+                return key, None, datetime.now(UTC), ''
+            retry = exc.headers.get('Retry-After', '') if exc.headers else ''
+            return key, None, None, f'HTTP {exc.code}', None, retry
+        except (OSError, HTTPException) as exc:
+            details['failure_kind'] = 'network_error'
+            return key, None, None, type(exc).__name__
+        except (ET.ParseError, ValueError, TypeError) as exc:
+            details['failure_kind'] = 'parse_error'
             return key, None, None, type(exc).__name__
 
-    def _fetch(self, keys=None) -> None:
+    def _fetch(self, keys=None, *, entry_point='automatic') -> None:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            result = list(pool.map(self._read_source, keys or SOURCE_URLS))
+            result = list(pool.map(lambda key: self._read_source(key, entry_point=entry_point),
+                                   keys or SOURCE_URLS))
         if not self._closed:
             self.received.emit(result)
 
@@ -287,22 +492,63 @@ class EconomicCalendar(QObject):
         if not self._events_by_source['ff'] and self.events:
             self._events_by_source['ff'] = [e for e in self.events if e.source == 'Forex Factory']
         self._busy = False
+        alerts = []
         for record in result:
             key, data, fetched_at, error = record[:4]
             if error:
                 self.source_errors[key] = error
+                failures = min(7, self._source_failures.get(key, 0)+1)
+                self._source_failures[key] = failures
+                delay = timedelta(seconds=min(3600, 60 * 2**(failures-1)))
+                retry = record[5] if len(record) > 5 else ''
+                now = datetime.now(UTC)
+                retry_time = now+delay
+                if isinstance(retry, str) and len(retry) <= 100:
+                    try:
+                        requested = (now+timedelta(seconds=int(retry)) if retry.isdigit()
+                                     else parsedate_to_datetime(retry))
+                        if requested.tzinfo is not None:
+                            retry_time = max(retry_time, requested.astimezone(UTC))
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                self._retry_at[key] = retry_time
             else:
-                if key == 'ff':
+                if data is not None and key in self._news_by_source:
+                    alerts.extend(self._new_announcements(key, data))
+                self._source_failures.pop(key, None)
+                self._retry_at.pop(key, None)
+                if len(record) > 5 and isinstance(record[5], dict):
+                    self._validators[key] = record[5]
+                if key == 'ff' and data is not None:
                     self._ff_coverage = record[4] if len(record) > 4 else None
                 self.source_errors.pop(key, None)
                 self.source_times[key] = fetched_at
-                (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
+                if data is not None:  # HTTP 304 confirms the existing data unchanged.
+                    (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
         self.error = '；'.join(f'{SOURCE_NAMES[key]}：{error}' for key, error in self.source_errors.items())
         self._combine()
         self._save_cache()
         self.changed.emit()
+        if alerts:
+            self.announcements.emit(sorted(set(alerts), reverse=True))
+        self._schedule_refresh()
         if self._translation_enabled:
             self._translate_missing()
+
+    def _new_announcements(self, key, rows):
+        now = datetime.now(UTC)
+        primed = key in self.source_times
+        previous = set(self._news_by_source[key])
+        alerts = []
+        for item in rows:
+            identity = hashlib.sha256(f'{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
+            if (primed and item not in previous and identity not in self._seen_news
+                    and now-timedelta(minutes=15) <= item.when <= now
+                    and assess_headline(item.title).notify):
+                alerts.append(item)
+            self._seen_news[identity] = None
+        self._seen_news = dict(list(self._seen_news.items())[-500:])
+        return alerts
 
     def title(self, original):
         return local_title(original) if local_title(original) != original else self.translations.get(original, original)
@@ -355,8 +601,17 @@ class EconomicCalendar(QObject):
 
     def _combine(self):
         self.events = sorted(set(e for rows in self._events_by_source.values() for e in rows))
-        self.news = sorted(set(e for rows in self._news_by_source.values() for e in rows), reverse=True)
+        self.news = sorted(set(e for rows in self._news_by_source.values() for e in rows)
+                           | set(self._preview_news), reverse=True)
         self.fetched_at = max(self.source_times.values(), default=None)
+
+    def preview_announcement(self):
+        """Inject only an in-memory headline into the normal notification path."""
+        item = Announcement(datetime.now(UTC), '測試消息', '【測試】特朗普突然宣布調整關稅政策')
+        self._preview_news = (self._preview_news + [item])[-5:]
+        self._combine()
+        self.changed.emit()
+        self.announcements.emit([item])
 
     def status_lines(self, now):
         lines = []
@@ -365,26 +620,33 @@ class EconomicCalendar(QObject):
             state = ('無法更新' if key in self.source_errors else
                      '待更新' if when is None or not timedelta(0) <= now-when < SOURCE_TTLS[key] else '已連線')
             stamp = f' · {when.astimezone(TAIPEI):%m/%d %H:%M:%S}' if when else ''
+            retry = self._retry_at.get(key)
+            if retry is not None and retry > now:
+                stamp += f' · {retry.astimezone(TAIPEI):%H:%M:%S} 後重試'
             lines.append(name + '：' + state + stamp)
+        if self._probe_log_error:
+            lines.append('診斷記錄無法寫入；消息檢查仍會繼續。')
         return lines
 
     def _save_cache(self) -> None:
-        if self.fetched_at is None:
+        if self.fetched_at is None and not self._seen_reminders:
             return
         try:
             if not self._events_by_source['ff'] and self.events:
                 self._events_by_source['ff'] = [e for e in self.events if e.source == 'Forex Factory']
-            if not self.source_times:
+            if not self.source_times and self.fetched_at is not None:
                 self.source_times['ff'] = self.fetched_at
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(json.dumps({
                 'version': 2,
+                'seen_announcements': list(self._seen_news),
+                'seen_reminders': list(self._seen_reminders),
                 'ff_coverage': [value.isoformat() for value in self._ff_coverage] if self._ff_coverage else None,
                 'translations': dict(list(self.translations.items())[-500:]),
                 'translation_day': self._translation_day,
                 'translation_chars': self._translation_chars,
                 'times': {key: value.isoformat() for key, value in self.source_times.items()},
-                'sources': {key: [dict(when=e.when.isoformat(), title=e.title,
+                'sources': {key: [dict(when=e.when.isoformat(), title=e.title, details=e.details,
                                     **({'currency': e.currency} if isinstance(e, CalendarEvent) else {})) for e in rows]
                             for key, rows in {**self._events_by_source, **self._news_by_source}.items()
                             if key in self.source_times},
@@ -393,4 +655,7 @@ class EconomicCalendar(QObject):
             pass
 
     def close(self) -> None:
+        self._polling_enabled = False
+        self.refresh_timer.stop()
+        self.reminder_timer.stop()
         self._closed = True

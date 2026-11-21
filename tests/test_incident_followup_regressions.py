@@ -104,25 +104,18 @@ class IncidentChoiceTests(unittest.TestCase):
             finally:
                 dialog.close()
 
-    def test_fast_preference_is_captured_before_test_worker(self):
-        for action in ("weekend:BTCUSD","reentry:internal","close:external"):
-            fake=SimpleNamespace(
-                auto_entry_on_fill_both=SimpleNamespace(isChecked=lambda:False),
-                auto_fast_pair=MagicMock(),_start=MagicMock(),
-                _run_complete_test_scenario=MagicMock())
-            fake.auto_fast_pair.isChecked.return_value=True
-            gui.TradingHelperApp._start_fill_worker(fake,("internal","external"),
-                {"internal":"cTrader","external":"MT5"},test_action=action)
-            fake.auto_fast_pair.isChecked.side_effect=AssertionError("Qt read from worker")
-            fake._start.call_args.args[1]()
-            self.assertTrue(fake._run_complete_test_scenario.call_args.kwargs["fast_pair"])
+    def test_normal_fast_pair_options_are_captured_before_worker(self):
+        fake=SimpleNamespace(
+            auto_entry_on_fill_both=SimpleNamespace(isChecked=lambda:True),
+            auto_sync_sl_tp_after_entry=SimpleNamespace(isChecked=lambda:True),
+            auto_fast_pair=MagicMock(), _start=MagicMock(), _fill_both_task=MagicMock())
+        gui.TradingHelperApp._start_fill_worker(fake,("internal","external"),
+            {"internal":"cTrader","external":"MT5"})
+        fake.auto_fast_pair.isChecked.side_effect=AssertionError("Qt read from worker")
+        fake._start.call_args.args[1]()
+        self.assertTrue(fake._fill_both_task.call_args.kwargs["fast_pair"])
+        self.assertTrue(fake._fill_both_task.call_args.kwargs["sync_sl_tp"])
 
-    def test_complete_test_routes_only_dual_initial_entries_as_fast(self):
-        for action in ("weekend:BTCUSD","close:internal","close:external","reentry:internal","reentry:external"):
-            fake=SimpleNamespace(_fill_both_task=MagicMock())
-            gui.TradingHelperApp._run_complete_test_scenario(fake,action,
-                {"internal":"cTrader","external":"MT5"},fast_pair=True)
-            self.assertEqual(fake._fill_both_task.call_args.kwargs["fast_pair"],not action.startswith("reentry:"))
 
     def test_fill_does_not_drop_fast_option_before_test_entry(self):
         fake=SimpleNamespace(_require_instruction=instruction,automation=MagicMock(),
@@ -192,6 +185,7 @@ class VerifiedModifyCleanupTests(unittest.TestCase):
         self.port._bound=lambda *args:({"points":points},WindowInfo(1,"MT5",0,0,800,600))
         self.automation._normalize_numeric_input=lambda raw,value:D(raw)
         self.windows.wait_for_active_window_change.return_value=self.window
+        self.windows.wait_for_broker_modify.return_value=self.window
         self.windows.read_edit_value.side_effect=[str(target_sl),str(target_tp)]
         self.port.set_position_sl_tp(self.pos,target_sl,target_tp)
         self.windows.click.assert_called_once_with(self.window,points["position_modify_confirm"])

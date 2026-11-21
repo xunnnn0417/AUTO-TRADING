@@ -103,7 +103,7 @@ from .config import (
     ConfigStore, DEFAULT_CONFIG, ProfileStore, ctrader_mode_for_profile,
     set_ctrader_mode_for_profile,
 )
-from .test_mode import effective_test_symbol, test_symbol_scope
+from .test_mode import effective_test_symbol
 from .models import InvalidInternalTakeProfit, TradeInstruction, ValidationError
 from .automation import REQUIRED_POINTS
 from .sheets import (
@@ -532,6 +532,17 @@ def _window_title_pattern(platform: str, title: str) -> str:
     return re.escape(title)
 
 
+def _bound_broker_main(app, platform: str, role: str) -> WindowInfo:
+    """Use the saved role/account for read-only calibration and inspection."""
+    profile = app.store.data["platforms"][platform]
+    pattern = profile.get("window_title", {}).get(role, "")
+    if isinstance(app.windows, WindowController):
+        account = profile.get("account_number", {}).get(role, "")
+        options = {"expected_account": account} if account else {}
+        return app.windows.find_broker_main(pattern, platform=platform, **options)
+    return app.windows.find(pattern)
+
+
 class UiSignals(QObject):
     log = Signal(str)
     status = Signal(str)
@@ -557,6 +568,7 @@ class UiSignals(QObject):
     duplicate_entry_decision = Signal(object)
     window_binding_result = Signal(object)
     auto_entry_result = Signal(object)
+    remote_task_result = Signal(object)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -903,6 +915,39 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # *after* QWidget.__init__. Reapply the compact size once shown.
         QTimer.singleShot(80, self._dock_top)
         QTimer.singleShot(350, self.read_sheet)
+        self._mobile_resume_timer = QTimer(self)
+        self._mobile_resume_timer.setSingleShot(True)
+        self._mobile_resume_timer.timeout.connect(self._resume_mobile_remote)
+        self._mobile_resume_timer.start(500)
+
+    def _mobile_remote(self):
+        from .remote_ui import RemoteController
+        if getattr(self, "remote_controller", None) is None:
+            self.remote_controller = RemoteController(self)
+        return self.remote_controller
+
+    def _resume_mobile_remote(self):
+        # No listener or credentials are created until explicitly enabled.
+        self._mobile_resume_timer.stop()
+        if (self.store.path.parent / "mobile-remote.sqlite3").exists():
+            try:
+                controller = self._mobile_remote()
+                if controller.store.setting("enabled") == "1":
+                    if controller.server.http.isListening():
+                        return
+                    if controller._busy():
+                        self._mobile_resume_timer.start(500)
+                        return
+                    controller.resume()
+            except ValueError:
+                self.log("手機連線未能恢復，請在管理選單重新開啟。")
+
+    def open_mobile_remote(self):
+        if self.can_update():
+            try:
+                self._mobile_remote().show_settings()
+            except ValueError as exc:
+                QMessageBox.warning(self, '手機連線', str(exc))
 
     def _build_operation_hint(self) -> None:
         self._operation_restore_geometry = None
@@ -931,6 +976,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.operation_hint.adjustSize()
 
     def _hide_for_operation(self) -> None:
+        news_dialog = getattr(self, '_news_alert_dialog', None)
+        if news_dialog is not None and news_dialog.isVisible():
+            self._pending_news_alerts = list(dict.fromkeys(
+                self._news_popup_items + self._pending_news_alerts))[-20:]
+            news_dialog.close()
+            self._news_alert_timer.start()
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.hide()
@@ -981,6 +1032,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._operation_restore_geometry = None
             self._operation_restore_maximized = False
             self._operation_screen = None
+            if panel is not None and self.side_panel_checkbox.isChecked():
+                panel.show()
+                panel.dock()
             return
         if self._operation_restore_maximized:
             self.showMaximized()
@@ -998,6 +1052,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             panel.dock()
 
     def initialize_side_panel(self) -> None:
+        self._get_event_calendar()  # Alerts also run when the sidebar is disabled.
         self.toggle_side_panel(self.side_panel_checkbox.isChecked())
 
     def toggle_side_panel(self, enabled: bool) -> None:
@@ -1075,6 +1130,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             nav.clicked.connect(lambda _checked=False, name=title: self.switch_workspace(name))
             top_row.addWidget(nav)
             self.page_nav[title] = nav
+        self.news_badge = QLabel(self.page_nav['消息'])
+        self.news_badge.setObjectName('unreadNewsDot')
+        self.news_badge.setFixedSize(6, 6)
+        self.news_badge.setStyleSheet('background:#ff516b; border:0; border-radius:3px;')
+        self.news_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.news_badge.setAccessibleName('有新的重大消息')
+        self.page_nav['消息'].installEventFilter(self)
+        self.news_badge.hide()
+        self._pending_news_alerts = []
+        self._news_alert_dialog = None
+        self._news_alert_timer = QTimer(self)
+        self._news_alert_timer.setInterval(1000)
+        self._news_alert_timer.timeout.connect(lambda: self._show_pending_news_alert())
         top_row.addSpacing(5)
         label_profile = QLabel("目前方案")
         label_profile.setObjectName("moduleKicker")
@@ -1112,6 +1180,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         delete_action.triggered.connect(self.delete_profile)
         self.profile_manage_button.setMenu(self.profile_manage_menu)
+        self.profile_manage_menu.addSeparator()
+        mobile_action = self.profile_manage_menu.addAction("手機連線")
+        mobile_action.triggered.connect(self.open_mobile_remote)
         top_row.addWidget(self.profile_manage_button)
         top_row.addStretch(1)
 
@@ -1192,6 +1263,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.always_on_top.setChecked(False)
         self.always_on_top.toggled.connect(self.set_always_on_top)
         display_layout.addWidget(self.always_on_top)
+        for option in (self.tv_draw_internal, self.show_calibration_badges,
+                       self.side_panel_checkbox, self.always_on_top):
+            install_checkmark_only_indicator(option)
         display_action = QWidgetAction(display_menu)
         display_action.setDefaultWidget(display_container)
         display_menu.addAction(display_action)
@@ -1679,86 +1753,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             choice.toggled.connect(lambda checked, target=cell: self._confirm_trade_rule(target, checked))
             self.trade_rule_checkboxes[cell] = choice
             automation_layout.addWidget(choice)
-        self.test_controls = QWidget(automation_row)
-        self.test_controls.setObjectName("testControls")
-        test_layout = QHBoxLayout(self.test_controls)
-        test_layout.setContentsMargins(0, 0, 0, 0)
-        test_layout.setSpacing(4)
-        test_layout.addWidget(QLabel("—"))
-        test_layout.addWidget(QLabel("測試項目"))
-        self.test_asset_checkboxes: dict[str, QCheckBox] = {}
-        self.test_scenario_checkboxes: dict[str, QCheckBox] = {}
-        for symbol, label in (("BTCUSD", "BTC"), ("ETHUSD", "ETH")):
-            choice = QCheckBox(label)
-            choice.setObjectName(f"test_asset_{symbol.lower()}")
-            choice.setToolTip(
-                f"假日測試使用 {symbol}；不選就沿用試算表商品（例如 GOLD）。"
-                "BTC 與 ETH 一次選一個。"
-            )
-            choice.toggled.connect(
-                lambda checked, current=choice, group=self.test_asset_checkboxes:
-                    self._exclusive_optional_checkbox(group, current, checked)
-            )
-            self.test_asset_checkboxes[symbol] = choice
-        for action, label in (
-            ("reentry:internal", "內重"),
-            ("close:internal", "內平"),
-            ("reentry:external", "外重"),
-            ("close:external", "外平"),
-        ):
-            choice = QCheckBox(label)
-            choice.setObjectName("test_scenario_" + action.replace(":", "_"))
-            full_label = {
-                "reentry:internal": "場內重新進場",
-                "close:internal": "場內關單",
-                "reentry:external": "場外重新進場",
-                "close:external": "場外關單",
-            }[action]
-            choice.setToolTip(
-                f"{full_label}完整流程測試；四種情境一次只能選一種。"
-                "取消勾選則不注入故障。"
-            )
-            choice.toggled.connect(
-                lambda checked, current=choice, group=self.test_scenario_checkboxes:
-                    self._exclusive_optional_checkbox(group, current, checked)
-            )
-            self.test_scenario_checkboxes[action] = choice
-        self.test_delay_checkbox = QCheckBox("15 秒延遲")
-        self.test_delay_checkbox.setObjectName("test_recovery_delay")
-        self.test_delay_checkbox.setToolTip(
-            "僅情境測試使用：發現單邊缺單後等待超過 15 秒，"
-            "驗證逾時處理。等待期間仍可按 Esc 或右鍵停止。"
-            "場內快平仍會立即處理場外，不延遲保護動作。"
-        )
         for option in (
             self.auto_entry_on_fill_both, self.auto_fast_pair,
-            self.auto_sync_sl_tp_after_entry,
-            self.auto_draw_tv_after_entry,
-            *self.test_asset_checkboxes.values(),
-            *self.test_scenario_checkboxes.values(),
-            self.test_delay_checkbox,
+            self.auto_sync_sl_tp_after_entry, self.auto_draw_tv_after_entry,
         ):
             option.setStyleSheet("font-size: 10px; spacing: 3px;")
             install_checkmark_only_indicator(option)
-        for option in (
-            *self.test_asset_checkboxes.values(),
-            *self.test_scenario_checkboxes.values(),
-            self.test_delay_checkbox,
-        ):
-            option.setStyleSheet("font-size: 9px; spacing: 2px;")
-        for choice in self.test_asset_checkboxes.values():
-            test_layout.addWidget(choice)
-        self.test_asset_checkboxes["BTCUSD"].hide()
-        separator = QLabel("情境")
-        separator.setObjectName("testScenarioSeparator")
-        test_layout.addWidget(separator)
-        for choice in self.test_scenario_checkboxes.values():
-            test_layout.addWidget(choice)
-        test_layout.addWidget(self.test_delay_checkbox)
-        automation_layout.addWidget(self.test_controls)
-        # Accepted recovery tests remain available in code, but the normal
-        # release hides the entire section. No selection is restored on launch.
-        self.test_controls.hide()
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
@@ -2146,8 +2146,94 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if getattr(self, '_event_calendar', None) is None:
             from .calendar_events import EconomicCalendar
             self._event_calendar = EconomicCalendar(
-                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self)
+                self.store.path.parent / 'diagnostics' / 'economic-calendar.json', self,
+                rest_settings=lambda: self.store.data.get('ui', {}).get('rest_reminder', {}))
+            self._event_calendar.announcements.connect(self._queue_news_alerts)
+            self._event_calendar.start()
         return self._event_calendar
+
+    def _queue_news_alerts(self, items) -> None:
+        if (self.isVisible() and self.main_pages.currentWidget() is self.news_page
+                and not any(item.source == '測試消息' for item in items)):
+            return  # Already reading the shared feed.
+        self._pending_news_alerts = list(dict.fromkeys(self._pending_news_alerts + list(items)))[-20:]
+        if not self._pending_news_alerts:
+            return
+        self.news_badge.move(max(0, self.page_nav['消息'].width()-8), 2)
+        self.news_badge.show()
+        self.news_badge.raise_()
+        self._news_alert_timer.start()
+        self._show_pending_news_alert()
+
+    def _show_pending_news_alert(self) -> None:
+        if not self._pending_news_alerts:
+            self._news_alert_timer.stop()
+            return
+        if (self._active_tasks or self._parameter_write_active or self._trade_settings_busy
+                or self._update_in_progress or self._calibration_dialog_active
+                or self._fill_waiting_for_sheet or self.operation_hint.isVisible()
+                or QApplication.activeModalWidget() is not None):
+            return
+        if self._news_alert_dialog is not None and self._news_alert_dialog.isVisible():
+            return
+        from .calendar_events import format_event_time
+        items, self._pending_news_alerts = self._pending_news_alerts, []
+        self._news_popup_items = items
+        self._news_alert_timer.stop()
+        if self._news_alert_dialog is not None:
+            self._news_alert_dialog.deleteLater()
+        # A Windows-owned tool window can lift its owner in the Z order.
+        # Keep the notification independent; only "查看消息" opens the app.
+        dialog = QMessageBox()
+        self._news_alert_dialog = dialog
+        dialog.setWindowTitle('重大消息提醒')
+        dialog.setMaximumWidth(520)
+        dialog.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog._primary_text.setTextFormat(Qt.PlainText)
+        service = self._get_event_calendar()
+        groups = {}
+        for item in items:
+            # Scheduled titles have a controlled prefix, time, then headline.
+            prefix = item.title.split(' · ',1)[0]
+            phase = (item.reminder_kind or ('release' if prefix == '公布時間已到' else 'before')) if item.scheduled else 'news'
+            groups.setdefault((item.when,phase),[]).append(item)
+        lines = []
+        for (when,phase), members in groups.items():
+            prefix = members[0].title.split(' · ',1)[0] if phase != 'news' else '重大消息'
+            header = f'{prefix} · {format_event_time(when)}'
+            if len(members)>1:
+                header += f' · {len(members)} 則'
+            names = [item.title.split(' · ',2)[-1] if item.scheduled else service.title(item.title)
+                     for item in members]
+            lines.append(header+'\n'+'\n'.join('• '+name for name in dict.fromkeys(names)))
+        dialog.setText('\n\n'.join(lines))
+        view = dialog.addButton('查看消息', QMessageBox.ActionRole)
+        dialog.addButton('知道了', QMessageBox.AcceptRole)
+        def finished(_result):
+            if dialog.clickedButton() is view:
+                self.showNormal()
+                self.raise_()
+                self.activateWindow()
+                self.switch_workspace('消息')
+            if self._pending_news_alerts:
+                self._news_alert_timer.start()
+        dialog.finished.connect(finished)
+        dialog.adjustSize()
+        panel = getattr(self, 'side_panel', None)
+        expanded = panel is not None and panel.isVisible() and not panel.collapsed
+        screen = panel.screen() if panel is not None and panel.isVisible() else self.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            anchor = panel.geometry() if expanded else area
+            x = anchor.left()-dialog.width()-10 if expanded else area.center().x()-dialog.width()//2
+            y = anchor.top() if expanded else area.center().y()-dialog.height()//2
+            dialog.move(max(area.left(), min(x, area.right()-dialog.width()+1)),
+                        max(area.top(), min(y, area.bottom()-dialog.height()+1)))
+        dialog.show()
+        dialog.raise_()
 
     def switch_workspace(self, name: str) -> None:
         """Change only the visible view; keep the current trade state intact."""
@@ -2155,6 +2241,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if name not in names:
             return
         self.main_pages.setCurrentIndex(names[name])
+        if name == '消息':
+            self.news_badge.hide()
+            self._pending_news_alerts.clear()
+            self._news_alert_timer.stop()
+            if self._news_alert_dialog is not None:
+                self._news_alert_dialog.close()
         for key, button in self.page_nav.items():
             button.blockSignals(True)
             button.setChecked(key == name)
@@ -2426,6 +2518,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         box.setFixedHeight(height)
 
     def eventFilter(self, watched, event) -> bool:
+        if (watched is getattr(self, 'page_nav', {}).get('消息')
+                and hasattr(self, 'news_badge') and event.type() in (QEvent.Resize, QEvent.Show)):
+            self.news_badge.move(max(0, watched.width()-8), 2)
         if (watched is getattr(self, "balance_warning_badge", None)
                 and event.type() == QEvent.MouseButtonRelease
                 and event.button() == Qt.LeftButton):
@@ -2491,17 +2586,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     def _maybe_adjust_repeated_expected_sl(
         self, instruction: TradeInstruction, *, roles: tuple[str, ...],
-        dirty: tuple[str, ...] | list[str], test_action: str,
+        dirty: tuple[str, ...] | list[str],
     ) -> tuple[TradeInstruction, bool]:
         """Ask before repeating an unchanged expected stop before filling."""
         auto_entry = getattr(self, "auto_entry_on_fill_both", None)
         if (
             roles != ("internal", "external")
             or "expected_sl_combined" in dirty
-            or (
-                not test_action
-                and (auto_entry is None or not auto_entry.isChecked())
-            )
+            or auto_entry is None or not auto_entry.isChecked()
             or instruction.expected_sl_points is None
             or instruction.original_sl_points is None
         ):
@@ -2666,18 +2758,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         item=request.get("item")
         internal_platform=str(request.get("internal_platform") or "")
         external_platform=str(request.get("external_platform") or "")
-        selected_symbol=TradingHelperApp._selected_test_symbol(
-            self,("internal","external")
-        )
-        if selected_symbol is None:
-            for test_action,option in getattr(
-                self,"test_scenario_checkboxes",{}
-            ).items():
-                if option.isChecked() and test_action.startswith("weekend:"):
-                    selected_symbol=test_action.split(":",1)[1]
-                    break
-        if selected_symbol is None and item is not None:
-            selected_symbol=item.symbol
+        selected_symbol=item.symbol if item is not None else None
         account_ids=request.get("account_ids")
         receipt=getattr(self,"_auto_entry_receipt",None)
         try:
@@ -2730,46 +2811,45 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             port,journal,self.emergency.guard,self.log,
             timing_store=getattr(self,"phase_timing_store",None),
         )
-        with test_symbol_scope(request.get("symbol")):
-            if action=="close":
-                role=request["confirmed_role"]
-                closed=flow.run_single_leg_close_test(
-                    item,internal_platform,external_platform,
-                    request["profile_name"],request["sheet_url"],
-                    role=role,
-                    expected_ticket=request["confirmed_ticket"],
-                    expected_account_ids=request["account_ids"],
-                    require_other_empty=True,
-                    operation="user",
-                )
-                title="已平倉並確認兩邊皆無持倉"
-                message=(
-                    f"已確認關閉 {role} 的訂單 {closed.ticket}。"
-                    "兩邊帳戶目前都沒有該次配對持倉。"
-                )
-            else:
-                role=(
-                    "external" if request["confirmed_role"]=="internal"
-                    else "internal"
-                )
-                internal,external=flow.run_single_leg_test(
-                    item,internal_platform,external_platform,
-                    request["profile_name"],request["sheet_url"],
-                    role=role,sync_sl_tp=True,
-                    expected_other_ticket=request["confirmed_ticket"],
-                    expected_account_ids=request["account_ids"],
-                    draw_tv=bool(request.get("draw_tv",False)),
-                    draw_internal=bool(request.get("draw_internal",False)),
-                    operation="user",
-                )
-                title="缺少的一邊已補進並核對"
-                message=(
-                    f"場內訂單：{internal.ticket}\n"
-                    f"場外訂單：{external.ticket}\n"
-                    "兩邊持倉已重新讀回；場外 SL／TP 同步已核對。"
-                    + ("\nTradingView 繪圖已完成。"
-                       if request.get("draw_tv") else "")
-                )
+        if action=="close":
+            role=request["confirmed_role"]
+            closed=flow.run_single_leg_close_test(
+                item,internal_platform,external_platform,
+                request["profile_name"],request["sheet_url"],
+                role=role,
+                expected_ticket=request["confirmed_ticket"],
+                expected_account_ids=request["account_ids"],
+                require_other_empty=True,
+                operation="user",
+            )
+            title="已平倉並確認兩邊皆無持倉"
+            message=(
+                f"已確認關閉 {role} 的訂單 {closed.ticket}。"
+                "兩邊帳戶目前都沒有該次配對持倉。"
+            )
+        else:
+            role=(
+                "external" if request["confirmed_role"]=="internal"
+                else "internal"
+            )
+            internal,external=flow.run_single_leg_test(
+                item,internal_platform,external_platform,
+                request["profile_name"],request["sheet_url"],
+                role=role,sync_sl_tp=True,
+                expected_other_ticket=request["confirmed_ticket"],
+                expected_account_ids=request["account_ids"],
+                draw_tv=bool(request.get("draw_tv",False)),
+                draw_internal=bool(request.get("draw_internal",False)),
+                operation="user",
+            )
+            title="缺少的一邊已補進並核對"
+            message=(
+                f"場內訂單：{internal.ticket}\n"
+                f"場外訂單：{external.ticket}\n"
+                "兩邊持倉已重新讀回；場外 SL／TP 同步已核對。"
+                + ("\nTradingView 繪圖已完成。"
+                   if request.get("draw_tv") else "")
+            )
         signal=getattr(
             getattr(self,"signals",None),"auto_entry_result",None
         )
@@ -2797,9 +2877,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 or str(self.store.data["sheet"].get("spreadsheet_url","")).strip()
                     !=request.get("sheet_url")
                 or current_item!=item
-                or (TradingHelperApp._selected_test_symbol(
-                    self,("internal","external")
-                ) or item.symbol)!=request.get("symbol",item.symbol)
+                or item.symbol!=request.get("symbol",item.symbol)
                 or self.internal_platform.currentText()!=internal_platform
                 or self.external_platform.currentText()!=external_platform):
             QMessageBox.warning(
@@ -2817,16 +2895,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
 
     def _fill_approved_reentry(self, request: dict) -> None:
-        # Keep the chosen test instrument inside the worker thread, just as
-        # for ordinary test entry. Do not run another fault-injection test.
-        with test_symbol_scope(request.get("symbol")):
-            self._fill_both_task(
-                request["internal_platform"],request["external_platform"],True,
-                sync_sl_tp=True,
-                draw_tv=bool(request.get("draw_tv",False)),
-                draw_internal=bool(request.get("draw_internal",False)),
-                fast_pair=True,authorized_reentry_id=f"{time.time_ns()}",
-            )
+        # Resume the normal workflow with the verified instruction's symbol.
+        self._fill_both_task(
+            request["internal_platform"],request["external_platform"],True,
+            sync_sl_tp=True,
+            draw_tv=bool(request.get("draw_tv",False)),
+            draw_internal=bool(request.get("draw_internal",False)),
+            fast_pair=True,authorized_reentry_id=f"{time.time_ns()}",
+        )
 
     def _show_external_price_result(self, result: dict[str, str]) -> None:
         dialog = ThemedDialog(self)
@@ -2954,9 +3030,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         def worker() -> None:
             suggestion = None
             duplicate_data = None
+            outcome = "completed"
             if hide_during:
                 self.signals.operation_started.emit()
             self.signals.status.emit(name.upper())
+            def run_task() -> None:
+                if broker_operation and isinstance(self.windows, WindowController):
+                    with self.windows.broker_window_session():
+                        task()
+                else:
+                    task()
             try:
                 mouse_tasks = is_fill or name in (
                     "繪製 TradingView", "同步場外止盈止損", "同步到場外"
@@ -2969,16 +3052,18 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                                 "滑鼠保護中：暫停實體滑鼠輸入，"
                                 "程式仍可操作；按 Esc 緊急停止。"
                             )
-                            task()
+                            run_task()
                     finally:
                         self.log("滑鼠保護已解除。")
                 else:
-                    task()
+                    run_task()
                 if not self.emergency.event.is_set():
                     self.signals.status.emit("就緒")
             except EmergencyStopped:
+                outcome = "stopped"
                 self.signals.status.emit("已停止")
             except DuplicateEntryDecisionRequired as exc:
+                outcome = "waiting"
                 self.signals.status.emit("待確認")
                 duplicate_data={
                     "key":exc.key,
@@ -2991,6 +3076,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     "發現已存在的自動進場紀錄，等待使用者決定是否調整數值。"
                 )
             except CTraderDecimalInputSuggestion as exc:
+                outcome = "waiting"
                 self.signals.status.emit("待確認")
                 self.log(str(exc))
                 suggestion = {
@@ -3002,10 +3088,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     "actual": exc.actual,
                 }
             except InvalidInternalTakeProfit as exc:
+                outcome = "failed"
                 self.signals.status.emit("請修改場內餘額")
                 self.log("試算表已讀取，交易數值需調整。")
                 self.signals.error.emit(str(exc))
             except Exception as exc:
+                outcome = "failed"
                 self.signals.status.emit("錯誤")
                 self.log(f"錯誤：{exc}")
                 # An entry receipt already contains the uncertainty and
@@ -3013,10 +3101,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 if not getattr(exc, "_auto_entry_result_emitted", False):
                     self.signals.error.emit(str(exc))
             finally:
+                if self.emergency.event.is_set() and outcome == "completed":
+                    outcome = "stopped"
                 with self._update_lock:
                     self._active_tasks -= 1
                 if is_fill:
                     self._fill_task_lock.release()
+                result_signal = getattr(self.signals, "remote_task_result", None)
+                if result_signal is not None:
+                    result_signal.emit({"name": name, "status": outcome})
                 if hide_during:
                     if restore_after:
                         self.signals.operation_finished.emit()
@@ -3667,118 +3760,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     missing.append(f"{role_label} {platform}：{labels.get(key, key)}")
         return missing
 
-    def _selected_test_action(self, roles: tuple[str, ...]) -> str:
-        if roles != ("internal", "external"):
-            return ""
-        for action, option in getattr(self, "test_scenario_checkboxes", {}).items():
-            if option.isChecked():
-                return action
-        symbol = TradingHelperApp._selected_test_symbol(self, roles)
-        return f"weekend:{symbol}" if symbol else ""
 
-    @staticmethod
-    def _selected_test_symbol(owner, roles: tuple[str, ...]) -> str | None:
-        if roles != ("internal", "external"):
-            return None
-        for symbol, option in getattr(owner, "test_asset_checkboxes", {}).items():
-            if option.isChecked():
-                return symbol
-        return None
 
-    @staticmethod
-    def _exclusive_optional_checkbox(
-        group: dict[str, QCheckBox], current: QCheckBox, checked: bool,
-    ) -> None:
-        if not checked:
-            return
-        for option in group.values():
-            if option is not current and option.isChecked():
-                option.setChecked(False)
 
-    @staticmethod
-    def _test_action_role(action: str) -> str:
-        if action.endswith(":internal"):
-            return "internal"
-        if action.endswith(":external"):
-            return "external"
-        return ""
-
-    def _test_action_missing(
-        self, action: str, platforms: dict[str,str], item: TradeInstruction,
-        test_symbol: str | None = None,
-    ) -> list[str]:
-        role=self._test_action_role(action)
-        if test_symbol is None and action.startswith("weekend:"):
-            test_symbol = action.split(":", 1)[1]
-        with test_symbol_scope(test_symbol):
-            # Every test starts with both order forms filled and then runs the
-            # ordinary dual-account checks for the selected test instrument.
-            missing=self._fill_calibration_missing(
-                ("internal","external"),platforms,item
-            )
-        modify_roles=["external"]
-        if "MT5" in platforms["internal"].upper():
-            modify_roles.append("internal")
-        required_modify=("position_order_row","position_sl_input",
-                         "position_tp_input","position_modify_confirm")
-        for modify_role in modify_roles:
-            points=self.store.data["platforms"].get(
-                platforms[modify_role],{}
-            ).get("points",{})
-            for key in required_modify:
-                if not isinstance(points.get(key),dict) or not points[key]:
-                    missing.append(
-                        f"{modify_role} {platforms[modify_role]}：{key}"
-                    )
-        close_roles=(
-            ("internal","external") if action=="close:internal"
-            else ("external",) if action=="close:external" else ()
-        )
-        for close_role in close_roles:
-            points=self.store.data["platforms"].get(
-                platforms[close_role],{}
-            ).get("points",{})
-            if not isinstance(points.get("position_close_button"),dict) or not points["position_close_button"]:
-                missing.append(
-                    f"{close_role} {platforms[close_role]}：position_close_button"
-                )
-        return missing
-
-    def _confirm_test_action(
-        self, action: str, item: TradeInstruction,
-        test_symbol: str | None = None,
-    ) -> bool:
-        if action.startswith("weekend:"):
-            symbol = test_symbol or action.split(":", 1)[1]
-            return QMessageBox.question(
-                self,"開始假日雙邊測試？",
-                f"{symbol}：兩個連線帳戶各進場一單，並同步 SL／TP。會實際下單。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        role=self._test_action_role(action)
-        side="場內" if role=="internal" else "場外"
-        instrument = test_symbol or item.symbol
-        if action.startswith("reentry:"):
-            return QMessageBox.question(
-                self,f"測試{side}補進？",
-                f"{instrument}：先讓另一邊進場，再補進{side}一次。\n"
-                + ("逾時平掉場外。" if role=="internal" else "逾時由你選擇平倉或補進。")
-                + "會實際下單；結果不明就停止。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        if action.startswith("close:"):
-            return QMessageBox.question(
-                self,f"測試{side}快平？",
-                f"{instrument}：兩邊進場後，"
-                + ("平掉場內及場外，再詢問是否重新進場。"
-                   if role=="internal" else "平掉場外，再於 15 秒內補進並同步 SL／TP。")
-                + "\n會實際開倉及平倉；勾選延遲時會改測逾時處理。",
-                QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
-                yes_text="開始測試", no_text="取消",
-            )==QMessageBox.Yes
-        return True
 
     def _launch_fill(self, roles: tuple[str, ...]) -> None:
         """Perform UI preflight before starting any broker-window clicks."""
@@ -3797,8 +3781,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self.instruction is None:
             QMessageBox.warning(self, "填入前檢查", "請先讀取 Google 試算表。")
             return
-        test_action=self._selected_test_action(roles)
-        test_symbol = TradingHelperApp._selected_test_symbol(self, roles)
         platforms = {
             "internal": self.internal_platform.currentText(),
             "external": self.external_platform.currentText(),
@@ -3831,7 +3813,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         random_adjustment = False
         candidate, random_adjustment = self._maybe_adjust_repeated_expected_sl(
-            candidate, roles=roles, dirty=dirty, test_action=test_action,
+            candidate, roles=roles, dirty=dirty,
         )
         if random_adjustment:
             entry = self.parameter_inputs["expected_sl_combined"]
@@ -3851,7 +3833,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if warning_values is not None:
                 original, adjusted = warning_values
                 action = (
-                    "進場" if self.auto_entry_on_fill_both.isChecked() or test_action
+                    "進場" if self.auto_entry_on_fill_both.isChecked()
                     else "填入"
                 )
                 answer = QMessageBox.question(
@@ -3866,12 +3848,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         if dirty:
             # Check calibration before writing the approved value to Sheets.
-            if test_action:
-                missing=self._test_action_missing(
-                    test_action, platforms, candidate, test_symbol
-                )
-            else:
-                missing = self._fill_calibration_missing(roles, platforms, candidate)
+            missing = self._fill_calibration_missing(roles, platforms, candidate)
             if missing:
                 QMessageBox.warning(
                     self, "請先校準必要按鈕",
@@ -3882,8 +3859,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._fill_waiting_for_sheet = {
                 "roles": roles, "platforms": platforms,
                 "expected": candidate, "fields": tuple(dirty),
-                "sheet_ready": False,"test_action":test_action,
-                "test_symbol": test_symbol,
+                "sheet_ready": False,
             }
             self._confirm_fill_text_inputs()
             self.update_all_trade_parameters()
@@ -3895,12 +3871,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                     self._fill_waiting_for_sheet["sheet_ready"] = True
                 QTimer.singleShot(0, self._resume_fill_after_sheet_update)
             return
-        if test_action:
-            missing=self._test_action_missing(
-                test_action, platforms, candidate, test_symbol
-            )
-        else:
-            missing = self._fill_calibration_missing(roles, platforms, candidate)
+        missing = self._fill_calibration_missing(roles, platforms, candidate)
         if missing:
             QMessageBox.warning(
                 self, "請先校準必要按鈕",
@@ -3908,13 +3879,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 + "\n請到「編輯 → 欄位校準」完成後再試。"
             )
             return
-        if test_action and not self._confirm_test_action(
-            test_action, candidate, test_symbol
-        ):
-            return
-        self._start_fill_worker(
-            roles, platforms, test_action=test_action, test_symbol=test_symbol
-        )
+        self._start_fill_worker(roles, platforms)
 
     def _resume_fill_after_sheet_update(self) -> None:
         pending = self._fill_waiting_for_sheet
@@ -3942,23 +3907,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
             return
         self._fill_waiting_for_sheet = None
-        test_action=str(pending.get("test_action", ""))
-        test_symbol=pending.get("test_symbol")
-        if test_action and not self._confirm_test_action(
-            test_action, expected, test_symbol
-        ):
-            return
-        self._start_fill_worker(
-            pending["roles"], pending["platforms"], test_action=test_action,
-            test_symbol=test_symbol,
-        )
+        self._start_fill_worker(pending["roles"], pending["platforms"])
 
     def _start_fill_worker(self, roles: tuple[str, ...],
-                           platforms: dict[str, str],
-                           *, test_action: str = "",
-                           test_symbol: str | None = None) -> None:
+                           platforms: dict[str, str]) -> None:
         auto_entry = self.auto_entry_on_fill_both.isChecked()
-        fast_pair = bool(auto_entry or test_action)
+        fast_pair = bool(auto_entry)
         sync_control = getattr(self, "auto_sync_sl_tp_after_entry", None)
         auto_sync = bool(
             auto_entry
@@ -3972,39 +3926,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             getattr(self, "tv_draw_internal", None)
             and self.tv_draw_internal.isChecked()
         )
-        delay_option = getattr(self, "test_delay_checkbox", None)
-        test_delay = bool(test_action and delay_option is not None
-                          and delay_option.isChecked())
-        if test_action.startswith("weekend:"):
-            self._start(
-                "假日測試",
-                lambda: self._run_complete_test_scenario(
-                    test_action, platforms, symbol=test_symbol,
-                    draw_tv=auto_draw,draw_internal=draw_internal,
-                    test_delay=test_delay,
-                    fast_pair=fast_pair,
-                ),
-                restore_after=False,
-            )
-            return
-        if test_action.startswith(("reentry:","close:")):
-            title={
-                "reentry:internal":"測試場內重新進場",
-                "close:internal":"測試場內關單",
-                "reentry:external":"測試場外重新進場",
-                "close:external":"測試場外關單",
-            }[test_action]
-            self._start(
-                title,
-                lambda: self._run_complete_test_scenario(
-                    test_action, platforms, symbol=test_symbol,
-                    draw_tv=auto_draw,draw_internal=draw_internal,
-                    test_delay=test_delay,
-                    fast_pair=fast_pair,
-                ),
-                restore_after=False,
-            )
-            return
         # Read Qt options on GUI thread, not inside the worker.
         if roles == ("internal", "external"):
             self._start(
@@ -4028,24 +3949,6 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._start("填入場內" if role == "internal" else "填入場外",
                         task, restore_after=False)
 
-    def _run_complete_test_scenario(
-        self, action: str, platforms: dict[str,str],
-        *, symbol: str | None = None,
-        draw_tv: bool = False, draw_internal: bool = False,
-        test_delay: bool = False,
-        fast_pair: bool = True,
-    ) -> None:
-        if symbol is None and action.startswith("weekend:"):
-            symbol = action.split(":", 1)[1]
-        with test_symbol_scope(symbol):
-            self._fill_both_task(
-                platforms["internal"],platforms["external"],True,
-                sync_sl_tp=True,draw_tv=draw_tv,
-                draw_internal=draw_internal,
-                fast_pair=fast_pair and not action.startswith("reentry:"),
-                test_scenario=action,
-                test_delay=test_delay,
-            )
 
     def fill_role(self, role: str) -> None:
         self._side_fill_active = False
@@ -5183,10 +5086,22 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                         platform, {}
                     ).get("points",{}).get("account_number")
                     account_number = None
-                    if platform == "cTrader" and point:
+                    if platform == "cTrader" and isinstance(self.windows, WindowController):
+                        try:
+                            account_number = self.windows.read_ctrader_account(target)
+                        except AutomationError:
+                            if point:
+                                account_number = self.windows.read_account_number(target,point)
+                    elif platform == "cTrader" and point:
                         account_number = self.windows.read_account_number(target,point)
+                    if account_number is not None:
                         account_message = f"；帳號已核對：{account_number}"
                     elif platform == "cTrader":
+                        previous_account = self.store.data["platforms"][platform].get(
+                            "account_number", {}
+                        ).get(role, "")
+                        if previous_account:
+                            raise AutomationError("無法確認新視窗帳號，原綁定已保留。")
                         account_message = "；帳號位置未校準"
                     self._save_bound_window(platform,role,pattern)
                     if account_number is not None:
@@ -5463,6 +5378,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         first_checked = first.isChecked()
         if fast is not None:
             fast.setEnabled(False)
+        if sync is not None:
+            if not first_checked and sync.isChecked():
+                was_blocked = sync.blockSignals(True)
+                sync.setChecked(False)
+                sync.blockSignals(was_blocked)
+            sync.setEnabled(first_checked)
         sync_checked = bool(sync is not None and sync.isChecked())
         third.setToolTip(
             "雙邊進場核對成功及自動同步 SL/TP 後，再繪製 TradingView。"
@@ -5520,7 +5441,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     ) -> None:
         """Store future opt-in only; never run broker/TV workflows."""
         if enabled:
-            if (checkbox is self.auto_draw_tv_after_entry
+            if (checkbox in (self.auto_sync_sl_tp_after_entry, self.auto_draw_tv_after_entry)
                     and not self.auto_entry_on_fill_both.isChecked()):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(False)
@@ -5789,7 +5710,15 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self._update_in_progress and not self._allow_update_exit:
             event.ignore()
             return
+        self._mobile_resume_timer.stop()
+        remote = getattr(self, "remote_controller", None)
+        if remote is not None:
+            remote.stop()
         self.save_ui_state()
+        self._pending_news_alerts.clear()
+        self._news_alert_timer.stop()
+        if self._news_alert_dialog is not None:
+            self._news_alert_dialog.close()
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.close()
@@ -5830,9 +5759,9 @@ class CalibrationDialog(ThemedDialog):
         self._calibration_content = content
         self._calibration_content_layout = content_layout
         descriptions = {
-            "cTrader": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
-            "MT5": "請將交易平台視窗最大化，從左到右依順序自動校準欄位。",
-            "TradingView": "此平台使用手動校準；請按各欄位右側的「手動擷取」。",
+            "cTrader": "將交易平台最大化，再依序校準。",
+            "MT5": "將交易平台最大化，再依序校準。",
+            "TradingView": "按欄位右側「手動擷取」校準。",
         }
         content_layout.addWidget(QLabel(descriptions.get(platform, "選擇項目後校準；舊設定會保留到你主動變更。")))
         self.radios: dict[str, QRadioButton] = {}
@@ -5980,19 +5909,17 @@ class CalibrationDialog(ThemedDialog):
                 else:
                     card_layout.addWidget(radio)
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 0:
-                card_layout.addWidget(QLabel("第 1 步：校準主視窗的「新訂單」按鈕。"))
+                card_layout.addWidget(QLabel("請顯示 MT5 主視窗。"))
             if platform in {"MT5", "BYBIT MT5", "原版MT5"} and stage_index == 1:
                 card_layout.addWidget(QLabel(
-                    "請先開啟 MT5「新訂單」視窗，再按自動尋找。"
+                    "先開啟 MT5「新訂單」視窗。"
                 ))
                 card_layout.addWidget(QLabel(
-                    "BTCUSD／ETHUSD 測試必須分別校準左側 Bid 與右側 Ask；"
-                    "請讓黃色框只框住各自的完整報價數字。"
+                    "Bid／Ask 須分開框住完整數字。"
                 ))
             if platform == "cTrader" and stage_index == 0:
                 ctrader_hint = QLabel(
-                    "請先展開止盈／止損欄並保持展開，再找或擷取下單按鈕。"
-                    "收起時按鈕位置可能改變。"
+                    "請保持止盈／止損欄展開，避免下單按鈕移位。"
                 )
                 ctrader_hint.setWordWrap(True)
                 ctrader_hint.setObjectName("ctraderOrderPanelCalibrationHint")
@@ -6000,12 +5927,10 @@ class CalibrationDialog(ThemedDialog):
             if set(stage_keys)==set(POSITION_GRID_KEYS):
                 row_name="TP" if platform=="cTrader" else "SL"
                 card_layout.addWidget(QLabel(
-                    "先顯示 Positions／交易列表，再校準進場價、手數與訂單列；"
-                    f"雙擊訂單列的 {row_name} 欄可開啟修改視窗。"
+                    f"先顯示持倉列表；雙擊 {row_name} 欄可開啟修改視窗。"
                 ))
                 close_help = QLabel(
-                    "自動尋找不到時，手動擷取持倉列最右側的平倉按鈕；"
-                    "擷取後以黃框核對，不會點擊或平倉。"
+                    "找不到時，手動擷取持倉列最右側平倉按鈕，再以黃框核對；不會點擊或平倉。"
                 )
                 close_help.setWordWrap(True)
                 close_help.setObjectName("positionCloseCalibrationHelp")
@@ -6013,8 +5938,7 @@ class CalibrationDialog(ThemedDialog):
                 card_layout.addWidget(close_help)
             elif set(stage_keys)==set(POSITION_EDIT_KEYS):
                 card_layout.addWidget(QLabel(
-                    "你必須先自行雙擊持倉列開啟修改視窗，再掃止損、止盈、確認按鈕。"
-                    "本功能不會點擊 Protect／Modify。"
+                    "請先手動開啟持倉修改視窗，再尋找欄位。"
                 ))
             if platform != "TradingView":
                 scan = QPushButton("自動尋找欄位", page)
@@ -6023,8 +5947,7 @@ class CalibrationDialog(ThemedDialog):
                 card_layout.addWidget(scan)
             else:
                 card_layout.addWidget(QLabel(
-                    "TradingView 尚無可靠的一鍵 UIA 掃描。"
-                    "先以手動校準，不會假裝已自動找到位置。"
+                    "請逐一手動擷取欄位。"
                 ))
             self._stage_keys.append(tuple(stage_keys))
             self._stage_titles.append(title)
@@ -6444,7 +6367,17 @@ class CalibrationDialog(ThemedDialog):
         ).strip()
         if not pattern:
             raise AutomationError("尚未設定此平台的視窗標題")
+        if (key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
+                and isinstance(self.app.windows, WindowController)):
+            return _bound_broker_main(self.app, self.platform, role)
         matches = self.app.windows.find_all(pattern)
+        if (self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
+                and isinstance(self.app.windows, WindowController)):
+            main = _bound_broker_main(self.app, self.platform, role)
+            pid = process_id_for_window(main.handle)
+            if not pid:
+                raise AutomationError("無法確認已綁定的平台程序；沒有顯示框線。")
+            matches = [win for win in matches if process_id_for_window(win.handle) == pid]
         if key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}:
             main = select_broker_main_window(
                 matches, self.app.windows.list_windows(),
@@ -6636,11 +6569,11 @@ class CalibrationDialog(ThemedDialog):
         try:
             if not str(pattern or "").strip():
                 raise ValueError("尚未綁定此交易平台視窗，請先設定視窗標題")
-            matched = self.app.windows.find(pattern)
+            matched = _bound_broker_main(self.app, self.platform, self._display_role("lot_input"))
             # The configured title regex (e.g. "cTrader") may also match
             # "Modify order or position - cTrader". Scan must bind to the
             # unique *main terminal* first, then select modal by same PID.
-            target = select_broker_main_window(
+            target = matched if isinstance(self.app.windows, WindowController) else select_broker_main_window(
                 matched,self.app.windows.list_windows(),self.platform,
                 process_id_for_window, binding_pattern=pattern,
             )
@@ -7016,7 +6949,7 @@ class CalibrationDialog(ThemedDialog):
         role = self._display_role("lot_input")
         pattern = profile.get("window_title", {}).get(role, "")
         try:
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, self.platform, role)
             target_pid = process_id_for_window(target.handle)
             if not target_pid:
                 raise ValueError("無法確認目標視窗所屬程序")
@@ -7083,7 +7016,7 @@ class CalibrationDialog(ThemedDialog):
         profile = self.app.store.data["platforms"][self.platform]
         pattern = profile.get("window_title", {}).get(role, "")
         try:
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, self.platform, role)
         except Exception as exc:
             QMessageBox.warning(self, "UIA 欄位檢測", f"找不到目標視窗：{exc}")
             return
@@ -7373,22 +7306,16 @@ class PostEntryCalibrationDialog(ThemedDialog):
         self.last_report: PostEntryReport | None = None
         body = QVBoxLayout(self)
         body.addWidget(QLabel(
-            "① 在 cTrader 打開 Positions（持倉）分頁；"
-            "使用模擬帳戶或已經存在的持倉。\n"
-            "② 按「開始辨識持倉欄位」即可，程式會定期檢查。\n"
-            "0 筆會繼續等待；1 筆會停止並顯示候選；"
-            "多筆會停止請你確認。\n"
-            "此功能不會下單、雙擊持倉、修改止損或儲存位置。"
+            "顯示持倉列表後開始辨識；沒有持倉時會等待，多筆時請先確認。\n"
+            "僅辨識位置，不下單、不修改持倉。"
         ))
-        self.status_label = QLabel("尚未開始。若目前沒有持倉，可以先關閉此視窗。")
+        self.status_label = QLabel("尚未開始")
         body.addWidget(self.status_label)
         self.results = QPlainTextEdit(self)
         self.results.setReadOnly(True)
         self.results.setPlainText(
-            "目前尚未開始。\n"
-            "先在 cTrader 顯示 Positions（持倉）分頁，"
-            "再按「開始辨識持倉欄位」。\n"
-            "沒有持倉時可以先離開，不需要為了校準開真倉。"
+            "先顯示 cTrader 持倉列表，再按「開始辨識持倉欄位」。\n"
+            "無持倉可先關閉，不必為校準開倉。"
         )
         body.addWidget(self.results)
         self.watch_timer = QTimer(self)
@@ -7449,7 +7376,7 @@ class PostEntryCalibrationDialog(ThemedDialog):
         try:
             if not pattern:
                 raise ValueError("尚未設定 cTrader 視窗標題")
-            target = self.app.windows.find(pattern)
+            target = _bound_broker_main(self.app, "cTrader", role)
             hwnd = int(target.handle)
             if not process_id_for_window(hwnd):
                 raise ValueError("無法確認 cTrader 視窗程序")
@@ -7476,18 +7403,15 @@ class PostEntryCalibrationDialog(ThemedDialog):
         self.last_report = report
         if report.state == "empty":
             self.results.setPlainText(
-                "目前 0 筆持倉。程式會繼續等待；"
-                "你不用重複按掃描，也不需要為了校準建立真實訂單。"
+                "目前沒有持倉，會繼續等待；不必為校準開倉。"
             )
         elif report.state == "multiple":
             self.results.setPlainText(
-                "偵測到多筆持倉。已停止自動選取，"
-                "避免誤認另一筆交易；請先自行確認目標。"
+                "有多筆持倉，請先確認要校準哪一筆。"
             )
         elif report.state == "unknown":
             self.results.setPlainText(
-                "暫時看不到可靠的持倉列表。"
-                "請先把 cTrader 的 Positions 分頁打開，再按開始辨識。"
+                "讀不到持倉列表，請開啟 Positions 分頁再試。"
             )
         else:
             self.results.setPlainText(report.as_text())

@@ -34,9 +34,10 @@ class CalendarTests(unittest.TestCase):
             parse_events({'unexpected': 'object'})
 
     def test_countdown_never_claims_a_past_event_is_upcoming(self):
-        self.assertEqual(countdown(NOW + timedelta(hours=2, minutes=15), NOW), '2 小時 15 分後')
-        self.assertEqual(countdown(NOW + timedelta(days=1, hours=2), NOW), '1 天 2 小時 0 分後')
-        self.assertEqual(countdown(NOW + timedelta(seconds=15), NOW), '1 分鐘內')
+        self.assertEqual(countdown(NOW + timedelta(hours=2, minutes=15), NOW), '2 小時 15 分 0 秒後')
+        self.assertEqual(countdown(NOW + timedelta(days=1, hours=2), NOW), '26 小時 0 分 0 秒後')
+        self.assertEqual(countdown(NOW + timedelta(seconds=15), NOW), '15 秒後')
+        self.assertEqual(countdown(NOW + timedelta(seconds=.2), NOW), '1 秒後')
         self.assertEqual(countdown(NOW - timedelta(seconds=1), NOW), '已發布')
 
     def test_cache_is_rate_limited_and_error_never_becomes_no_events(self):
@@ -46,7 +47,7 @@ class CalendarTests(unittest.TestCase):
             service.events = parse_events(rows)
             service.fetched_at = NOW
             service.source_times = dict.fromkeys(SOURCE_URLS, NOW)
-            self.assertTrue(service.is_fresh(NOW + timedelta(minutes=4)))
+            self.assertTrue(service.is_fresh(NOW + timedelta(seconds=29)))
             self.assertFalse(service.is_fresh(NOW + timedelta(hours=2)))
             service._save_cache()
             restored = EconomicCalendar(Path(folder) / 'calendar.json')
@@ -54,7 +55,7 @@ class CalendarTests(unittest.TestCase):
             self.assertEqual(restored.fetched_at, NOW)
             with patch('trading_helper.calendar_events.datetime') as clock, \
                  patch('trading_helper.calendar_events.threading.Thread') as thread:
-                clock.now.return_value = NOW + timedelta(minutes=1)
+                clock.now.return_value = NOW + timedelta(seconds=20)
                 restored.refresh()
                 thread.assert_not_called()
 

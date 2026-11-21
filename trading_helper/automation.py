@@ -10,6 +10,7 @@ from .config import ctrader_mode_for_profile
 from .models import SideValues, TradeInstruction
 from .test_mode import active_test_symbol_override, effective_test_symbol
 from .phase_timing_report import timed_call, timed_phase
+from .uia_inventory import fresh_controls, ACCOUNT_ID
 from .windows import (
     AutomationError,
     CalibrationMismatchError,
@@ -128,10 +129,12 @@ class PlatformAutomation:
                     "目前缺少：" + "、".join(missing_quotes)
                 )
         pattern = profile["window_title"][role]
+        account = profile.get("account_number", {}).get(role, "")
+        account_options = {"expected_account": account} if account else {}
         with timed_phase("定位平台主視窗", platform=platform, role=role):
             if _is_ctrader(platform) and isinstance(self.windows, WindowController):
                 window = self.windows.find_calibrated_main(
-                    pattern, points["lot_input"], platform=platform
+                    pattern, points["lot_input"], platform=platform, **account_options
                 )
             elif _is_mt5(platform) and isinstance(self.windows, WindowController):
                 # A main-window calibration point lets the shared resolver
@@ -145,10 +148,12 @@ class PlatformAutomation:
                 ), None)
                 if main_point is not None:
                     window = self.windows.find_calibrated_main(
-                        pattern, main_point, platform=platform
+                        pattern, main_point, platform=platform, **account_options
                     )
                 else:
-                    window = self.windows.find(pattern)
+                    window = self.windows.find_broker_main(
+                        pattern, platform=platform, **account_options
+                    )
             else:
                 window = self.windows.find(pattern)
         bound_window = window
@@ -342,6 +347,10 @@ class PlatformAutomation:
             "symbol": str(effective_test_symbol(instruction.symbol)).strip().upper(),
             "values": verified_values,
         }
+        if isinstance(self.windows, WindowController):
+            identity = self.windows.bound_broker_identity(bound_window)
+            if isinstance(identity, tuple):
+                self._last_verified_fills[(platform, role)]["main_window"] = identity
         self.log(f"{role_text} {platform} 欄位全部讀回核對正確，沒有送出訂單。")
 
     @staticmethod
@@ -796,9 +805,8 @@ class PlatformAutomation:
         if isinstance(self.windows, WindowController):
             from pywinauto import Desktop
             try:
-                nodes=Desktop(backend="uia").window(handle=window.handle).descendants(
-                    control_type="Text"
-                )
+                nodes=fresh_controls(Desktop(backend="uia").window(handle=window.handle),
+                                     ('Text',), text_ids=(ACCOUNT_ID,), text_names=())
                 numbers=[str(n.window_text()).strip() for n in nodes
                          if str(n.element_info.automation_id)=="CTraderAccountNumberTextBlock_AId"
                          and n.is_visible()]
@@ -825,6 +833,8 @@ class PlatformAutomation:
         role: str,
         point: dict[str, Any],
     ):
+        account = profile.get("account_number", {}).get(role, "")
+        account_options = {"expected_account": account} if account else {}
         point_pattern = str(point.get("window_title", "")).strip()
         calibration_pattern = str(point.get("calibration_window_title", "")).strip()
         if profile is self.config["platforms"].get("TradingView"):
@@ -855,7 +865,8 @@ class PlatformAutomation:
                 else "cTrader"
             )
             return self.windows.find_calibrated_main(
-                str(profile["window_title"][role]), point, platform=platform
+                str(profile["window_title"][role]), point, platform=platform,
+                **account_options,
             )
         if (
             isinstance(self.windows, WindowController)
@@ -868,7 +879,8 @@ class PlatformAutomation:
             )
         ):
             return self.windows.find_calibrated_main(
-                str(profile["window_title"][role]), point, platform="MT5"
+                str(profile["window_title"][role]), point, platform="MT5",
+                **account_options,
             )
         last_error: AutomationError | None = None
         for pattern in dict.fromkeys(value for value in patterns if value):
@@ -1158,13 +1170,14 @@ class PlatformAutomation:
         modify_window = None
         bound_window = None
         if use_position_modify_flow:
-            if (_is_ctrader(external_platform)
-                    and isinstance(self.windows, WindowController)):
+            if isinstance(self.windows, WindowController):
+                account = profile.get("account_number", {}).get("external", "")
+                account_options = {"expected_account": account} if account else {}
                 bound_window = timed_call(
                     "定位場外主視窗", self.windows.find_calibrated_main,
                     profile["window_title"]["external"],
                     points["position_order_row"], platform=external_platform,
-                    role="external",
+                    role="external", **account_options,
                 )
             else:
                 bound_window = timed_call(
@@ -1273,29 +1286,36 @@ class PlatformAutomation:
                 row_window, position_point,
                 platform=external_platform, role="external",
             )
-            try:
+            if isinstance(self.windows, WindowController):
                 modify_window = timed_call(
-                    "等待場外修改視窗", self.windows.wait_for_active_window_change,
-                    row_window, timeout=3.0,
+                    "等待場外修改視窗", self.windows.wait_for_broker_modify,
+                    row_window, external_platform, points["position_sl_input"], timeout=3.0,
                     platform=external_platform, role="external",
                 )
-            except AutomationError:
-                self.log(
-                    f"{external_platform} 修改視窗沒有自動切到最上層，"
-                    "改用校準尺寸尋找並點擊輸入欄。"
-                )
-                modify_window = timed_call(
-                    "尋找場外修改視窗", self.windows.wait_for_window_matching_point_size,
-                    points["position_sl_input"], timeout=3.0,
-                    exclude_handles={row_window.handle},
-                    platform=external_platform, role="external",
-                )
-                timed_call(
-                    "定位場外 SL 輸入欄", self.windows.click,
-                    modify_window, points["position_sl_input"],
-                    platform=external_platform, role="external",
-                )
-                modify_window = self.windows.active_window()
+            else:
+                try:
+                    modify_window = timed_call(
+                        "等待場外修改視窗", self.windows.wait_for_active_window_change,
+                        row_window, timeout=3.0,
+                        platform=external_platform, role="external",
+                    )
+                except AutomationError:
+                    self.log(
+                        f"{external_platform} 修改視窗沒有自動切到最上層，"
+                        "改用校準尺寸尋找並點擊輸入欄。"
+                    )
+                    modify_window = timed_call(
+                        "尋找場外修改視窗", self.windows.wait_for_window_matching_point_size,
+                        points["position_sl_input"], timeout=3.0,
+                        exclude_handles={row_window.handle},
+                        platform=external_platform, role="external",
+                    )
+                    timed_call(
+                        "定位場外 SL 輸入欄", self.windows.click,
+                        modify_window, points["position_sl_input"],
+                        platform=external_platform, role="external",
+                    )
+                    modify_window = self.windows.active_window()
             self.log(
                 f"已偵測到 {external_platform} 持倉修改視窗："
                 f"{modify_window.title}"

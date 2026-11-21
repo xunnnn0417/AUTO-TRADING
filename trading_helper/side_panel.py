@@ -11,10 +11,12 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QStyle, QStyleOptionToolButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .calendar_events import TAIPEI, UTC
+from .calendar_events import TAIPEI, UTC, format_event_time
 from .event_summary import event_summary, trading_session
 from .progress_ruler import AccountRuler, money
 from .ui_theme import themed_icon
+from .sidebar_geometry import ensure_native_sidebar
+from .compact_controls import HoverStageCombo
 
 
 class EventFlyout(QFrame):
@@ -101,6 +103,9 @@ class SideQuickPanel(QWidget):
         self._hold_timer.setInterval(180)
         self._hold_timer.timeout.connect(self._begin_handle_drag)
         self._screen = app.screen() or QGuiApplication.primaryScreen()
+        self._dock_timer = QTimer(self)
+        self._dock_timer.setSingleShot(True)
+        self._dock_timer.timeout.connect(self.dock)
         self._y = int(app.store.data['ui'].get('side_panel_y', 70))
         self.setStyleSheet('''
             QWidget { color: #ece8f1; font-family: "Segoe UI", "Microsoft JhengHei UI"; font-size: 11px; }
@@ -150,10 +155,13 @@ class SideQuickPanel(QWidget):
         row.setSpacing(6)
         title = QLabel('對沖小幫手')
         title.setStyleSheet('font-size: 13px; font-weight: 600;')
-        self.stage_label = QLabel('尚未讀取')
-        self.stage_label.setStyleSheet('font-size: 10px; color: #b8a8d5; padding-bottom: 4px;')
+        self.stage_selector = HoverStageCombo()
+        self.stage_selector.setObjectName('sideStageSelector')
+        self.stage_selector.setAccessibleName('側邊階段')
+        self.stage_selector.setPlaceholderText('尚未讀取')
+        self.stage_selector.currentTextChanged.connect(self._stage_selected)
         row.addWidget(title)
-        row.addWidget(self.stage_label, 0, Qt.AlignBottom)
+        row.addWidget(self.stage_selector, 0, Qt.AlignBottom)
         row.addStretch()
         self.update_button = self._icon_button('refresh', '更新數值')
         self.update_button.clicked.connect(self.update_values)
@@ -168,9 +176,9 @@ class SideQuickPanel(QWidget):
         divider.setFixedHeight(1)
         divider.setStyleSheet('background: rgba(218,210,233,50);')
         root.addWidget(divider)
-        for widget in (header, title, self.stage_label):
+        for widget in (header, title):
             widget.installEventFilter(self)
-        self._drag_widgets = (header, title, self.stage_label)
+        self._drag_widgets = (header, title)
 
         lots_row = QHBoxLayout()
         self.lots = {}
@@ -261,14 +269,14 @@ class SideQuickPanel(QWidget):
         self.event_flyout.setObjectName('eventFlyout')
         self.event_flyout.setWindowTitle('重大事件')
         self.event_flyout.setAttribute(Qt.WA_TranslucentBackground)
-        self.event_flyout.setAttribute(Qt.WA_ShowWithoutActivating)
         self.event_flyout.installEventFilter(self)
         flyout_layout = QVBoxLayout(self.event_flyout)
         flyout_layout.setContentsMargins(12, 10, 12, 12)
         from .event_feed import EventFeedView
         self.calendar = app._get_event_calendar()
         self.event_view = EventFeedView(lambda: self.calendar, self.event_flyout,
-                                        title='重大事件', close=self.events_button.setChecked)
+                                        title='重大事件', close=self.events_button.setChecked, compact=True,
+                                        show_countdown=False)
         flyout_layout.addWidget(self.event_view)
         # Shared view attributes retained for the sidebar's preview controls.
         for name in ('event_tabs', 'event_rows', 'news_rows', 'event_status', 'source_details'):
@@ -315,6 +323,10 @@ class SideQuickPanel(QWidget):
         self.event_timer.timeout.connect(self.update_events)
         self.event_timer.timeout.connect(self.calendar.refresh)
         self.event_timer.start()
+        self.summary_timer = QTimer(self)
+        self.summary_timer.setInterval(1000)
+        self.summary_timer.timeout.connect(self.update_event_summary)
+        self.summary_timer.start()
         self._screen.availableGeometryChanged.connect(self.dock)
         self.sync_from_main()
         self.update_events()
@@ -331,6 +343,7 @@ class SideQuickPanel(QWidget):
     def start(self):
         self.sync_timer.start()
         self.event_timer.start()
+        self.summary_timer.start()
         self.show()
         self.dock()
         self.calendar.refresh()
@@ -341,8 +354,11 @@ class SideQuickPanel(QWidget):
         self.hide()
         self.sync_timer.stop()
         self.event_timer.stop()
+        self.summary_timer.stop()
 
     def sync_from_main(self):
+        if self.isVisible() and not self._handle_dragging:
+            self.dock()
         app = self.app
         busy = bool(app._active_tasks or app._parameter_write_active
                     or app._trade_settings_busy or app._update_in_progress
@@ -363,8 +379,15 @@ class SideQuickPanel(QWidget):
                 label.setText(f'{value:.2f}' if value.is_finite() else '—')
             except InvalidOperation:
                 label.setText(raw or '—')
-        self.stage_label.setText(app.stage_selector.currentText() or '尚未讀取')
-        self.stage_label.setToolTip(app.profiles.active_name)
+        source = app.stage_selector
+        with QSignalBlocker(self.stage_selector):
+            options = [source.itemText(i) for i in range(source.count())]
+            if options != [self.stage_selector.itemText(i) for i in range(self.stage_selector.count())]:
+                self.stage_selector.clear()
+                self.stage_selector.addItems(options)
+            self.stage_selector.setCurrentIndex(source.currentIndex())
+        self.stage_selector.setEnabled(not busy and source.isEnabled())
+        self.stage_selector.setToolTip(source.toolTip())
         if (self.ruler.state != app.account_ruler.state
                 or self.ruler.placeholder != app.account_ruler.placeholder):
             self.ruler.set_state(app.account_ruler.state, app.account_ruler.placeholder)
@@ -470,6 +493,8 @@ class SideQuickPanel(QWidget):
             self._hide_warning()
             self.event_status.setChecked(False)
             self._position_event_flyout()
+            self.event_flyout.raise_()
+            self.event_flyout.activateWindow()
             self.calendar.refresh()
 
     def _position_event_flyout(self):
@@ -482,20 +507,30 @@ class SideQuickPanel(QWidget):
         self.event_flyout.move(max(area.left(), self.x() - width - 8),
             max(area.top(), min(self.y()+self.height()-height, area.bottom()-height+1)))
 
-    def update_events(self):
+    def _stage_selected(self, value):
+        if self.stage_selector.isEnabled():
+            self.app.stage_selector.setCurrentText(value)
+            self.sync_from_main()
+
+    def update_event_summary(self):
+        from .calendar_events import events_for_display
         now = datetime.now(UTC)
-        upcoming = [event for event in self.calendar.events if now < event.when <= now + timedelta(days=45)]
+        events = events_for_display(self.calendar, now)
+        upcoming = [event for event in events if now < event.when <= now + timedelta(days=45)]
         stale = self.calendar.error or not self.calendar.is_fresh(now)
         settings = self.app.store.data.get('ui', {}).get('trading_day_separator', {})
         start, end = trading_session(now, settings)
-        summary = event_summary(upcoming+[e for e in self.calendar.events if start <= e.when <= now],
+        summary = event_summary(upcoming+[e for e in events if start <= e.when <= now],
                                 now, settings, self.calendar.covers_day(start, end, now), self.calendar.title)
         self.events_button.setText(summary)
         tooltip = (summary+f'\n今日事件範圍：{start:%m/%d %H:%M}–{end:%m/%d %H:%M}（台北，依切日設定）'
                    '\n按一下查看詳情。'+ ('\n部分來源資料待更新。' if stale else ''))
         for event in upcoming[:6]:
-            tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d %H:%M} · {event.currency} · {self.calendar.title(event.title)}'
+            tooltip += f'\n{event.when.astimezone(TAIPEI):%m/%d} {format_event_time(event.when)} · {event.currency} · {self.calendar.title(event.title)}'
         self.events_button.setToolTip(tooltip)
+
+    def update_events(self):
+        self.update_event_summary()
         self.event_view.update_events()
 
     def set_collapsed(self, collapsed):
@@ -538,8 +573,31 @@ class SideQuickPanel(QWidget):
         area = self._screen.availableGeometry()
         self.move(area.right() - self.width() + 1,
                   max(area.top(), min(self._y, area.bottom() - self.height() + 1)))
+        if self.isVisible():
+            ensure_native_sidebar(self, self._screen,
+                max(area.top(), min(self._y, area.bottom()-self.height()+1)),
+                self.app.store.path.parent/'diagnostics'/'side-panel-geometry.json')
         self._position_event_flyout()
         self._position_warning_flyout()
+
+    def _schedule_dock(self):
+        # Windows can deliver the native resize/move after set_collapsed has
+        # already parked the old size. Re-evaluate once that geometry settles.
+        timer = getattr(self, '_dock_timer', None)
+        if timer is not None and self.isVisible() and not self._handle_dragging:
+            timer.start(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._schedule_dock()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._schedule_dock()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_dock()
 
     def _begin_handle_drag(self):
         if self._handle_pointer is None or not self.collapsed:
@@ -597,6 +655,23 @@ class SideQuickPanel(QWidget):
             self.collapse_button.releaseMouse()
 
     def eventFilter(self, watched, event):
+        news = getattr(self, 'event_flyout', None)
+        if news is not None and news.isVisible():
+            if event.type() == QEvent.ApplicationDeactivate:
+                self.events_button.setChecked(False)
+            elif event.type() == QEvent.MouseButtonPress:
+                # Native QWindow receives the press before its QWidget child.
+                # Testing only QWidget.window() misclassifies real inside clicks.
+                point = event.globalPosition().toPoint()
+                target = watched if isinstance(watched, QWidget) else None
+                inside = ((target in (self, news) or news.isAncestorOf(target) or self.isAncestorOf(target))
+                          if target is not None else
+                          (news.frameGeometry().contains(point) or self.frameGeometry().contains(point)))
+                if not inside:
+                    self.events_button.setChecked(False)
+            elif event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self.events_button.setChecked(False)
+                return True
         popup = getattr(self, 'warning_flyout', None)
         if popup is not None and popup.isVisible():
             if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
@@ -706,6 +781,7 @@ class SideQuickPanel(QWidget):
         self._cancel_handle_drag()
         self.sync_timer.stop()
         self.event_timer.stop()
+        self.summary_timer.stop()
         super().closeEvent(event)
 
     def hideEvent(self, event):

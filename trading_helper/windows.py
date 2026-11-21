@@ -4,10 +4,15 @@ import ctypes
 import re
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from ctypes import wintypes
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Callable
+
+from .uia_inventory import fresh_controls, INPUT_TYPES, ACCOUNT_ID
+from .phase_timing_report import timed_phase
 
 
 user32 = ctypes.windll.user32
@@ -255,6 +260,45 @@ class WindowController:
 
     def __init__(self, emergency: EmergencyController):
         self.emergency = emergency
+        self._broker_session = ContextVar("broker_window_session", default=None)
+
+    @contextmanager
+    def broker_window_session(self):
+        """Pin HWND/PID only for one operation; never cache account/field values."""
+        if self._broker_session.get() is not None:
+            yield
+            return
+        token = self._broker_session.set({})
+        try:
+            yield
+        finally:
+            self._broker_session.reset(token)
+
+    @staticmethod
+    def _window_pid(handle: int) -> int:
+        from .ui_inspector import process_id_for_window
+        return process_id_for_window(handle)
+
+    def bound_broker_identity(self, window: WindowInfo):
+        session = self._broker_session.get()
+        return next((identity for identity in (session or {}).values()
+                     if identity[0] == window.handle), None)
+
+    def read_ctrader_account(self, window: WindowInfo) -> str:
+        """Read the exact native account label without focusing any candidate."""
+        self.emergency.guard()
+        from pywinauto import Desktop
+        try:
+            nodes = fresh_controls(Desktop(backend="uia").window(handle=window.handle),
+                                   ("Text",), text_ids=(ACCOUNT_ID,), text_names=())
+        except Exception as exc:
+            self.emergency.guard()
+            raise AutomationError("平台帳號讀取失敗，請展開平台視窗後再試。") from exc
+        values = [str(node.window_text()).strip() for node in nodes
+                  if str(node.element_info.automation_id) == ACCOUNT_ID]
+        if len(values) != 1 or not re.fullmatch(r"\d{5,}", values[0]):
+            raise AutomationError("平台帳號無法唯一辨識，請展開平台視窗後再試。")
+        return values[0]
 
     def list_windows(self) -> list[WindowInfo]:
         windows: list[WindowInfo] = []
@@ -286,13 +330,15 @@ class WindowController:
         return windows
 
     def find_calibrated_main(
-        self, title_pattern: str, point: dict, platform: str = "cTrader"
+        self, title_pattern: str, point: dict, platform: str = "cTrader", *,
+        expected_account: str = "",
     ) -> WindowInfo:
         """Identify one native broker MAIN HWND, never a same-title dialog.
 
         Shared by fill, independent SL/TP sync and Demo submit/reconciliation.
         Window identity and saved click-coordinate validity are separate.
-        This Win32 enumeration does not traverse UIA or change broker state.
+        Multiple cTrader mains use read-only native account labels to select
+        the bound account; order and position state is never changed here.
         """
         self.emergency.guard()
         width = int(point.get("window_width", 0))
@@ -301,7 +347,25 @@ class WindowController:
             raise CalibrationMismatchError(
                 f"{platform} 缺少主視窗校準尺寸，禁止操作未知視窗。"
             )
-        candidates = self.find_all(title_pattern)
+        window = self.find_broker_main(title_pattern, platform=platform,
+                                       expected_account=expected_account)
+        if user32.IsIconic(window.handle):
+            self.emergency.guard()
+            user32.ShowWindow(window.handle, SW_RESTORE)
+            deadline = time.monotonic() + 0.5
+            while user32.IsIconic(window.handle):
+                self.emergency.guard()
+                if time.monotonic() >= deadline:
+                    raise AutomationError("平台視窗尚未還原，請展開後再試。")
+                time.sleep(0.015)
+            window = self._refresh(window.handle)
+        main_title = self._broker_main_title(platform, title_pattern)
+        return self._maximize_and_recheck_main(
+            window, title_pattern, main_title, width, height, platform
+        )
+
+    @staticmethod
+    def _broker_main_title(platform: str, title_pattern: str) -> str:
         # Legacy GooeyTrade settings are migrated into the current cTrader
         # profile, so callers can pass platform="cTrader" while the saved
         # title binding still identifies a GooeyTrade main window.
@@ -310,27 +374,66 @@ class WindowController:
             or "gooeytrade" in str(title_pattern).casefold()
         )
         if is_gooey_title:
-            main_title = r"^GooeyTrade(?:\s|$)"
+            return r"^GooeyTrade(?:\s|$)"
         elif "MT5" in platform.upper():
             # MT5's terminal caption starts with the account number; its
             # order/modify dialogs do not. Keep those modal windows out even
             # when a user's saved title rule is broad.
-            main_title = r"^\s*\d+\s*[-–]"
+            return r"^\s*\d+\s*[-–]"
         else:
-            main_title = r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$"
+            return r"^cTrader\s+\d+(?:\.\d+)+(?:\s*[-|].*)?$"
+
+    def find_broker_main(self, title_pattern: str, *, platform: str,
+                         expected_account: str = "") -> WindowInfo:
+        self.emergency.guard()
+        candidates = self.find_all(title_pattern)
+        main_title = self._broker_main_title(platform, title_pattern)
         matches = [
             window for window in candidates
             if re.match(main_title, str(window.title or ""), re.IGNORECASE)
         ]
+        account = str(expected_account or "").strip()
+        key = (platform, title_pattern, account)
+        session = self._broker_session.get()
+        bound = session.get(key) if session is not None else None
+        if bound is not None:
+            selected = next((win for win in matches if win.handle == bound[0]), None)
+            if selected is None or self._window_pid(selected.handle) != bound[1]:
+                raise AutomationError("操作中的平台視窗已關閉或程序改變，已停止。請重新操作。")
+            return selected
+        if account and "MT5" in platform.upper():
+            matches = [win for win in matches
+                       if re.match(r"^\s*" + re.escape(account) + r"\s*[-–]", win.title)]
+        elif account and len(matches) > 1:
+            selected = []
+            for candidate in matches:
+                self.emergency.guard()
+                try:
+                    observed = self.read_ctrader_account(candidate)
+                except Exception as exc:
+                    self.emergency.guard()
+                    raise AutomationError("有平台帳號無法辨識，請展開平台視窗後再試。") from exc
+                if observed == account:
+                    selected.append(candidate)
+            matches = selected
         if len(matches) != 1:
+            if account:
+                raise AutomationError(
+                    f"{platform} 綁定帳號對應 {len(matches)} 個主視窗。"
+                    "請確認帳號已登入，並關閉同帳號的重複視窗後再試。"
+                )
             raise AutomationError(
                 f"{platform} 視窗標題符合 {len(candidates)} 個，"
                 f"但可辨識的主交易視窗有 {len(matches)} 個。"
                 "請確認真正主視窗可見並重新綁定；不操作。"
             )
-        return self._maximize_and_recheck_main(
-            matches[0], title_pattern, main_title, width, height, platform
-        )
+        chosen = matches[0]
+        if session is not None:
+            pid = self._window_pid(chosen.handle)
+            if not pid:
+                raise AutomationError("無法確認平台視窗程序，已停止。")
+            session[key] = (chosen.handle, pid)
+        return chosen
 
     def _maximize_and_recheck_main(
         self,
@@ -383,18 +486,14 @@ class WindowController:
                 candidate for candidate in candidates
                 if re.match(main_title, str(candidate.title or ""), re.IGNORECASE)
             ]
-            if len(fresh) > 1:
-                raise AutomationError(
-                    f"{platform} 最大化後出現多個主視窗，已停止操作。"
-                )
-            if fresh:
-                latest = fresh[0]
-                if latest.handle != window.handle:
-                    raise AutomationError(
-                        f"{platform} 最大化後主視窗識別對象改變，已停止操作。"
-                    )
+            selected = next((candidate for candidate in fresh
+                             if candidate.handle == window.handle), None)
+            if selected is not None:
+                latest = selected
                 if matches_calibration(latest):
                     return latest
+            else:
+                raise AutomationError(f"{platform} 最大化後目標視窗已關閉，已停止操作。")
             time.sleep(0.025)
 
         self._raise_size_mismatch(latest, {
@@ -484,18 +583,25 @@ class WindowController:
             return self._refresh(window.handle)
         if minimized:
             user32.ShowWindow(window.handle, SW_RESTORE)
-        user32.SetForegroundWindow(window.handle)
-        # SetForegroundWindow may succeed immediately. Poll only until the
-        # desired HWND is active rather than sleeping 200ms unconditionally.
-        deadline=time.monotonic()+0.22
-        while user32.GetForegroundWindow()!=window.handle:
-            self.emergency.guard()
-            if time.monotonic()>=deadline:
-                raise AutomationError(
-                    "平台視窗無法取得焦點，停止填值／核對，避免操作錯誤視窗。"
-                )
-            time.sleep(0.015)
-        return self._refresh(window.handle)
+        for attempt in range(2):
+            with timed_phase('平台焦點重試' if attempt else '平台焦點切換'):
+                self.emergency.guard()
+                if attempt:
+                    self._refresh(window.handle)  # Stop if the target disappeared.
+                user32.SetForegroundWindow(window.handle)
+                # No fixed wait after success. A delayed/denied switch gets
+                # one bounded retry, without clicking or simulating any key.
+                deadline=time.monotonic()+0.22
+                while user32.GetForegroundWindow()!=window.handle:
+                    self.emergency.guard()
+                    if time.monotonic()>=deadline:
+                        break
+                    time.sleep(0.015)
+                else:
+                    return self._refresh(window.handle)
+        raise AutomationError(
+            "平台視窗重試後仍無法取得焦點，已停止。請先將平台切到前景再試。"
+        )
 
     def cursor_position(self) -> tuple[int, int]:
         point = wintypes.POINT()
@@ -583,9 +689,9 @@ class WindowController:
             # instrument, fields and button; never reuse a previous order.
             controls=(
                 _controls if _controls is not None
-                else Desktop(backend="uia").window(
+                else fresh_controls(Desktop(backend="uia").window(
                     handle=focused.handle
-                ).descendants()
+                ), INPUT_TYPES)
             )
         except Exception as exc:
             raise AutomationError(
@@ -626,14 +732,14 @@ class WindowController:
                 refreshed=True
                 time.sleep(0.12)
                 try:
-                    fresh_controls=Desktop(backend="uia").window(
+                    refreshed_controls=fresh_controls(Desktop(backend="uia").window(
                         handle=focused.handle
-                    ).descendants()
+                    ), INPUT_TYPES)
                 except Exception as exc:
                     raise AutomationError(
                         f"{key} UIA 重讀失敗，已停止：{exc}"
                     ) from exc
-                types=index_controls(fresh_controls)
+                types=index_controls(refreshed_controls)
                 unique={}
                 for ctrl,rect in types["Edit"]+types["Spinner"]:
                     a,b,c,d=rect
@@ -989,6 +1095,57 @@ class WindowController:
             "MT5 持倉修改視窗已要求開啟，但沒有切換到新的視窗；"
             f"目前作用視窗：{last_window.title}"
         )
+
+    def wait_for_broker_modify(self, main: WindowInfo, platform: str,
+                               point: dict, *, timeout: float) -> WindowInfo:
+        """Resolve one modify dialog of the bound process, regardless of focus."""
+        from .position_calibration import select_modify_dialog
+        self.emergency.guard()
+        pid = self._window_pid(main.handle)
+        if not pid:
+            raise AutomationError("無法確認平台程序，已停止尋找修改視窗。")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.emergency.guard()
+            self._refresh(main.handle)
+            if self._window_pid(main.handle) != pid:
+                raise AutomationError("平台程序已改變，已停止尋找修改視窗。")
+            windows = self.list_windows()
+            main_title = self._broker_main_title(platform, main.title)
+            mains = [w for w in windows if self._window_pid(w.handle) == pid
+                     and re.match(main_title, w.title, re.I)]
+            related = [main]
+            for candidate in windows:
+                if candidate.handle == main.handle or self._window_pid(candidate.handle) != pid:
+                    continue
+                owner = self._window_owned_by(candidate.handle, main.handle)
+                if owner is True or (owner is None and len(mains) == 1):
+                    related.append(candidate)
+            dialog = select_modify_dialog(main, related, platform, self._window_pid)
+            if dialog is not None:
+                self._validate_calibrated_window(dialog, point)
+                return dialog
+            time.sleep(0.025)
+        raise AutomationError("找不到屬於已綁定平台的唯一修改視窗，已停止。")
+
+    @staticmethod
+    def _window_owned_by(handle: int, main_handle: int) -> bool | None:
+        import win32gui
+        import pywintypes
+        try:
+            owner = win32gui.GetWindow(handle, 4)
+            if not owner:
+                return None
+            seen = set()
+            while owner and owner not in seen:
+                if owner == main_handle:
+                    return True
+                seen.add(owner)
+                owner = win32gui.GetWindow(owner, 4)
+        except pywintypes.error:
+            # A disappearing candidate cannot authorize input or fallback.
+            return False
+        return False
 
     def wait_for_window_matching_point_size(
         self,
@@ -1755,5 +1912,8 @@ class WindowController:
     def _refresh(self, handle: int) -> WindowInfo:
         for window in self.list_windows():
             if window.handle == handle:
+                identity = self.bound_broker_identity(window)
+                if identity is not None and self._window_pid(handle) != identity[1]:
+                    raise AutomationError("操作中的平台視窗程序已改變，已停止。")
                 return window
         raise AutomationError("自動操作期間目標視窗已關閉。")

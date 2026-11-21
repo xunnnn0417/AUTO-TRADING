@@ -102,23 +102,28 @@ class PositionRowRecoveryTests(unittest.TestCase):
 
 class NativeAccountSpeedTests(unittest.TestCase):
     def test_account_inspection_uses_the_installed_uia_query_contract_for_both_roles(self):
-        from pywinauto.uia_defines import IUIA
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        from trading_helper.uia_inventory import fresh_controls, ACCOUNT_ID
         number=NS(is_visible=lambda:True,window_text=lambda:"111111",
                   element_info=NS(automation_id="CTraderAccountNumberTextBlock_AId"))
         unrelated=NS(is_visible=lambda:True,window_text=lambda:"999999",
                      element_info=NS(automation_id="OtherLabel"))
-        queries=[]
-        def descendants(**kwargs):
-            IUIA().build_condition(**kwargs)
-            queries.append(kwargs)
-            return [unrelated,number]
-        root=NS(descendants=descendants)
+        root=MagicMock(spec=UIAWrapper)
         port=DemoUiBrokerPort(NS(),lambda _:None)
-        with patch("pywinauto.Desktop",return_value=NS(window=lambda **_:root)):
+        with patch("pywinauto.Desktop",return_value=NS(window=lambda **_:root)), \
+             patch("trading_helper.demo_broker_port.fresh_controls", wraps=fresh_controls) as query, \
+             patch("pywinauto.uia_element_info.elements_from_uia_array", return_value=[unrelated,number]), \
+             patch.object(UIAWrapper, "__new__", side_effect=lambda cls, info: info):
             for role in ("internal","external"):
                 account=port.inspect_account("cTrader",role,_window=WindowInfo(1,"Test",0,0,800,600))
                 self.assertEqual(account.account_id,"111111")
-        self.assertEqual(queries,[{"control_type":"Text"}]*2)
+        self.assertEqual(query.call_count,2)
+        for args, kwargs in query.call_args_list:
+            self.assertIs(args[0],root)
+            self.assertEqual(args[1],("Text",))
+            self.assertEqual(kwargs,{"text_ids":(ACCOUNT_ID,),"text_names":()})
+        self.assertEqual(root.element_info.element.FindAll.call_count,2)
+        root.descendants.assert_not_called()
 
     def test_native_account_avoids_ocr_but_mismatch_and_ambiguity_still_stop(self):
         windows=WindowController(NS(guard=lambda:None))
