@@ -72,7 +72,8 @@ class EventFeedView(QWidget):
         if hasattr(self, 'rest_settings_button'):
             from .rest_reminder_settings import RestReminderSettings
             self.rest_editor = RestReminderSettings(
-                lambda: owner.store.data.get('ui', {}).get('rest_reminder', {}), self.save_rest_settings)
+                lambda: owner.store.data.get('ui', {}).get('rest_reminder', {}), self.save_rest_settings,
+                context=lambda: owner.profiles.active_name)
             self.rest_editor.hide()
             root.addWidget(self.rest_editor)
             def toggle_rest_settings(opened):

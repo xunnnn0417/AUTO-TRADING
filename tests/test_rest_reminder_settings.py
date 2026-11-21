@@ -4,7 +4,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
 import test_compact_followup_controls as fixtures
@@ -18,9 +18,14 @@ class RestReminderSettingsTests(unittest.TestCase):
         cls.qt = QApplication.instance() or QApplication([])
 
     def test_draft_and_invalid_input_do_not_save_and_valid_save_normalizes(self):
-        saved = []
-        widget = RestReminderSettings(lambda: {}, saved.append)
+        saved, current = [], {}
+        def save(value):
+            current.update(value)
+            saved.append(value)
+        widget = RestReminderSettings(lambda: current, save)
         self.addCleanup(widget.deleteLater)
+        self.assertEqual(saved, [])  # Opening the settings must not write.
+        self.assertFalse(hasattr(widget, 'save_button'))
         widget.enabled.setChecked(True)
         self.assertFalse(hasattr(widget, 'clock'))
         self.assertFalse(hasattr(widget, 'days'))
@@ -29,16 +34,17 @@ class RestReminderSettingsTests(unittest.TestCase):
         widget.custom.setChecked(True)
         self.assertFalse(widget.custom_input.isHidden())
         widget.custom_input.setText('30, nope')
-        widget.save_button.click()
-        self.assertFalse(saved)
+        count = len(saved)
+        widget.custom_input.editingFinished.emit()
+        self.assertEqual(len(saved), count)
         self.assertTrue(widget.status.text())
         widget.custom_input.setText('30，60, 30')
-        widget.save_button.click()
-        self.assertEqual(saved[0]['minutes'], [60, 30])
-        self.assertNotIn('time', saved[0])
-        self.assertNotIn('days', saved[0])
-        self.assertTrue(saved[0]['custom'])
-        self.assertTrue(saved[0]['enabled'])
+        widget.custom_input.editingFinished.emit()
+        self.assertEqual(saved[-1]['minutes'], [60, 30])
+        self.assertNotIn('time', saved[-1])
+        self.assertNotIn('days', saved[-1])
+        self.assertTrue(saved[-1]['custom'])
+        self.assertTrue(saved[-1]['enabled'])
         self.assertTrue(all(check.property('checkmarkOnlyIndicator') for check in
                             [widget.enabled, widget.custom, *widget.presets.values()]))
 
@@ -53,18 +59,45 @@ class RestReminderSettingsTests(unittest.TestCase):
             QTest.mouseClick(widget.presets[minutes], Qt.LeftButton)
             self.assertTrue(widget.advance_menu.isVisible())
         widget.advance_menu.close()
-        widget.save_button.click()
         self.assertEqual(saved[-1]['minutes'], [120, 90, 60, 30])
         widget.custom.setChecked(True)
         widget.custom_input.setText('15, 45')
-        widget.save_button.click()
+        widget.custom_input.editingFinished.emit()
         self.assertEqual(saved[-1]['minutes'], [45, 15])
         self.assertTrue(saved[-1]['custom'])
         widget.custom.setChecked(False)
-        widget.save_button.click()
         self.assertFalse(saved[-1]['custom'])
         self.assertEqual(saved[-1]['minutes'], [120, 90, 60, 30])
         widget.close()
+
+    def test_custom_typing_is_debounced_and_profile_change_cannot_write_old_draft(self):
+        saved, profile = [], ['A']
+        widget = RestReminderSettings(lambda: {}, saved.append, context=lambda: profile[0])
+        self.addCleanup(widget.deleteLater)
+        widget.show()
+        widget.custom.setChecked(True)
+        QTest.keyClicks(widget.custom_input, '15')
+        self.assertEqual(saved, [])
+        timeout = QSignalSpy(widget._save_timer.timeout)
+        self.assertTrue(timeout.wait(2000), '自動儲存計時器未觸發')
+        self.assertEqual(saved[-1]['minutes'], [15])
+        saved.clear()
+        widget.custom_input.selectAll()
+        QTest.keyClicks(widget.custom_input, '45')
+        profile[0] = 'B'
+        timeout = QSignalSpy(widget._save_timer.timeout)
+        self.assertTrue(timeout.wait(2000), '切換方案後的待存計時器未觸發')
+        self.assertEqual(saved, [])
+        widget.close()
+
+    def test_disable_still_saves_when_custom_draft_is_invalid(self):
+        saved = []
+        widget = RestReminderSettings(lambda: dict(enabled=True, minutes=[60, 30]), saved.append)
+        self.addCleanup(widget.deleteLater)
+        widget.custom.setChecked(True)
+        widget.enabled.setChecked(False)
+        self.assertFalse(saved[-1]['enabled'])
+        self.assertEqual(saved[-1]['minutes'], [60, 30])
 
 
 class RestReminderWorkspaceTests(unittest.TestCase):
@@ -87,7 +120,6 @@ class RestReminderWorkspaceTests(unittest.TestCase):
         self.assertFalse(editor.isHidden())
         self.assertFalse(editor.enabled.isChecked())
         editor.enabled.setChecked(True)
-        editor.save_button.click()
         self.assertTrue(self.w.store.data['ui']['rest_reminder']['enabled'])
         from trading_helper.config import ConfigStore
         self.assertTrue(ConfigStore(self.w.store.path).data['ui']['rest_reminder']['enabled'])
@@ -100,7 +132,6 @@ class RestReminderWorkspaceTests(unittest.TestCase):
         service.changed.emit()
         self.assertEqual(editor.custom_input.text(), '15')  # Fetch does not erase draft.
         editor.enabled.setChecked(False)
-        editor.save_button.click()
         self.assertNotIn('休市提醒', view.event_rows.text())
 
     def test_rest_event_summary_is_countdown_even_with_unavailable_external_sources(self):

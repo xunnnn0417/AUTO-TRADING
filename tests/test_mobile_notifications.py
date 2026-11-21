@@ -185,12 +185,15 @@ class MobileNotificationTests(unittest.TestCase):
     def test_only_new_relevant_real_news_are_queued_not_recaps_or_preview(self):
         self.service.poll(self.calendar, self.origin, self.now)
         when = datetime.fromtimestamp(self.now, timezone.utc)
-        self.calendar.announcements.emit([
-            Announcement(when, '香港電台國際', '美軍突然空襲伊朗基地'),
-            Announcement(when, '香港電台財經', '金價收市上升1%'),
-            Announcement(when, '測試', '美軍突然空襲伊朗基地'),
-            Announcement(when-timedelta(hours=1), '香港電台國際', '美軍突然空襲伊朗基地')])
-        self.service.poll(self.calendar, self.origin, self.now+6)
+        # The signal handler polls immediately; use the same clock as the explicit poll.
+        with patch('trading_helper.remote_notifications.time', SimpleNamespace(time=lambda: self.now+6)):
+            self.calendar.announcements.emit([
+                Announcement(when, '香港電台國際', '美軍突然空襲伊朗基地'),
+                Announcement(when, '香港電台財經', '金價收市上升1%'),
+                Announcement(when, '測試', '美軍突然空襲伊朗基地'),
+                Announcement(when-timedelta(hours=1), '香港電台國際', '美軍突然空襲伊朗基地'),
+                Announcement(when+timedelta(hours=1), '香港電台國際', '美軍突然空襲伊朗基地')])
+            self.service.poll(self.calendar, self.origin, self.now+6)
         self.assertEqual(len(self.rows()), 1)
         self.assertEqual(json.loads(self.rows()[0][1])['kind'], 'breaking')
 

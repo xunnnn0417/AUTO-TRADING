@@ -37,12 +37,12 @@ class HoverStageCombo(QComboBox):
                            'QComboBox::drop-down {border:0;width:0;}'
                            'QComboBox::down-arrow {image:none;}')
         view = QListView()
-        view.setSpacing(2)
+        view.setSpacing(0)
         view.setUniformItemSizes(True)
-        view.setMinimumWidth(118)
+        view.setMinimumWidth(self.width())
         view.setStyleSheet('QListView {background:#17151e;color:#eae4f2;'
-            'border:1px solid #3c3548;border-radius:7px;padding:5px;outline:0;font-size:12px;}'
-            'QListView::item {min-height:25px;padding:3px 10px;border:0;border-radius:4px;}'
+            'border:1px solid #3c3548;border-radius:7px;padding:4px;outline:0;font-size:11px;}'
+            'QListView::item {min-height:18px;padding:2px 8px;border:0;border-radius:4px;}'
             'QListView::item:hover {background:#292433;}'
             'QListView::item:selected {background:#383044;color:#ffffff;}')
         self.setView(view)
@@ -70,6 +70,13 @@ class HoverStageCombo(QComboBox):
     def leaveEvent(self, event):
         super().leaveEvent(event)
         self.update()
+
+    def showPopup(self):
+        # The list delegate also reserves space for its selection indicator.
+        width = max((self.view().fontMetrics().horizontalAdvance(self.itemText(i)) + 48
+                     for i in range(self.count())), default=self.width())
+        self.view().setMinimumWidth(max(self.width(), width))
+        super().showPopup()
 
     def hidePopup(self):
         super().hidePopup()

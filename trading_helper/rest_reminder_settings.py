@@ -1,8 +1,9 @@
 """Automatic gold rest schedule with preset/custom advance reminders."""
 from datetime import datetime
+from PySide6.QtCore import QTimer
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QLineEdit, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QLabel, QLineEdit,
     QMenu, QToolButton, QWidgetAction,
 )
 
@@ -15,9 +16,15 @@ PRESETS = {30: '30 分鐘', 60: '1 小時', 90: '1.5 小時', 120: '2 小時'}
 
 
 class RestReminderSettings(QWidget):
-    def __init__(self, get_settings, save_settings, parent=None):
+    def __init__(self, get_settings, save_settings, parent=None, *, context=lambda: None):
         super().__init__(parent)
         self.get_settings, self.save_settings = get_settings, save_settings
+        self._context = context
+        self._loading = True
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(450)
+        self._save_timer.timeout.connect(self.save)
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 6, 10, 8)
         root.setSpacing(7)
@@ -60,9 +67,9 @@ class RestReminderSettings(QWidget):
         self.custom_input.setAccessibleName('自訂提前分鐘')
         self.custom_input.setMaximumWidth(190)
         row.addWidget(self.custom_input)
-        self.save_button = QPushButton('儲存')
-        self.save_button.clicked.connect(self.save)
-        row.addWidget(self.save_button)
+        self.custom_input.textEdited.connect(lambda: self._save_timer.start())
+        self.custom_input.editingFinished.connect(self.save)
+        self.enabled.toggled.connect(self.save)
         row.addStretch()
         root.addLayout(row)
         for check in [self.enabled, self.custom, *self.presets.values()]:
@@ -92,14 +99,20 @@ class RestReminderSettings(QWidget):
         text = '自訂' if custom else '、'.join(selected) if len(selected) <= 2 else f'已選 {len(selected)} 個時間'
         self.advance_button.setText(text or '請選擇')
         self.advance_button.setToolTip('自訂分鐘' if custom else '、'.join(selected))
+        if not self._loading:
+            self.save()
 
     def load(self):
+        self._loading = True
+        self._save_timer.stop()
+        self._loaded_context = self._context()
         try:
             value = normalize_settings(self.get_settings())
             message = ''
         except ValueError:
             value = normalize_settings({})
-            message = '設定無效，請重新設定並儲存。'
+            message = '設定無效，請重新設定。'
+        self._saved_value = value
         self.enabled.setChecked(value['enabled'])
         for minutes, check in self.presets.items():
             check.setChecked(minutes in value['minutes'] and not value['custom'])
@@ -108,8 +121,15 @@ class RestReminderSettings(QWidget):
         self.update_selection()
         self.update_schedule()
         self.status.setText(message)
+        self._loading = False
 
     def save(self):
+        if self._loading:
+            return
+        self._save_timer.stop()
+        if self._context() != self._loaded_context:
+            self.load()
+            return
         try:
             minutes = [n for n, check in self.presets.items() if check.isChecked()]
             if self.custom.isChecked():
@@ -121,8 +141,22 @@ class RestReminderSettings(QWidget):
                 raise ValueError('請至少選擇一個提醒時間。')
             value = normalize_settings(dict(enabled=self.enabled.isChecked(), minutes=minutes,
                                             custom=self.custom.isChecked()))
-            self.save_settings(value)
-        except (ValueError, OSError) as exc:
-            self.status.setText(str(exc) if isinstance(exc, ValueError) else '儲存失敗，請重試。')
+        except ValueError as exc:
+            if self.enabled.isChecked():
+                self.status.setText(str(exc)+' 尚未套用。')
+                return
+            # Turning reminders off must also work with an unfinished custom input.
+            value = dict(self._saved_value, enabled=False)
+        try:
+            if value != self._saved_value:
+                self.save_settings(value)
+                self._saved_value = value
+        except OSError:
+            self.status.setText('儲存失敗，請重試。')
             return
-        self.status.setText('已儲存。' if value['enabled'] else '已關閉休市提醒。')
+        self.status.setText('已自動儲存。' if value['enabled'] else '休市提醒已關閉。')
+
+    def hideEvent(self, event):
+        if self._save_timer.isActive():
+            self.save()
+        super().hideEvent(event)
