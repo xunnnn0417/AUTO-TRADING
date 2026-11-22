@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, Signal
 
 PUSH_HOSTS = {'web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com'}
+NOTIFICATION_TITLE = '對沖小幫手'
 
 
 def delivery_groups(rows):
@@ -35,6 +36,8 @@ def delivery_groups(rows):
 
 def combined_payload(rows):
     payload = json.loads(rows[0][2])
+    # Also shorten notifications queued before this version was installed.
+    payload['title'] = NOTIFICATION_TITLE
     if len(rows) > 1:
         from .calendar_events import format_event_time
         prefix = payload['body'].split(' · ',1)[0] if payload['kind'] != 'breaking' else '突發重大消息'
@@ -192,7 +195,7 @@ class MobileNotifications(QObject):
         if last and now-last < 10:
             return dict(queued=False, cooldown=ceil(10-(now-last)))
         identity = 'test-'+uuid4().hex
-        payload = dict(title='對沖小幫手測試通知', body='手機通知已接通。',
+        payload = dict(title=NOTIFICATION_TITLE, body='手機通知已接通。',
                        tag=identity, kind='test', expires=now+60)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
@@ -210,7 +213,7 @@ class MobileNotifications(QObject):
 
     def _enqueue(self, kind, item, title, body, now, expires):
         identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
-        payload = json.dumps(dict(title=title, body=body[:300], tag=identity, kind=kind,
+        payload = json.dumps(dict(title=NOTIFICATION_TITLE, body=body[:300], tag=identity, kind=kind,
                                   expires=expires, when=item.when.isoformat(),
                                   headline=self.calendar.title(item.title)), ensure_ascii=False)
         with self.store.db:

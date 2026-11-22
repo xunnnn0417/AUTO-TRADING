@@ -287,12 +287,20 @@ class WindowController:
     def read_ctrader_account(self, window: WindowInfo) -> str:
         """Read the exact native account label without focusing any candidate."""
         self.emergency.guard()
+        try:
+            return self._inspect_ctrader_account(window)
+        except Exception:
+            self.emergency.guard()
+            raise
+
+    @staticmethod
+    def _inspect_ctrader_account(window: WindowInfo) -> str:
+        """Native text inspection only, including while actions are stopped."""
         from pywinauto import Desktop
         try:
             nodes = fresh_controls(Desktop(backend="uia").window(handle=window.handle),
                                    ("Text",), text_ids=(ACCOUNT_ID,), text_names=())
         except Exception as exc:
-            self.emergency.guard()
             raise AutomationError("平台帳號讀取失敗，請展開平台視窗後再試。") from exc
         values = [str(node.window_text()).strip() for node in nodes
                   if str(node.element_info.automation_id) == ACCOUNT_ID]
@@ -386,6 +394,19 @@ class WindowController:
     def find_broker_main(self, title_pattern: str, *, platform: str,
                          expected_account: str = "") -> WindowInfo:
         self.emergency.guard()
+        return self._resolve_broker_main(title_pattern, platform=platform,
+                                         expected_account=expected_account, inspection=False)
+
+    def find_broker_main_for_display(self, title_pattern: str, *, platform: str,
+                                     expected_account: str = "") -> WindowInfo:
+        """Locate saved markers without focusing, clicking, or resetting stop."""
+        return self._resolve_broker_main(title_pattern, platform=platform,
+                                         expected_account=expected_account, inspection=True)
+
+    def _resolve_broker_main(self, title_pattern: str, *, platform: str,
+                             expected_account: str, inspection: bool) -> WindowInfo:
+        guard = (lambda: None) if inspection else self.emergency.guard
+        account_reader = self._inspect_ctrader_account if inspection else self.read_ctrader_account
         candidates = self.find_all(title_pattern)
         main_title = self._broker_main_title(platform, title_pattern)
         matches = [
@@ -394,7 +415,7 @@ class WindowController:
         ]
         account = str(expected_account or "").strip()
         key = (platform, title_pattern, account)
-        session = self._broker_session.get()
+        session = None if inspection else self._broker_session.get()
         bound = session.get(key) if session is not None else None
         if bound is not None:
             selected = next((win for win in matches if win.handle == bound[0]), None)
@@ -404,14 +425,14 @@ class WindowController:
         if account and "MT5" in platform.upper():
             matches = [win for win in matches
                        if re.match(r"^\s*" + re.escape(account) + r"\s*[-–]", win.title)]
-        elif account and len(matches) > 1:
+        elif account and (inspection or len(matches) > 1):
             selected = []
             for candidate in matches:
-                self.emergency.guard()
+                guard()
                 try:
-                    observed = self.read_ctrader_account(candidate)
+                    observed = account_reader(candidate)
                 except Exception as exc:
-                    self.emergency.guard()
+                    guard()
                     raise AutomationError("有平台帳號無法辨識，請展開平台視窗後再試。") from exc
                 if observed == account:
                     selected.append(candidate)
@@ -1018,6 +1039,16 @@ class WindowController:
         x, y = self.screen_point(focused, point)
         self.emergency.guard()
         pyautogui.click(x, y)
+
+    def right_click(self, window: WindowInfo, point: dict[str, float]) -> None:
+        """Open a context menu only after normal focus and geometry checks."""
+        import pyautogui
+        self.emergency.guard()
+        focused = self.focus(window)
+        self._validate_calibrated_window(focused, point)
+        x, y = self.screen_point(focused, point)
+        self.emergency.guard()
+        pyautogui.click(x, y, button='right')
 
     def double_click(
         self,

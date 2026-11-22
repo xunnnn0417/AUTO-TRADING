@@ -30,8 +30,8 @@ class SubmitCalibrationTests(unittest.TestCase):
     def test_stage_counts_and_meaningful_new_roles(self):
         ct=dict(CALIBRATION_TARGETS["cTrader"])
         mt=dict(CALIBRATION_TARGETS["MT5"])
-        self.assertEqual(len(ct),16)
-        self.assertEqual(len(mt),16)
+        self.assertEqual(len(ct),20)
+        self.assertEqual(len(mt),20)
         self.assertIn("position_close_button",ct)
         self.assertIn("position_close_button",mt)
         self.assertIn("order_submit_button",ct)

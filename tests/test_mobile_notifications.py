@@ -105,9 +105,20 @@ class MobileNotificationTests(unittest.TestCase):
             other.poll(self.calendar, self.origin, self.now+591)
             other.poll(self.calendar, self.origin, self.now+597)
         self.assertEqual([json.loads(row[1])['kind'] for row in self.rows()], ['before', 'release'])
-        self.assertIn('公布時間', json.loads(self.rows()[-1][1])['title'])
+        self.assertTrue(all(json.loads(row[1])['title'] == '對沖小幫手' for row in self.rows()))
         self.assertNotIn('實際值', json.loads(self.rows()[-1][1])['body'])
         self.assertNotIn('請查看消息確認公布結果', json.loads(self.rows()[-1][1])['body'])
+
+    def test_old_pending_title_is_shortened_at_delivery_without_changing_body_or_tag(self):
+        from trading_helper.remote_notifications import combined_payload
+        old = dict(title='重大事件公布時間已到', body='公布時間已到 · 9:30 PM · CPI',
+                   kind='release', tag='stable-event-id', expires=self.now+180)
+        row = ('phone', 'event', json.dumps(old), self.now+180, 'subscription')
+        delivered = combined_payload([row])
+        self.assertEqual(delivered['title'], '對沖小幫手')
+        self.assertEqual(delivered['body'], old['body'])
+        self.assertEqual(delivered['tag'], old['tag'])
+        self.assertEqual(json.loads(row[2]), old)
 
     def test_automatic_rest_schedule_uses_same_phone_queue_and_stays_deduplicated(self):
         from trading_helper.calendar_events import TAIPEI, format_event_time
@@ -122,7 +133,7 @@ class MobileNotificationTests(unittest.TestCase):
         self.service.poll(self.calendar, self.origin, first+1800)
         payloads = [json.loads(row[1]) for row in self.rows()]
         self.assertEqual([p['kind'] for p in payloads], ['rest:60', 'rest:30'])
-        self.assertTrue(all(p['title'] == '休市前提醒' for p in payloads))
+        self.assertTrue(all(p['title'] == '對沖小幫手' for p in payloads))
         self.assertIn(format_event_time(close), payloads[0]['body'])
         self.assertNotIn('公布', payloads[0]['body'])
         config['enabled'] = False
@@ -141,6 +152,7 @@ class MobileNotificationTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not self.service._busy))
             self.assertEqual(send.call_count,1)
             payload = send.call_args.args[1]
+            self.assertEqual(payload['title'], '對沖小幫手')
             self.assertIn('13 則',payload['body'])
             for name in names:self.assertIn(name,payload['body'])
             self.assertTrue(all(row[2]=='sent' for row in self.rows()))

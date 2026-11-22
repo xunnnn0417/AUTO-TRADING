@@ -10,7 +10,7 @@ def c(kind, name, automation_id, rect, ancestors=()):
 
 class CalibrationScanTests(unittest.TestCase):
     def test_all_original_targets_present(self):
-        for platform, count in [("cTrader", 16), ("MT5", 16)]:
+        for platform, count in [("cTrader", 20), ("MT5", 20)]:
             report = match_all(platform, CALIBRATION_TARGETS[platform], [], WINDOW)
             self.assertEqual(len(report.targets), count)
             self.assertEqual(len(report.reasons), count)

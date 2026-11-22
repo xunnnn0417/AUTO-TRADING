@@ -286,8 +286,8 @@ class P2CalibrationDialogTests(unittest.TestCase):
 
     def test_same_simple_calibration_structure_across_platforms(self):
         for platform, expected_tabs, expected_items in (
-            ("cTrader", 3, 16),
-            ("MT5", 4, 16),
+            ("cTrader", 4, 20),
+            ("MT5", 5, 20),
             ("TradingView", 1, 8),
         ):
             with self.subTest(platform=platform):
@@ -379,7 +379,8 @@ class P2CalibrationDialogTests(unittest.TestCase):
                     self.assertEqual(len(dialog._field_capture_buttons),8)
                     self.assertEqual(len(dialog._field_capture_dots),8)
                 else:
-                    self.assertEqual(dialog._field_capture_buttons,{})
+                    self.assertEqual(set(dialog._field_capture_buttons),
+                                     {key for key, _ in gui.bulk_close_targets(platform)})
                 self.assertFalse(hasattr(dialog,"manual_tools_toggle"))
                 dialog._hover_outline.close()
                 dialog.close()
@@ -580,7 +581,7 @@ class P2CalibrationDialogTests(unittest.TestCase):
     def test_mt5_second_stage_selects_its_quote_and_order_items(self):
         parent=QMainWindow()
         dialog=CalibrationDialog(parent,"MT5")
-        self.assertEqual(len(dialog._stage_keys),4)
+        self.assertEqual(len(dialog._stage_keys),5)
         self.assertEqual(tuple(dialog._stage_keys[0]),("new_order_button","trade_tab"))
         self.assertEqual(len(dialog._stage_keys[1]),7)
         self.assertEqual(set(dialog._stage_keys[2]),
@@ -647,11 +648,11 @@ class P2CalibrationDialogTests(unittest.TestCase):
         tabs=dialog.findChildren(QTabWidget)
         self.assertTrue(tabs)
         labels=[tabs[0].tabText(i) for i in range(tabs[0].count())]
-        self.assertEqual(len(labels),3)
+        self.assertEqual(len(labels),4)
         self.assertIn("進場前",labels[0])
         self.assertIn("持倉列表",labels[1])
         self.assertIn("修改視窗",labels[2])
-        self.assertEqual(len(dialog.radios),16)
+        self.assertEqual(len(dialog.radios),20)
         self.assertIn("position_close_button",dialog._stage_keys[1])
         wizard=[b for b in dialog.findChildren(QPushButton)
                 if b.text()=="開始辨識進場後欄位（唯讀）"]

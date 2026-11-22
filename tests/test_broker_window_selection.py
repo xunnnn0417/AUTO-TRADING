@@ -20,6 +20,61 @@ class BrokerWindowSelectionTests(unittest.TestCase):
         self.ctrl.read_ctrader_account = MagicMock(side_effect=lambda w: {11:'111111',22:'222222'}[w.handle])
         self.ctrl._window_pid = MagicMock(side_effect=lambda h: h + 100)
 
+    def test_saved_location_display_does_not_clear_or_bypass_stop_for_actions(self):
+        self.ctrl.emergency.guard.side_effect = AutomationError('緊急停止目前生效中。')
+        self.ctrl._inspect_ctrader_account = MagicMock(side_effect=lambda w: {11:'111111',22:'222222'}[w.handle])
+        with patch.object(self.ctrl, 'focus') as focus:
+            chosen = self.ctrl.find_broker_main_for_display('cTrader', platform='cTrader', expected_account='222222')
+        self.assertEqual(chosen, self.second)
+        focus.assert_not_called()
+        self.ctrl.emergency.guard.assert_not_called()
+        with self.assertRaisesRegex(AutomationError, '緊急停止'):
+            self.ctrl.find_broker_main('cTrader', platform='cTrader', expected_account='222222')
+
+    def test_saved_location_display_still_rejects_duplicate_accounts(self):
+        self.ctrl._inspect_ctrader_account = MagicMock(return_value='222222')
+        with self.assertRaises(AutomationError):
+            self.ctrl.find_broker_main_for_display('cTrader', platform='cTrader', expected_account='222222')
+
+    def test_saved_location_display_rejects_single_window_with_wrong_account(self):
+        self.ctrl.list_windows.return_value = [self.first]
+        self.ctrl._inspect_ctrader_account = MagicMock(return_value='111111')
+        with self.assertRaises(AutomationError):
+            self.ctrl.find_broker_main_for_display('cTrader', platform='cTrader', expected_account='222222')
+
+    def test_modify_marker_uses_current_same_process_dialog_not_old_ticket_caption(self):
+        from trading_helper import gui
+        main = window(31, '222222 - Broker-B - Hedge')
+        current = window(32, '持倉: #888888 sell 0.09 XAUUSD')
+        foreign = window(33, '持倉: #777777 sell 0.09 XAUUSD')
+        self.ctrl.list_windows.return_value = [main, current, foreign]
+        profile = {'window_title': {'external': r'222222.*Broker-B'}, 'points': {}}
+        dialog = NS(platform='MT5', app=NS(windows=self.ctrl,
+                    store=NS(data={'platforms': {'MT5': profile}})), _display_role=lambda key: 'external')
+        with patch.object(gui, 'process_id_for_window', side_effect=lambda h: 99 if h in (31, 32) else 100):
+            chosen = gui.CalibrationDialog._display_window_for_saved_point(dialog, 'position_sl_input',
+                        {'calibration_window_title': '持倉: #111111 sell 0.09 XAUUSD'})
+        self.assertEqual(chosen, current)
+
+    def test_context_menu_opening_still_checks_stop_and_geometry(self):
+        import sys
+        mouse = NS(click=MagicMock())
+        self.ctrl.focus = MagicMock(return_value=self.first)
+        self.ctrl._validate_calibrated_window = MagicMock()
+        self.ctrl.screen_point = MagicMock(return_value=(100, 200))
+        with patch.dict(sys.modules, {'pyautogui': mouse}):
+            self.ctrl.right_click(self.first, {})
+            mouse.click.assert_called_once_with(100, 200, button='right')
+            mouse.click.reset_mock()
+            self.ctrl.screen_point.side_effect = AutomationError('尺寸已變更')
+            with self.assertRaisesRegex(AutomationError, '尺寸'):
+                self.ctrl.right_click(self.first, {})
+            mouse.click.assert_not_called()
+            self.ctrl.emergency.guard.side_effect = AutomationError('緊急停止')
+            with self.assertRaisesRegex(AutomationError, '緊急停止'):
+                self.ctrl.right_click(self.first, {})
+            mouse.click.assert_not_called()
+
     def test_ctrader_chooses_bound_account_instead_of_first_same_title(self):
         chosen = self.ctrl.find_broker_main('cTrader', platform='cTrader', expected_account='222222')
         self.assertEqual(chosen, self.second)

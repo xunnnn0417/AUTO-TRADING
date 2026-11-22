@@ -84,7 +84,7 @@ class ProgressTests(unittest.TestCase):
             parent.close()
 
     def test_missing_ctrader_first_stage_from_full_16(self):
-        all_keys=[k for k,_ in CALIBRATION_TARGETS["cTrader"]]
+        all_keys=[k for k,_ in CALIBRATION_TARGETS["cTrader"] if not k.startswith(('internal_bulk_', 'external_bulk_'))]
         first=all_keys[:9]
         saved={k:pt() for k in all_keys}
         for k in first:saved.pop(k)
@@ -121,10 +121,10 @@ class ProgressTests(unittest.TestCase):
         })
         dlg=CalibrationDialog(parent,"MT5")
         try:
-            self.assertEqual(len(dlg._stage_keys),4)
+            self.assertEqual(len(dlg._stage_keys),5)
             self.assertEqual(sum(map(len,dlg._stage_keys)),
                              len(CALIBRATION_TARGETS["MT5"]))
-            self.assertEqual(dlg._calibration_tabs.count(),4)
+            self.assertEqual(dlg._calibration_tabs.count(),5)
             self.assertIn("(0/",dlg._calibration_tabs.tabText(0))
         finally:
             dlg._hover_outline.close()

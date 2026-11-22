@@ -86,6 +86,10 @@ from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adju
 from .config import APP_DIR
 from .field_detection import inspect_uia_window
 from .calibration_scan import ScanReport, inspect_all_targets
+from .bulk_close_calibration import (
+    targets as bulk_close_targets, role_for as bulk_close_role,
+    inspect_bulk_targets, open_mt5_context, platform_windows as bulk_platform_windows,
+)
 from .calibration_confirm import (
     CalibrationConfirmationError, candidate_calibration_points,
     save_confirmed_points,
@@ -222,6 +226,10 @@ CALIBRATION_TARGETS = {
         ("confirm_button", "部位設定確認按鈕"),
     ],
 }
+
+
+for _bulk_platform in ('cTrader', 'MT5', 'BYBIT MT5', '原版MT5'):
+    CALIBRATION_TARGETS[_bulk_platform] = list(CALIBRATION_TARGETS[_bulk_platform]) + list(bulk_close_targets(_bulk_platform))
 
 
 class ThemedMessageBox(ThemedDialog):
@@ -532,14 +540,15 @@ def _window_title_pattern(platform: str, title: str) -> str:
     return re.escape(title)
 
 
-def _bound_broker_main(app, platform: str, role: str) -> WindowInfo:
+def _bound_broker_main(app, platform: str, role: str, *, display_only=False) -> WindowInfo:
     """Use the saved role/account for read-only calibration and inspection."""
     profile = app.store.data["platforms"][platform]
     pattern = profile.get("window_title", {}).get(role, "")
     if isinstance(app.windows, WindowController):
         account = profile.get("account_number", {}).get(role, "")
         options = {"expected_account": account} if account else {}
-        return app.windows.find_broker_main(pattern, platform=platform, **options)
+        locate = app.windows.find_broker_main_for_display if display_only else app.windows.find_broker_main
+        return locate(pattern, platform=platform, **options)
     return app.windows.find(pattern)
 
 
@@ -2079,7 +2088,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             points = self.store.data["platforms"].get(
                 platform, {}
             ).get("points", {})
-            keys = [key for key,_ in CALIBRATION_TARGETS[platform]]
+            keys = [key for key,_ in CALIBRATION_TARGETS[platform] if not bulk_close_role(key)]
             done,total = completion(points, keys)
             incomplete[platform] = done < total
             self.action_buttons["校準 " + platform].setToolTip(
@@ -5777,10 +5786,12 @@ class CalibrationDialog(ThemedDialog):
         self._field_capture_buttons: dict[str, QPushButton] = {}
         self._field_capture_dots: dict[str, QLabel] = {}
         self._capture_buttons: list[QPushButton] = []
+        self.bulk_scope_checkboxes = {}
         self._capture_running = False
         keys_all = tuple(key for key, _ in CALIBRATION_TARGETS[platform])
+        bulk_keys = tuple(key for key in keys_all if bulk_close_role(key))
         if platform == "cTrader":
-            after_keys = set(POSITION_GRID_KEYS+POSITION_EDIT_KEYS)
+            after_keys = set(POSITION_GRID_KEYS+POSITION_EDIT_KEYS+bulk_keys)
             before = tuple(key for key in keys_all if key not in after_keys)
             grid = tuple(key for key in keys_all if key in POSITION_GRID_KEYS)
             modify = tuple(key for key in keys_all if key in POSITION_EDIT_KEYS)
@@ -5788,6 +5799,7 @@ class CalibrationDialog(ThemedDialog):
                 ("① 進場前", before),
                 ("② 持倉列表", grid),
                 ("③ 修改視窗", modify),
+                ("④ 全關（選用）", bulk_keys),
             )
         elif platform in {"MT5", "BYBIT MT5", "原版MT5"}:
             # In MT5 the toolbar launcher is in the MAIN window, while
@@ -5806,6 +5818,7 @@ class CalibrationDialog(ThemedDialog):
                 ("② 新訂單", order_fields),
                 ("③ 持倉列表", grid),
                 ("④ 修改視窗", modify),
+                ("⑤ 全關（選用）", bulk_keys),
             )
         else:
             stages = (("繪圖工具與價格欄位", keys_all),)
@@ -5873,7 +5886,7 @@ class CalibrationDialog(ThemedDialog):
                     card_layout.addWidget(target_row)
                     self.position_close_capture_button = capture
                     self.position_close_missing_dot = missing_dot
-                elif platform == "TradingView":
+                elif platform == "TradingView" or bulk_close_role(key):
                     target_row = QWidget(page)
                     target_layout = QHBoxLayout(target_row)
                     target_layout.setContentsMargins(0, 1, 2, 1)
@@ -5940,10 +5953,33 @@ class CalibrationDialog(ThemedDialog):
                 card_layout.addWidget(QLabel(
                     "請先手動開啟持倉修改視窗，再尋找欄位。"
                 ))
+            if stage_keys == bulk_keys and bulk_keys:
+                scope_row = QHBoxLayout()
+                saved_scope = getattr(getattr(self.app, 'store', None), 'data', {}).get('ui', {}).get('rest_close_all', {})
+                for role, caption in (('internal', '場內全部持倉'), ('external', '場外全部持倉')):
+                    scope = QCheckBox(caption, page)
+                    scope.setObjectName('bulkCloseAll_'+role)
+                    scope.setChecked(saved_scope.get(role) is True)
+                    install_checkmark_only_indicator(scope)
+                    scope.toggled.connect(lambda checked, r=role: self._save_bulk_close_scope(r, checked))
+                    self.bulk_scope_checkboxes[role] = scope
+                    scope_row.addWidget(scope)
+                scope_row.addStretch()
+                card_layout.addLayout(scope_row)
+                card_layout.addWidget(QLabel('未勾選：只關對應持倉。此處只設定範圍，不會平倉。'))
+                hint = QLabel('場內、場外分開校準；只記位置，不會平倉。' if platform == 'cTrader' else
+                              '先選場內或場外欄位；自動開啟 SL 欄右鍵選單。只懸停，不點平倉。')
+                hint.setWordWrap(True)
+                card_layout.addWidget(hint)
             if platform != "TradingView":
                 scan = QPushButton("自動尋找欄位", page)
                 scan.setToolTip("只找目前開啟畫面的候選位置；不儲存、不填值、不操作交易平台")
-                scan.clicked.connect(self.scan_all_calibration)
+                if stage_keys == bulk_keys and bulk_keys and platform != 'cTrader':
+                    scan.setText('開啟右鍵選單並擷取所選欄位')
+                    scan.setToolTip('在已校準的 SL 欄按右鍵後，將滑鼠停在指定選單項目；不會點平倉。')
+                    scan.clicked.connect(self.capture)
+                else:
+                    scan.clicked.connect(self.scan_all_calibration)
                 card_layout.addWidget(scan)
             else:
                 card_layout.addWidget(QLabel(
@@ -6367,13 +6403,20 @@ class CalibrationDialog(ThemedDialog):
         ).strip()
         if not pattern:
             raise AutomationError("尚未設定此平台的視窗標題")
+        if key in POSITION_EDIT_KEYS and isinstance(self.app.windows, WindowController):
+            main = _bound_broker_main(self.app, self.platform, role, display_only=True)
+            current = select_modify_dialog(main, self.app.windows.list_windows(), self.platform,
+                                           process_id_for_window)
+            if current is None:
+                raise AutomationError('請先開啟此平台的持倉修改視窗，再查看已校準位置。')
+            return current
         if (key in main_keys and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
                 and isinstance(self.app.windows, WindowController)):
-            return _bound_broker_main(self.app, self.platform, role)
+            return _bound_broker_main(self.app, self.platform, role, display_only=True)
         matches = self.app.windows.find_all(pattern)
         if (self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}
                 and isinstance(self.app.windows, WindowController)):
-            main = _bound_broker_main(self.app, self.platform, role)
+            main = _bound_broker_main(self.app, self.platform, role, display_only=True)
             pid = process_id_for_window(main.handle)
             if not pid:
                 raise AutomationError("無法確認已綁定的平台程序；沒有顯示框線。")
@@ -6415,6 +6458,14 @@ class CalibrationDialog(ThemedDialog):
                 unavailable.append(labels.get(key, key) + "（未校準）")
                 continue
             try:
+                if bulk_close_role(key):
+                    main = _bound_broker_main(self.app, self.platform, bulk_close_role(key), display_only=True)
+                    report = inspect_bulk_targets(main, self.platform, ((key, labels[key]),),
+                                                  self.app.windows.list_windows(), process_id_for_window)
+                    if report.warnings or key not in report.candidates:
+                        raise AutomationError('請先展開對應的批量選單或平倉確認視窗。')
+                    rectangles.append(report.candidates[key].rect)
+                    continue
                 window = self._display_window_for_saved_point(key, point)
                 x, y = self.app.windows.screen_point_for_display(window, point)
                 width = max(8, int(point.get("bounds_width", 32)))
@@ -6564,12 +6615,19 @@ class CalibrationDialog(ThemedDialog):
         if self.platform not in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}:
             QMessageBox.information(self, "完整校準掃描", "目前只支援 cTrader 與 MT5 系列。")
             return
+        selected_key = next(key for key, radio in self.radios.items() if radio.isChecked())
+        if bulk_close_role(selected_key) and self.platform != 'cTrader':
+            # A context menu closes when the result dialog takes focus.
+            # Capture while it is open, rather than offering stale scan results.
+            self.capture()
+            return
+        scan_role = bulk_close_role(selected_key) or self._display_role("lot_input")
         profile = self.app.store.data["platforms"][self.platform]
-        pattern = profile.get("window_title", {}).get(self._display_role("lot_input"), "")
+        pattern = profile.get("window_title", {}).get(scan_role, "")
         try:
             if not str(pattern or "").strip():
                 raise ValueError("尚未綁定此交易平台視窗，請先設定視窗標題")
-            matched = _bound_broker_main(self.app, self.platform, self._display_role("lot_input"))
+            matched = _bound_broker_main(self.app, self.platform, scan_role, display_only=True)
             # The configured title regex (e.g. "cTrader") may also match
             # "Modify order or position - cTrader". Scan must bind to the
             # unique *main terminal* first, then select modal by same PID.
@@ -6590,6 +6648,9 @@ class CalibrationDialog(ThemedDialog):
         stage = set(self._stage_keys[self._calibration_tabs.currentIndex()])
         is_position_grid = stage == set(POSITION_GRID_KEYS)
         is_position_modify = stage == set(POSITION_EDIT_KEYS)
+        is_bulk = bool(bulk_close_role(selected_key))
+        if is_bulk:
+            stage = {key for key in stage if bulk_close_role(key) == scan_role}
         if is_position_modify:
             other=select_modify_dialog(
                 target, self.app.windows.list_windows(), self.platform,
@@ -6630,7 +6691,7 @@ class CalibrationDialog(ThemedDialog):
             "platform": self.platform,
             "window": target,
             "pid": process_id_for_window(target.handle),
-            "role": self._display_role("lot_input"),
+            "role": scan_role,
         }
         self.result.setText("正在唯讀掃描校準項目；候選不會自行儲存或操作交易視窗……")
         # Only inspect the tab the user opened; MT5 post-entry controls may
@@ -6652,7 +6713,17 @@ class CalibrationDialog(ThemedDialog):
                     if abort.event.is_set():
                         self.inventory_finished.emit({"cancelled": True})
                         return
-                    if is_position_grid:
+                    if is_bulk:
+                        if self.platform != 'cTrader':
+                            open_mt5_context(WindowController(abort), target, profile.get('points', {}).get('position_order_row'))
+                            for count in (5, 4, 3, 2, 1):
+                                self.preview_progress.emit(count)
+                                if abort.event.wait(1):
+                                    self.inventory_finished.emit({'cancelled': True})
+                                    return
+                        report = inspect_bulk_targets(target, self.platform, targets,
+                                                      self.app.windows.list_windows(), process_id_for_window)
+                    elif is_position_grid:
                         report=scan_position_grid(handle,self.platform,targets)
                     elif is_position_modify:
                         report=scan_open_modify_dialog(handle,self.platform,targets)
@@ -6777,7 +6848,10 @@ class CalibrationDialog(ThemedDialog):
             # Re-read every field of the stage (not only selected fields)
             # to reject stale, moved, duplicate or differently identified UI.
             stage = {key for key,_ in state["report"].targets}
-            if stage == set(POSITION_GRID_KEYS):
+            if all(bulk_close_role(key) for key in stage):
+                fresh = inspect_bulk_targets(original, self.platform, state['report'].targets,
+                                             self.app.windows.list_windows(), process_id_for_window)
+            elif stage == set(POSITION_GRID_KEYS):
                 fresh = scan_position_grid(
                     original.handle, self.platform, state["report"].targets
                 )
@@ -6801,8 +6875,11 @@ class CalibrationDialog(ThemedDialog):
                     raise CalibrationConfirmationError(
                         f"{key} 的欄位已移動或辨識變更，請重新掃描並預覽"
                     )
+            visible = self.app.windows.list_windows()
+            if all(bulk_close_role(key) for key in stage):
+                visible = bulk_platform_windows(original, visible, process_id_for_window)
             points = candidate_calibration_points(
-                fresh, selected, self.app.windows.list_windows(),
+                fresh, selected, visible,
                 original, ctx["pid"], process_id_for_window,
             )
             save_confirmed_points(self.app, self.platform, points)
@@ -7081,6 +7158,13 @@ class CalibrationDialog(ThemedDialog):
                 from .mouse_guard import PhysicalMouseGuard
                 countdown = (5, 4, 3, 2, 1) if guided_close_capture else (3, 2, 1)
                 with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    bulk_role = bulk_close_role(key)
+                    bulk_main = None
+                    if bulk_role:
+                        bulk_main = _bound_broker_main(self.app, self.platform, bulk_role, display_only=True)
+                        if self.platform != 'cTrader':
+                            profile = self.app.store.data['platforms'][self.platform]
+                            open_mt5_context(WindowController(abort), bulk_main, profile.get('points', {}).get('position_order_row'))
                     for count in countdown:
                         self.preview_progress.emit(count)
                         if abort.event.wait(1):
@@ -7090,7 +7174,18 @@ class CalibrationDialog(ThemedDialog):
                     if abort.event.is_set():
                         self.capture_finished.emit({"cancelled": True})
                         return
-                    active = self.app.windows.window_at_cursor()
+                    if bulk_main is not None:
+                        cursor_x, cursor_y = self.app.windows.cursor_position()
+                        candidates = [win for win in bulk_platform_windows(bulk_main, self.app.windows.list_windows(), process_id_for_window)
+                                      if win.left <= cursor_x < win.right and win.top <= cursor_y < win.bottom]
+                        if not candidates:
+                            raise AutomationError('游標不在指定場別的平台內，未儲存。')
+                        active = min(candidates, key=lambda win: win.width*win.height)
+                    else:
+                        active = self.app.windows.window_at_cursor()
+                    if bulk_main is not None and (not process_id_for_window(bulk_main.handle)
+                            or process_id_for_window(active.handle) != process_id_for_window(bulk_main.handle)):
+                        raise AutomationError('游標不在指定場別的平台程序內，沒有儲存。')
                     x, y = self.app.windows.cursor_position()
                     point = self.app.windows.relative_point(active, x, y)
                     point["window_title"] = re.escape(active.title)
@@ -7105,6 +7200,18 @@ class CalibrationDialog(ThemedDialog):
                         detected_rect = snapshot.rectangle
                     except Exception:
                         detected_rect = None
+                    if bulk_main is not None:
+                        from .calibration_scan import Control
+                        from .bulk_close_calibration import match_controls
+                        if snapshot is None:
+                            raise AutomationError('未能辨識選單項目，沒有儲存。請將游標放在欄位文字上。')
+                        probe = Control(snapshot.control_type, snapshot.name, snapshot.automation_id,
+                                        detected_rect or (x-4, y-4, x+4, y+4), ancestors=(active.title,))
+                        report = match_controls(self.platform, ((key, ''),), [probe])
+                        if key not in report.candidates:
+                            raise AutomationError('游標不在指定的批量平倉欄位，沒有儲存。')
+                        point['calibration_role'] = bulk_role
+                        point['control_name'] = snapshot.name
                     preview_rect, preview_source = manual_capture_confirmation_rect(
                         x, y, detected_rect
                     )
@@ -7200,7 +7307,34 @@ class CalibrationDialog(ThemedDialog):
             )
         self._preview_saved_calibration(rectangles, markers)
 
+    def _save_bulk_close_scope(self, role: str, checked: bool) -> None:
+        choice = self.bulk_scope_checkboxes[role]
+        data = getattr(getattr(self.app, 'store', None), 'data', None)
+        if data is None:
+            return
+        old = dict(data.get('ui', {}).get('rest_close_all', {}))
+        if checked:
+            caption = '場內' if role == 'internal' else '場外'
+            if QMessageBox.question(self, '確認平倉範圍',
+                    f'之後執行休市平倉時，關閉{caption}帳戶所有持倉？',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                choice.blockSignals(True)
+                choice.setChecked(old.get(role) is True)
+                choice.blockSignals(False)
+                return
+        data.setdefault('ui', {})['rest_close_all'] = dict(old, **{role: checked})
+        try:
+            self.app.save_config()
+        except OSError:
+            data['ui']['rest_close_all'] = old
+            choice.blockSignals(True)
+            choice.setChecked(old.get(role) is True)
+            choice.blockSignals(False)
+            QMessageBox.warning(self, '儲存失敗', '平倉範圍未儲存，請重試。')
+
     def _display_role(self, key: str) -> str:
+        if bulk_close_role(key):
+            return bulk_close_role(key)
         if key.startswith("position_") or key == "positions_entry_price":
             # Both platforms can be configured on either side. The native
             # post-entry column belongs to the currently selected platform,
