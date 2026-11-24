@@ -230,6 +230,32 @@ def calculate_ruler_from_sheet(
     ), ""
 
 
+def render_mobile_ruler(state):
+    """Use the desktop painter at phone width, including all grouping/labels."""
+    if state is None:
+        return b''
+    from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPoint
+    from PySide6.QtGui import QImage, QRegion
+    widget = AccountRuler(compact=True)
+    widget.resize(340, 166)
+    widget.set_state(state)
+    image = QImage(680, widget.height()*2, QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+    painter = QPainter(image)
+    painter.scale(2, 2)
+    try:
+        widget.render(painter, QPoint(), QRegion(), QWidget.DrawChildren)
+    finally:
+        painter.end()
+        widget.deleteLater()
+    output = QByteArray()
+    buffer = QBuffer(output)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, 'PNG')
+    buffer.close()
+    return bytes(output)
+
+
 class AccountRuler(QWidget):
     """Read-only, hover-aware account ruler with grouped threshold labels.
 

@@ -31,14 +31,15 @@ class HeaderMenuLayoutTests(unittest.TestCase):
              patch.object(gui.TradingHelperApp,"create_profile",lambda _:self.events.append("create")), \
              patch.object(gui.TradingHelperApp,"save_current_profile",lambda _:self.events.append("save")), \
              patch.object(gui.TradingHelperApp,"rename_profile",lambda _:self.events.append("rename")), \
-             patch.object(gui.TradingHelperApp,"delete_profile",lambda _:self.events.append("delete")):
+             patch.object(gui.TradingHelperApp,"delete_profile",lambda _:self.events.append("delete")), \
+             patch.object(gui.TradingHelperApp,"open_mobile_remote",lambda _:self.events.append("mobile")):
             self.window=gui.TradingHelperApp()
 
     def tearDown(self):
         self.window.close()
         self.window.deleteLater()
 
-    def test_management_menu_all_four_actions_still_work(self):
+    def test_management_menu_preserves_four_actions_and_opens_mobile_setup(self):
         manage=self.window.profile_manage_button
         self.assertIsInstance(manage,QToolButton)
         self.assertEqual(manage.popupMode(),QToolButton.InstantPopup)
@@ -46,12 +47,12 @@ class HeaderMenuLayoutTests(unittest.TestCase):
         self.assertIs(menu,self.window.profile_manage_menu)
         labels=[a.text() for a in menu.actions() if not a.isSeparator()]
         self.assertEqual(labels,[
-            "建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案"
+            "建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案","手機連線"
         ])
         for action in menu.actions():
             if not action.isSeparator():
                 action.trigger()
-        self.assertEqual(self.events,["create","save","rename","delete"])
+        self.assertEqual(self.events,["create","save","rename","delete","mobile"])
 
     def test_phase1_flat_toolbar_preserves_actions_and_native_window_chrome(self):
         from PySide6.QtWidgets import QPushButton, QToolButton, QFrame

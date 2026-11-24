@@ -29,6 +29,23 @@ def sheet_values():
     }
 
 
+class MobileRulerRenderingTests(unittest.TestCase):
+    def test_shared_phone_ruler_is_sharp_and_has_no_white_window_background(self):
+        from PySide6.QtGui import QImage
+        from trading_helper.progress_ruler import render_mobile_ruler
+        app = QApplication.instance() or QApplication([])
+        state, reason = calculate_ruler_from_sheet(sheet_values(), balance=D('50000'), daily_pnl=D('0'))
+        self.assertFalse(reason)
+        raw = render_mobile_ruler(state)
+        self.assertTrue(raw.startswith(b'\x89PNG'))
+        image = QImage.fromData(raw)
+        self.assertFalse(image.isNull())
+        self.assertEqual(image.width(), 680)
+        self.assertEqual(image.height(), 372)
+        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+        app.processEvents()
+
+
 def instruction():
     return TradeInstruction(
         source_row=2, status="", symbol="GOLD", sheet_direction="BUY",

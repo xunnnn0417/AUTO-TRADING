@@ -58,6 +58,39 @@ def summarize_interruption_reason(reason: str) -> str:
     return first
 
 
+def entry_spread_line(entry: dict) -> str:
+    """場內外點差 from the two confirmed fill prices.
+
+    Internal long / external short: internal − external. Internal short /
+    external long: external − internal. Positive means some slippage cost is
+    likely; negative is favourable. Empty when either price is missing.
+    """
+    from decimal import Decimal, InvalidOperation
+    fills = entry.get("leg_fills") if isinstance(entry, dict) else None
+    if not isinstance(fills, dict):
+        return ""
+    try:
+        internal = fills["internal"]
+        external = fills["external"]
+        internal_price = Decimal(str(internal["price"]))
+        external_price = Decimal(str(external["price"]))
+    except (KeyError, TypeError, InvalidOperation):
+        return ""
+    direction = str(internal.get("direction", "")).upper()
+    if direction == "BUY":
+        spread = internal_price - external_price
+    elif direction == "SELL":
+        spread = external_price - internal_price
+    else:
+        return ""
+    text = format(spread.normalize(), "f") if spread else "0"
+    if spread > 0:
+        return f"場內外點差：{text}，可能會有些許磨損"
+    if spread < 0:
+        return f"場內外點差：{text}，本次進場點差為負，可能不會有磨損"
+    return "場內外點差：0，沒有點差磨損"
+
+
 def build_entry_status_report(
     entry: dict | None, *, success: bool, sync_requested: bool,
     tv_requested: bool, reason: str = "",
@@ -112,7 +145,8 @@ def build_entry_status_report(
             return f"{label}（{platform}）：持倉讀取失敗，成交待核對"
         return f"{label}（{platform}）：{'已確認進場' if verified else '尚未確認進場'}"
 
-    parts = [
+    spread = entry_spread_line(entry) if internal and external else ""
+    parts = ([spread] if spread else []) + [
         side("場內", internal_platform, internal),
         side("場外", external_platform, external),
     ]

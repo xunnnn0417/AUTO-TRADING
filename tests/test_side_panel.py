@@ -33,6 +33,31 @@ class SidePanelTests(unittest.TestCase):
         self.qtapp.processEvents()
         return self.w.side_panel
 
+    def test_late_window_move_is_redocked_after_geometry_events_settle(self):
+        panel = self.open_panel()
+        area = panel._screen.availableGeometry()
+        for collapsed in (False, True, False):
+            panel.set_collapsed(collapsed)
+            # Reproduce the screenshot: an expanded panel retains the parked
+            # handle's x-coordinate after a late native geometry update.
+            panel.move(area.right()-27, panel.y())
+            self.qtapp.processEvents()
+            self.qtapp.processEvents()
+            self.assertLessEqual(panel.frameGeometry().right(), area.right())
+            self.assertGreaterEqual(panel.frameGeometry().left(), area.left())
+
+    def test_periodic_sync_repairs_native_drift_even_without_qt_move_events(self):
+        panel = self.open_panel()
+        with patch('trading_helper.side_panel.ensure_native_sidebar') as repair:
+            panel.sync_from_main()
+            repair.assert_called_once()
+            self.assertIs(repair.call_args.args[0], panel)
+            panel._handle_dragging = True
+            repair.reset_mock()
+            panel.sync_from_main()
+            repair.assert_not_called()
+            panel._handle_dragging = False
+
     def test_shared_drafts_placeholders_and_enter_use_existing_update_flow(self):
         panel = self.open_panel()
         self.w.instruction = sample()
@@ -57,6 +82,58 @@ class SidePanelTests(unittest.TestCase):
         with patch.object(self.w, '_launch_fill') as launch:
             panel.fill_button.click()
         launch.assert_called_once_with(('internal', 'external'))
+
+    def test_sidebar_stage_mirrors_options_and_uses_main_setting_flow(self):
+        from trading_helper.sheet_preferences import TradeSheetSettings
+        panel = self.open_panel()
+        settings = TradeSheetSettings('第一階段', ('第一階段','真金階段'),
+                                     dict(C2=False,B6=False,E14=True))
+        self.w._show_trade_sheet_settings((self.w._trade_settings_context(),settings,''))
+        with patch.object(self.w, '_confirm_trade_setting') as change:
+            panel.sync_from_main()
+            change.assert_not_called()
+            self.assertEqual(panel.stage_selector.currentText(),'第一階段')
+            panel.stage_selector.setCurrentText('真金階段')
+            change.assert_called_once_with('A4','真金階段')
+        self.w._trade_settings_busy = True
+        panel.sync_from_main()
+        self.assertFalse(panel.stage_selector.isEnabled())
+        self.w._trade_settings_busy = False
+
+    def test_stage_popup_keyboard_selection_keeps_the_shared_stage_action(self):
+        from trading_helper.sheet_preferences import TradeSheetSettings
+        panel = self.open_panel()
+        settings = TradeSheetSettings('第一階段', ('第一階段', '真金階段'), dict(C2=False, B6=False, E14=True))
+        self.w._show_trade_sheet_settings((self.w._trade_settings_context(), settings, ''))
+        panel.sync_from_main()
+        combo = panel.stage_selector
+        with patch.object(self.w, '_confirm_trade_setting') as change:
+            combo.showPopup()
+            self.qtapp.processEvents()
+            self.assertTrue(combo.view().isVisible())
+            QTest.keyClick(combo.view(), Qt.Key_Down)
+            QTest.keyClick(combo.view(), Qt.Key_Return)
+            self.qtapp.processEvents()
+            self.assertFalse(combo.view().isVisible())
+            self.assertEqual(combo.currentText(), '真金階段')
+            change.assert_called_once_with('A4', '真金階段')
+
+    def test_sidebar_has_only_one_seconds_countdown_without_more_source_requests(self):
+        panel = self.open_panel()
+        now = datetime.now(UTC)
+        panel.calendar.events = [CalendarEvent(now+timedelta(seconds=42),'USD','CPI')]
+        with patch('trading_helper.side_panel.datetime') as clock, \
+                patch.object(panel.calendar,'refresh') as refresh:
+            clock.now.return_value = now
+            panel.update_event_summary()
+            self.assertIn('42 秒',panel.events_button.text())
+            clock.now.return_value = now+timedelta(seconds=1)
+            panel.update_event_summary()
+            self.assertIn('41 秒',panel.events_button.text())
+            refresh.assert_not_called()
+        self.assertEqual(panel.summary_timer.interval(),1000)
+        self.assertTrue(panel.event_view.countdown_label.isHidden())
+        self.assertFalse(panel.event_view.countdown_timer.isActive())
 
     def test_profile_values_ruler_and_enabled_state_are_mirrored(self):
         panel = self.open_panel()
@@ -102,7 +179,8 @@ class SidePanelTests(unittest.TestCase):
         self.assertTrue(panel.collapsed)
         self.w._active_tasks = 0
         self.w._restore_after_operation()
-        self.assertFalse(self.w.isVisible())
+        # Not brought back to the front: only minimised, keeping its taskbar button.
+        self.assertTrue(self.w.isMinimized())
         self.assertTrue(panel.isVisible())
         self.assertTrue(panel.collapsed)
         # Opening the main UI explicitly restores its original behavior.
@@ -144,8 +222,9 @@ class SidePanelTests(unittest.TestCase):
         panel.calendar.source_times = dict.fromkeys(SOURCE_URLS, datetime.now(UTC))
         panel.update_events()
         self.assertIn('1 小時', panel.events_button.text())
-        self.assertEqual(panel.event_rows.textFormat(), Qt.PlainText)
+        self.assertFalse(panel.event_rows.openExternalLinks())
         self.assertIn('<b>Rate</b>', panel.event_rows.text())
+        self.assertIn('&lt;b&gt;Rate&lt;/b&gt;', panel.event_rows.toHtml())
         panel.calendar.error = '暫時無法更新'
         panel.update_events()
         self.assertIn('待更新', panel.event_status.text())
@@ -271,7 +350,7 @@ class SidePanelTests(unittest.TestCase):
         panel.update_events()
         self.assertNotIn('10 天', panel.events_button.text())
         self.assertIn('下一場', panel.events_button.text())
-        self.assertIn('金價受美元走強影響', panel.news_rows.text())
+        self.assertNotIn('金價受美元走強影響', panel.news_rows.text())
         self.assertIn('GDP', panel.event_rows.text())
 
     def test_event_sources_start_collapsed_each_time_and_only_two_tabs_remain(self):
@@ -287,6 +366,51 @@ class SidePanelTests(unittest.TestCase):
         self.assertFalse(panel.source_details.isVisible())
         self.assertIn('今日事件範圍', panel.events_button.toolTip())
         self.assertNotIn('提醒交易日', panel.events_button.toolTip())
+
+    def test_news_outside_click_dismisses_only_news_and_preserves_click(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(panel.event_tabs.tabBar(), Qt.LeftButton)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(panel.inputs['daily_pnl'], Qt.LeftButton)
+        self.assertTrue(panel.event_flyout.isVisible())
+        QTest.mouseClick(self.w.parameter_inputs['daily_pnl'], Qt.LeftButton)
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(panel.events_button.isChecked())
+        self.assertTrue(panel.isVisible())
+        self.assertFalse(panel.collapsed)
+        QTest.keyClicks(self.w.parameter_inputs['daily_pnl'], '123')
+        self.assertEqual(self.w.parameter_inputs['daily_pnl'].text(), '123')
+
+    def test_native_window_presses_on_news_controls_do_not_dismiss_flyout(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        self.qtapp.processEvents()
+        for widget in (panel.event_view.refresh_button, panel.event_status, panel.news_rows.viewport()):
+            global_point = QPointF(widget.mapToGlobal(widget.rect().center()))
+            event = QMouseEvent(QEvent.MouseButtonPress, QPointF(widget.rect().center()),
+                                global_point, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            panel.eventFilter(panel.event_flyout.windowHandle(), event)
+            self.assertTrue(panel.event_flyout.isVisible())
+        with patch.object(panel.calendar, 'refresh') as refresh:
+            QTest.mouseClick(panel.event_view.refresh_button, Qt.LeftButton)
+            refresh.assert_called_once_with(force=True)
+        QTest.mouseClick(panel.event_status, Qt.LeftButton)
+        self.assertTrue(panel.source_details.isVisible())
+        self.assertTrue(panel.event_flyout.isVisible())
+
+    def test_news_switching_to_another_app_dismisses_without_hiding_sidebar(self):
+        panel = self.open_panel()
+        panel.events_button.setChecked(True)
+        QApplication.sendEvent(self.qtapp, QEvent(QEvent.ApplicationDeactivate))
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertFalse(panel.events_button.isChecked())
+        self.assertTrue(panel.isVisible())
+        self.assertFalse(panel.collapsed)
+        panel.events_button.setChecked(True)
+        self.assertTrue(panel.event_flyout.isVisible())
+        self.assertFalse(panel.event_status.isChecked())
 
     def test_single_line_event_summary_keeps_full_title_in_tooltip(self):
         panel = self.open_panel()
@@ -395,7 +519,11 @@ class SidePanelTests(unittest.TestCase):
         panel = self.open_panel()
         panel.set_collapsed(True)
         QTest.mousePress(panel.handle, Qt.LeftButton)
-        QTest.qWait(240)
+        for _ in range(50):
+            if panel._handle_dragging:
+                break
+            QTest.qWait(20)
+        self.assertTrue(panel._handle_dragging)
         self.assertEqual(panel.width(), panel.height())
         self.assertFalse(panel.mask().isEmpty())
         area = panel.screen().availableGeometry()
@@ -464,3 +592,72 @@ class SidePanelTests(unittest.TestCase):
         self.assertTrue(panel.mask().isEmpty())
         QTest.mouseClick(panel.handle, Qt.LeftButton)
         self.assertFalse(panel.collapsed)
+
+
+class SideProfileSelectorTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_profile_selector_comes_before_stage_and_switches_main(self):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.toggle_side_panel(True)
+        self.qtapp.processEvents()
+        panel = self.w.side_panel
+        panel.sync_from_main()
+        row = panel.stage_selector.parentWidget().layout()
+        self.assertLess(row.indexOf(panel.profile_selector), row.indexOf(panel.stage_selector))
+        names = [panel.profile_selector.itemText(i) for i in range(panel.profile_selector.count())]
+        self.assertEqual(names, [self.w.profile_combo.itemText(i) for i in range(self.w.profile_combo.count())])
+        with patch.object(self.w.profile_combo, 'setCurrentText') as switch:
+            panel.profile_selector.setEnabled(True)
+            panel._profile_selected('另一方案')
+        switch.assert_called_once_with('另一方案')
+
+
+class SidePanelStartupTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_launch_parks_the_side_panel_collapsed(self):
+        self.w.side_panel_checkbox.blockSignals(True)
+        self.w.side_panel_checkbox.setChecked(True)
+        self.w.side_panel_checkbox.blockSignals(False)
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.initialize_side_panel()
+        self.qtapp.processEvents()
+        self.assertTrue(self.w.side_panel.isVisible())
+        self.assertTrue(self.w.side_panel.collapsed)
+
+
+class SideOriginDialogTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_side_action_dialog_belongs_to_side_panel_and_stays_on_top(self):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.toggle_side_panel(True)
+        panel = self.w.side_panel
+        self.w._side_action_active = True
+        try:
+            box = gui.ThemedMessageBox(self.w)
+        finally:
+            self.w._side_action_active = False
+        self.addCleanup(box.close)
+        self.assertIs(box.parentWidget(), panel)
+        self.assertTrue(box.windowFlags() & gui.Qt.WindowStaysOnTopHint)
+        self.assertTrue(box.isWindow())
+        plain = gui.ThemedMessageBox(self.w)
+        self.addCleanup(plain.close)
+        self.assertIs(plain.parentWidget(), self.w)

@@ -253,20 +253,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(abs(pos(heading).y()-pos(w.reload_sheet_button).y()),12)
                 self.assertGreater(w.internal_platform.width(),150)
                 self.assertGreater(w.external_platform.width(),150)
-                self.assertEqual(
-                    w.test_controls.parentWidget(),
-                    w.auto_draw_tv_after_entry.parentWidget(),
-                )
-                self.assertEqual(set(w.test_asset_checkboxes), {"BTCUSD", "ETHUSD"})
-                self.assertEqual(len(w.test_scenario_checkboxes), 4)
-                for choice in (
-                    *w.test_asset_checkboxes.values(),
-                    *w.test_scenario_checkboxes.values(),
-                ):
-                    self.assertEqual(
-                        choice.parentWidget(),
-                        w.test_controls,
-                    )
+                self.assertFalse(hasattr(w, "test_controls"))
                 summary=w.trade_page.findChildren(QWidget,"centeredSummaryCell")
                 self.assertEqual(len(summary),4)
                 self.assertTrue(summary[0].isAncestorOf(w.stage_selector))
@@ -346,7 +333,7 @@ class ThreeWorkspaceTests(unittest.TestCase):
         self.assertEqual(w.auto_entry_on_fill_both.isChecked(),False)
         self.assertEqual(
             [a.text() for a in w.profile_manage_menu.actions() if not a.isSeparator()],
-            ["建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案"]
+            ["建立新方案","儲存目前方案","重新命名目前方案","刪除目前方案","手機連線"]
         )
         # Page navigation never writes a trading config or triggers a trade.
         w.store.data["ui"]["test_marker"]="not modified"

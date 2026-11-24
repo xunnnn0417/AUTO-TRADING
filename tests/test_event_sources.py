@@ -12,6 +12,23 @@ NOW = datetime(2026, 11, 15, tzinfo=timezone.utc)
 
 
 class EventSourceTests(unittest.TestCase):
+    def test_release_values_and_rss_content_survive_cache_without_markup(self):
+        rows = [dict(title='CPI', country='USD', impact='High', date='2026-11-18T01:00:00Z',
+                     actual='2.4%', forecast='2.5%', previous='2.3%')]
+        event = calendar.parse_events(rows)[0]
+        self.assertIn('公布值：2.4%', event.details)
+        raw = b'<rss><channel><item><title>Trump announces tariffs</title><description><![CDATA[<p>New tariffs 10%</p><script>bad()</script><img src="file:///private">]]></description><pubDate>Wed, 18 Nov 2026 01:00:00 GMT</pubDate></item></channel></rss>'
+        news = calendar.parse_announcements(raw, 'Fed')[0]
+        self.assertEqual(news.details, 'New tariffs 10%')
+        with tempfile.TemporaryDirectory() as folder:
+            service = calendar.EconomicCalendar(Path(folder)/'events.json')
+            service._translation_enabled = False
+            service._apply([('ff', [event], NOW, ''), ('fed', [news], NOW, '')])
+            reopened = calendar.EconomicCalendar(service.path)
+            self.assertEqual(reopened.events[0].details, event.details)
+            self.assertEqual(reopened.news[0].details, news.details)
+            service.close()
+            reopened.close()
     def test_manual_refresh_bypasses_fresh_cache_and_backoff_without_duplicates(self):
         with tempfile.TemporaryDirectory() as folder:
             service = calendar.EconomicCalendar(Path(folder)/'events.json')

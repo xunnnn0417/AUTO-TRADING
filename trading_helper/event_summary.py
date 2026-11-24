@@ -1,9 +1,9 @@
 """Read-only event wording for the helper's configured trading-day interval."""
 from datetime import datetime, timedelta
-import re
 
-from .calendar_events import TAIPEI, countdown
+from .calendar_events import TAIPEI, countdown, format_event_time
 from .trading_day import trading_day_key
+from .news_relevance import assess_headline
 
 
 def trading_session(now, settings):
@@ -24,20 +24,21 @@ def trading_session(now, settings):
 
 
 def relevant_announcement(title):
-    if re.search(r'tentative schedule|banking data|digital euro|supervis|regulat', title, re.I):
-        return False
-    return bool(re.search(r'interest rate|monetary policy|FOMC|inflation|employment|Powell|rate decision', title, re.I))
+    """Listed in the news pages: every market-related headline the sources
+    keep (they are filtered by market topics when read), except routine
+    notices and plain price recaps. Pop-ups / phone pushes use the stricter `.push`."""
+    return assess_headline(title).category not in ('一般公告', '行情回顧')
 
 
 def event_summary(events, now, settings, day_is_loaded, title=lambda text: text):
     start, end = trading_session(now, settings)
     ordered = sorted(events)
-    today = [event for event in ordered if start <= event.when < end]
+    today = [event for event in ordered if start <= event.when < end and event.source != '休市提醒']
     upcoming = [event for event in ordered if event.when > now]
     remaining_today = [event for event in today if event.when > now]
-    if remaining_today:
-        event = remaining_today[0]
-        return f'再過 {countdown(event.when, now).removesuffix("後")} · {title(event.title)}'
+    if remaining_today or (upcoming and upcoming[0].source == '休市提醒'):
+        event = upcoming[0]
+        return f'再過 {countdown(event.when, now).removesuffix("後")} · {format_event_time(event.when)} · {title(event.title)}'
     prefix = ('今日排程尚未完整更新' if not day_is_loaded else
               '今日重大事件已公布' if today else '今日無已知重大排程')
     if not upcoming:
@@ -46,4 +47,5 @@ def event_summary(events, now, settings, day_is_loaded, title=lambda text: text)
     when = event.when.astimezone(TAIPEI)
     offset = (when.date()-now.astimezone(TAIPEI).date()).days
     day = '今日' if offset == 0 else '明日' if offset == 1 else when.strftime('%m/%d')
-    return f'{prefix} · 下一場：{day} {when:%H:%M}｜{title(event.title)}'
+    remaining = countdown(event.when, now).removesuffix('後')
+    return f'{prefix} · 下一場：{day} {format_event_time(event.when)} · 再過 {remaining}｜{title(event.title)}'

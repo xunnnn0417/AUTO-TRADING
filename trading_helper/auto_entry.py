@@ -50,6 +50,12 @@ def _same_account_identity(current: DemoAccount, expected: DemoAccount) -> bool:
     )
 
 
+def _store_leg_fill(entry: dict, role: str, pos) -> None:
+    fills=dict(entry.get("leg_fills",{}))
+    fills[role]={"price":str(pos.entry_price),"direction":str(pos.direction)}
+    entry["leg_fills"]=fills
+
+
 @dataclass(frozen=True)
 class Position:
     ticket: str
@@ -194,10 +200,21 @@ class AutoEntryJournal:
                 raise RecoveryRequired("同一邊出現不同的成交編號，不可補單。")
             confirmed[role]=pos.ticket
             entry["confirmed_legs"]=confirmed
+            _store_leg_fill(entry,role,pos)
             entry["status"]=f"confirmed_{role}"
             entry["time"]=time.strftime("%Y-%m-%d %H:%M:%S")
             data[key]=entry
             self._write(data)
+
+    def note_leg_fill(self, key: str, role: str, pos: Position) -> None:
+        """Keep the leg's fill price/direction for the receipt's spread line."""
+        with self._lock:
+            data=self._all()
+            entry=data.get(key)
+            if isinstance(entry,dict) and role in ("internal","external"):
+                _store_leg_fill(entry,role,pos)
+                data[key]=entry
+                self._write(data)
 
     def record(self, key: str, status: str, details: str = "") -> None:
         with self._lock:
@@ -581,6 +598,7 @@ class AutoEntryWorkflow:
             )
             phase_times["成交資料核對"]=(time.perf_counter()-validate_started)*1000
             self.journal.record(key,f"filled_{role}",f"ticket={pos.ticket}")
+            self.journal.note_leg_fill(key,role,pos)
             self.log(f"{role} {platform} 成交已確認：{pos.ticket}")
             return pos
         finally:

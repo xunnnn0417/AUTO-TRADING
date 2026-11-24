@@ -429,66 +429,7 @@ class SingleLegTestModeTests(unittest.TestCase):
             "user_close_confirmed",
         )
 
-    def test_ui_routes_test_selection_only_from_fill_both(self):
-        fake = SimpleNamespace(
-            test_scenario_checkboxes={
-                "reentry:internal": SimpleNamespace(isChecked=lambda: True),
-            },
-            test_asset_checkboxes={},
-        )
-        self.assertEqual(
-            TradingHelperApp._selected_test_action(
-                fake, ("internal", "external")
-            ),
-            "reentry:internal",
-        )
-        self.assertIsNone(
-            TradingHelperApp._selected_test_symbol(fake, ("internal", "external"))
-        )
-        asset_fake = SimpleNamespace(
-            test_scenario_checkboxes={},
-            test_asset_checkboxes={
-                "BTCUSD": SimpleNamespace(isChecked=lambda: True),
-            },
-        )
-        self.assertEqual(
-            TradingHelperApp._selected_test_action(
-                asset_fake, ("internal", "external")
-            ),
-            "weekend:BTCUSD",
-        )
-        self.assertEqual(
-            TradingHelperApp._selected_test_symbol(
-                asset_fake, ("internal", "external")
-            ),
-            "BTCUSD",
-        )
-        self.assertEqual(
-            TradingHelperApp._selected_test_action(fake, ("internal",)), ""
-        )
 
-    def test_test_checkbox_group_allows_only_one_action_but_can_be_empty(self):
-        from PySide6.QtWidgets import QApplication, QCheckBox
-        app = QApplication.instance() or QApplication([])
-        first, second = QCheckBox(), QCheckBox()
-        group = {"first": first, "second": second}
-        first.toggled.connect(
-            lambda checked: TradingHelperApp._exclusive_optional_checkbox(
-                group, first, checked
-            )
-        )
-        second.toggled.connect(
-            lambda checked: TradingHelperApp._exclusive_optional_checkbox(
-                group, second, checked
-            )
-        )
-        first.setChecked(True)
-        second.setChecked(True)
-        self.assertFalse(first.isChecked())
-        self.assertTrue(second.isChecked())
-        second.setChecked(False)
-        self.assertFalse(first.isChecked())
-        self.assertFalse(second.isChecked())
 
     def test_weekend_override_scope_is_temporary(self):
         import os

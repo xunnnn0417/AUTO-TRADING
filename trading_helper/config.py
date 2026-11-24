@@ -368,7 +368,7 @@ class ProfileStore:
             "auto_draw_tv_after_entry",
         ):
             fresh.setdefault("ui", {})[field] = False
-        fresh.setdefault("ui", {})["auto_sync_sl_tp_after_entry"] = True
+        fresh.setdefault("ui", {})["auto_sync_sl_tp_after_entry"] = False
         fresh["ui"]["auto_fast_pair"] = True
         fresh["ui"]["internal_platform"] = ""
         fresh["ui"]["external_platform"] = ""
