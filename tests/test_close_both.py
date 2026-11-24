@@ -1,6 +1,7 @@
 """兩邊平倉 / 休市平倉: exact clicks, two confirmations, countdown window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import itertools
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
@@ -164,3 +165,23 @@ class CloseBothConfirmationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Mt5CloseReadbackTests(unittest.TestCase):
+    def run_close(self, reads):
+        reads = iter(reads)
+        with patch.object(close_both, "open_mt5_context"), \
+             patch.object(close_both, "hover_mt5_bulk_actions"), \
+             patch.object(close_both, "find_mt5_menu_item", return_value=(10, 10, 50, 30)), \
+             patch.object(close_both, "last_mt5_match_enabled", return_value=True), \
+             patch.object(close_both.time, "sleep"), \
+             patch.object(close_both.time, "monotonic", side_effect=itertools.count(0, 0.5)):
+            return close_both.close_mt5(Mock(), "main", {"position_order_row": {"x": 1}}, lambda h: 1,
+                                        Abort(), lambda x, y: None, lambda k: None,
+                                        read_positions=lambda: next(reads))
+
+    def test_empty_position_list_confirms_the_close(self):
+        self.assertIn("已平倉", self.run_close([("p1",), ()]))
+
+    def test_positions_still_open_are_reported(self):
+        self.assertIn("還讀到 2 筆", self.run_close([("p1", "p2")] * 100))

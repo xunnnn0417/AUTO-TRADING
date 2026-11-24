@@ -126,8 +126,8 @@ class SideQuickPanel(QWidget):
             QPushButton#sideFill { background: #7053d9; border: 1px solid #9278ed; min-height: 26px; padding: 3px; }
             QPushButton#sideFill:hover { background: #8063e9; }
             QPushButton#sideFill:disabled { background: #393442; border-color: #494050; }
-            QToolButton#sideCloseBoth { background: #4a1d24; border: 1px solid #b14a58; border-radius: 7px; }
-            QToolButton#sideCloseBoth:hover { background: #5e2430; }
+            QToolButton#sideCloseBoth { background: transparent; border: 1px solid #6a55d8; border-radius: 7px; }
+            QToolButton#sideCloseBoth:hover { background: #1f1a33; border-color: #8a75ee; }
             QToolButton#sideHome { border: 1px solid rgba(245,243,250,55); border-radius: 7px; }
             QToolButton#sideHandle, QToolButton#sideHandle:hover { background: transparent; border: 0; padding: 0; }
             QScrollArea { background: transparent; border: 0; }
@@ -239,10 +239,53 @@ class SideQuickPanel(QWidget):
                 badge.installEventFilter(self)
                 entry.installEventFilter(self)
                 self.warnings[key] = badge
+            if key == 'internal_balance':
+                # Same as the main window: read icon flush inside the box.
+                from .gui import _InlineFieldControls
+                self.read_balance_button = QToolButton(entry)
+                self.read_balance_button.setObjectName('sideReadBalance')
+                self.read_balance_button.setIcon(themed_icon('download', '#9a90b0', 14))
+                self.read_balance_button.setCursor(Qt.PointingHandCursor)
+                self.read_balance_button.setFixedSize(28, 28)
+                self.read_balance_button.setToolTip('讀取場內餘額')
+                self.read_balance_button.setStyleSheet(
+                    'QToolButton#sideReadBalance { background: transparent; border: 0; border-radius: 0;'
+                    ' border-top-right-radius: 6px; border-bottom-right-radius: 6px; padding: 0; }'
+                    'QToolButton#sideReadBalance:hover { background: #26232f; }')
+                self.read_balance_button.clicked.connect(lambda: app.read_internal_balance('side'))
+                entry.setTextMargins(0, 0, 44, 0)
+                self._balance_inline = _InlineFieldControls(entry, (), self.read_balance_button)
             controls.append((caption, entry))
         for index, (caption, widget) in enumerate(controls):
             label = QLabel(caption)
             label.setProperty('muted', True)
+            if widget is self.inputs.get('internal_balance'):
+                # 「~」「−」 on the caption row's right: no width taken from the box.
+                head = QWidget()
+                head_layout = QHBoxLayout(head)
+                head_layout.setContentsMargins(0, 0, 0, 0)
+                head_layout.setSpacing(3)
+                head_layout.addWidget(label)
+                head_layout.addStretch(1)
+                self.balance_prefix_buttons = {}
+                for symbol in ('~', '-'):
+                    key_button = QToolButton(head)
+                    key_button.setObjectName('sideBalancePrefix' + ('Tilde' if symbol == '~' else 'Minus'))
+                    key_button.setText('~' if symbol == '~' else '\u2212')
+                    key_button.setCheckable(True)
+                    key_button.setFixedSize(16, 16)
+                    key_button.setCursor(Qt.PointingHandCursor)
+                    key_button.setStyleSheet(
+                        'QToolButton { padding: 0; min-height: 0; font-size: 11px; border: 1px solid #4a4356;'
+                        ' border-radius: 3px; background: #1d1b24; color: #d8d2e4; }'
+                        'QToolButton:hover { background: #292733; border-color: #62568e; }'
+                        'QToolButton:checked { background: #3a2f6e; border-color: #8a6fe0; color: #ffffff; }')
+                    key_button.clicked.connect(lambda _c=False, s=symbol: app._toggle_balance_prefix(s))
+                    head_layout.addWidget(key_button)
+                    self.balance_prefix_buttons[symbol] = key_button
+                grid.addWidget(head, (index // 2) * 2, index % 2)
+                grid.addWidget(widget, (index // 2) * 2 + 1, index % 2)
+                continue
             grid.addWidget(label, (index // 2) * 2, index % 2)
             grid.addWidget(widget, (index // 2) * 2 + 1, index % 2)
         root.addLayout(grid)
@@ -258,7 +301,7 @@ class SideQuickPanel(QWidget):
         self.close_both_button.setObjectName('sideCloseBoth')
         self.close_both_button.setAccessibleName('兩邊平倉')
         self.close_both_button.setToolTip('兩邊平倉：平掉場內、場外全部持倉（會確認兩次）')
-        self.close_both_button.setIcon(themed_icon('square-x', '#ffb4b4', 16))
+        self.close_both_button.setIcon(themed_icon('square-x', '#c9b8ff', 16))
         self.close_both_button.setFixedSize(36, 36)
         self.close_both_button.clicked.connect(app.close_both_from_side_panel)
         actions.addWidget(self.close_both_button)
@@ -392,6 +435,13 @@ class SideQuickPanel(QWidget):
             source = app.parameter_inputs[key]
             if entry.text() != source.text():
                 entry.setText(source.text())
+            if key == 'internal_balance' and hasattr(self, 'balance_prefix_buttons'):
+                tilde, minus, _body = app._split_balance_prefix(source.text())
+                for symbol, state in (('~', tilde), ('-', minus)):
+                    button = self.balance_prefix_buttons[symbol]
+                    if button.isChecked() != state:
+                        button.setChecked(state)
+                    button.setEnabled(not busy and source.isEnabled())
             entry.setPlaceholderText(source.placeholderText())
             entry.setEnabled(not busy and source.isEnabled())
         with QSignalBlocker(self.direction):

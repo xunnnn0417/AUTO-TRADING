@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QIcon,
     QPainter,
     QPalette,
+    QPixmap,
     QPen,
     QKeySequence,
     QShortcut,
@@ -659,6 +660,33 @@ def _bound_broker_main(app, platform: str, role: str, *, display_only=False) -> 
     return app.windows.find(pattern)
 
 
+class _InlineFieldControls(QObject):
+    """Keep small buttons placed inside a QLineEdit as it resizes:
+    stacked toggles at the left edge, one action at the right (left of the
+    corner warning badge)."""
+
+    def __init__(self, entry, left_buttons, right_button):
+        super().__init__(entry)
+        self.entry, self.left, self.right = entry, left_buttons, right_button
+        entry.installEventFilter(self)
+        self.place()
+
+    def eventFilter(self, watched, event):
+        if watched is self.entry and event.type() in (QEvent.Resize, QEvent.Show):
+            self.place()
+        return False
+
+    def place(self):
+        height, width = self.entry.height(), self.entry.width()
+        stack = sum(b.height() for b in self.left) + 1
+        y = max(0, (height - stack) // 2)
+        for button in self.left:
+            button.move(3, y)
+            y += button.height() + 1
+        self.right.setFixedHeight(max(1, height - 2))
+        self.right.move(max(0, width - 1 - self.right.width()), 1)
+
+
 class UiSignals(QObject):
     log = Signal(str)
     status = Signal(str)
@@ -686,6 +714,7 @@ class UiSignals(QObject):
     auto_entry_result = Signal(object)
     remote_task_result = Signal(object)
     close_both_result = Signal(str)
+    internal_balance_read = Signal(object)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -991,6 +1020,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.status.connect(self._set_status)
         self.signals.error.connect(self._show_error)
         self.signals.close_both_result.connect(self._show_close_both_result)
+        self.signals.internal_balance_read.connect(self._apply_internal_balance_read)
         self._rest_close_done: set[str] = set()
         self._rest_close_countdown = None
         self._rest_close_timer = QTimer(self)
@@ -1723,13 +1753,72 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                 else:
                     self.balance_warning_container = field_widget
                     badge = self.balance_warning_badge
+                    # 「~」「−」: real buttons left of the box (in the label
+                    # column, so the box lines up with the field below);
+                    # the read icon stays inside the box at the right.
+                    self.balance_prefix_buttons = {}
+                    for symbol, name in (("~", "balancePrefixTilde"), ("-", "balancePrefixMinus")):
+                        toggle = QToolButton()
+                        toggle.setObjectName(name)
+                        toggle.setText("~" if symbol == "~" else "\u2212")
+                        toggle.setCheckable(True)
+                        toggle.setFixedSize(16, 16)  # square; two of them = box height
+                        toggle.setCursor(Qt.PointingHandCursor)
+                        toggle.setStyleSheet(
+                            "QToolButton { padding: 0; margin: 0; min-height: 0; font-size: 12px;"
+                            " border: 1px solid #4a4356; border-radius: 3px; background: #1d1b24; color: #d8d2e4; }"
+                            "QToolButton:hover { background: #292733; border-color: #62568e; }"
+                            "QToolButton:checked { background: #3a2f6e; border-color: #8a6fe0; color: #ffffff; }")
+                        toggle.clicked.connect(lambda _c=False, s=symbol: self._toggle_balance_prefix(s))
+                        self.balance_prefix_buttons[symbol] = toggle
+                    entry.textChanged.connect(self._sync_balance_prefix_buttons)
+                    self.read_balance_button = QToolButton(entry)
+                    self.read_balance_button.setObjectName("readInternalBalance")
+                    self.read_balance_button.setIcon(themed_icon("download", "#9a90b0", 14))
+                    self.read_balance_button.setIconSize(QSize(14, 14))
+                    self.read_balance_button.setCursor(Qt.PointingHandCursor)
+                    self.read_balance_button.setFixedSize(30, 32)
+                    # Flush with the box's right edge, no divider: part of the box.
+                    self.read_balance_button.setStyleSheet(
+                        "QToolButton#readInternalBalance { background: transparent; border: 0;"
+                        " border-radius: 0; border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
+                        " padding: 0; min-height: 0; }"
+                        "QToolButton#readInternalBalance:hover { background: #1d1b24; }")
+                    self.read_balance_button.setToolTip("讀取場內餘額")
+                    self.read_balance_button.clicked.connect(self.read_internal_balance)
+                    entry.setTextMargins(0, 0, 48, 0)
+                    self._balance_inline = _InlineFieldControls(entry, (), self.read_balance_button)
                 badge.setParent(field_widget)
                 badge.setFixedSize(12, 12)
                 field_widget.installEventFilter(self)
             self.parameter_inputs[key] = entry
-            parameter_layout.addWidget(
-                parameter_cell(label, field_widget), row, column
-            )
+            if key == "internal_balance":
+                cell = parameter_cell(label, field_widget)
+                caption = cell.layout().itemAt(0).widget()
+                head = QWidget(cell)
+                # Keys touch the box; the label column keeps the usual width
+                # plus spacing, so the box still lines up with the one below.
+                head.setFixedWidth(caption.minimumWidth() + cell.layout().spacing())
+                cell.layout().setSpacing(0)
+                head_layout = QHBoxLayout(head)
+                head_layout.setContentsMargins(0, 0, 0, 0)
+                head_layout.setSpacing(0)
+                cell.layout().replaceWidget(caption, head)
+                caption.setParent(head)
+                caption.setMinimumWidth(0)
+                head_layout.addWidget(caption)
+                head_layout.addStretch(1)
+                stack = QVBoxLayout()
+                stack.setContentsMargins(0, 0, 0, 0)
+                stack.setSpacing(2)
+                for toggle in self.balance_prefix_buttons.values():
+                    stack.addWidget(toggle)
+                head_layout.addLayout(stack)
+                parameter_layout.addWidget(cell, row, column)
+            else:
+                parameter_layout.addWidget(
+                    parameter_cell(label, field_widget), row, column
+                )
         # Place compact secondary actions DIRECTLY next to the entry-price
         # field, sharing that row's visual baseline. No separate button row.
         param_inline = QWidget(parameter_box)
@@ -1837,12 +1926,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         action_layout.addWidget(self.action_buttons["填入兩邊"], 1, 0, 1, 5)
         self.close_both_button = QPushButton("兩邊平倉")
         self.close_both_button.setObjectName("closeBothButton")
-        self.close_both_button.setIcon(themed_icon("square-x", "#ffb4b4", 13))
+        self.close_both_button.setIcon(themed_icon("square-x", "#c9b8ff", 13))
         self.close_both_button.setIconSize(QSize(13, 13))
         self.close_both_button.setStyleSheet(
-            "QPushButton#closeBothButton { background: #4a1d24; color: #ffd5d5;"
-            " border: 1px solid #b14a58; border-radius: 7px; padding: 3px 8px; }"
-            "QPushButton#closeBothButton:hover { background: #5e2430; }"
+            "QPushButton#closeBothButton { background: transparent; color: #c9b8ff;"
+            " border: 1px solid #6a55d8; border-radius: 7px; padding: 3px 8px; }"
+            "QPushButton#closeBothButton:hover { background: #1f1a33; border-color: #8a75ee; color: #e1d8ff; }"
             "QPushButton#closeBothButton:disabled { background: #2a2027; color: #7f6c72; border-color: #4a3a40; }")
         self.close_both_button.setToolTip("平掉場內、場外兩個帳戶的全部持倉；會先確認兩次。")
         self.close_both_button.clicked.connect(lambda: self.close_both_sides())
@@ -3766,7 +3855,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             (self.balance_warning_container, self.balance_warning_badge),
         ):
             if container is not None:
-                badge.move(max(0, container.width() - 14), 1)
+                # Corner of the text box itself (the balance field also
+                # holds a read button to its right).
+                entry = container.findChild(QLineEdit)
+                right = entry.geometry().right() + 1 if entry is not None else container.width()
+                reader = getattr(self, "read_balance_button", None)
+                if reader is not None and entry is not None and reader.parentWidget() is entry:
+                    right -= reader.width()  # badge sits left of the flush-right read button
+                badge.move(max(0, right - 14), 1)
                 badge.raise_()
 
     def _balance_warning_active(self) -> bool:
@@ -4309,6 +4405,172 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.log("休市平倉：倒數結束，開始平倉。")
         self.close_both_sides(confirmed=True)
 
+    def read_internal_balance(self, origin: str = "main") -> None:
+        """Read the 場內 account's actual Balance; fill the draft after confirm.
+        origin: "main", "side" (question shown beside the side panel) or
+        "phone" (the phone asked; filled directly, shown on the phone)."""
+        self._balance_read_origin = origin
+        platform = self.internal_platform.currentText()
+        if platform not in ("cTrader", "MT5"):
+            QMessageBox.warning(self, "讀取場內餘額", f"場內平台「{platform}」還不支援自動讀取餘額。")
+            return
+        if getattr(self, "_balance_read_running", False):
+            return
+        self._balance_read_running = True
+        self._set_balance_button_state("loading")
+        self.log(f"讀取場內 {platform} 餘額中……")
+        def task() -> None:
+            from .balance_reader import read_ctrader_balance, read_mt5_balance
+            try:
+                main = _bound_broker_main(self, platform, "internal", display_only=True)
+                if platform == "cTrader":
+                    value = read_ctrader_balance(main)
+                else:
+                    from .mt5_native_readonly import terminal_path_for_window
+                    account = DemoUiBrokerPort(self.automation, self.log).inspect_account(platform, "internal")
+                    value = read_mt5_balance(account, terminal_path=terminal_path_for_window(main))
+                self.signals.internal_balance_read.emit({"platform": platform, "value": str(value)})
+            except Exception as exc:
+                self.signals.internal_balance_read.emit({"platform": platform, "error": str(exc)})
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _set_balance_button_state(self, state: str) -> None:
+        """Read button feedback: spinning while reading, a check (or a red
+        mark) for a moment afterwards, then the normal download icon."""
+        buttons = self._balance_read_buttons()
+        if not buttons:
+            return
+        timer = getattr(self, "_balance_spin_timer", None)
+        if timer is None:
+            timer = self._balance_spin_timer = QTimer(self)
+            timer.setInterval(40)  # 25 fps, one turn every ~1.4 s: calm, smooth
+            timer.timeout.connect(self._spin_balance_button)
+        timer.stop()
+        if state == "loading":
+            self._balance_spin_angle = 0
+            for button in buttons:
+                button.setEnabled(False)
+            timer.start()
+            self._spin_balance_button()
+            return
+        if state in ("done", "error"):
+            colour = "#7fd6a4" if state == "done" else "#f08c9a"
+            icon = themed_icon("check" if state == "done" else "x-mark", colour, 14)
+            QTimer.singleShot(1400, lambda: self._set_balance_button_state("idle"))
+        else:
+            icon = themed_icon("download", "#9a90b0", 14)
+        for button in buttons:
+            button.setEnabled(True)
+            button.setIcon(icon)
+
+    def _balance_read_buttons(self) -> list:
+        buttons = [getattr(self, "read_balance_button", None)]
+        panel = getattr(self, "side_panel", None)
+        buttons.append(getattr(panel, "read_balance_button", None) if panel is not None else None)
+        return [button for button in buttons if button is not None]
+
+    def _spin_balance_button(self) -> None:
+        # Small even steps from frames drawn once, so each tick is cheap and
+        # the turn looks continuous instead of jumping 30 degrees at a time.
+        frames = getattr(self, "_balance_spin_frames", None)
+        if frames is None:
+            frames = []
+            base = themed_icon("refresh", "#c9b8ff", 14).pixmap(28, 28)
+            for step in range(36):
+                frame = QPixmap(28, 28)  # fixed canvas: turns in place, never jitters
+                frame.fill(Qt.transparent)
+                painter = QPainter(frame)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.translate(14, 14)
+                painter.rotate(step * 10)
+                painter.drawPixmap(-base.width() // 2, -base.height() // 2, base)
+                painter.end()
+                frames.append(QIcon(frame))
+            self._balance_spin_frames = frames
+        self._balance_spin_angle = (getattr(self, "_balance_spin_angle", 0) + 1) % len(frames)
+        for button in self._balance_read_buttons():
+            button.setIcon(frames[self._balance_spin_angle])
+
+    @staticmethod
+    def _split_balance_prefix(text: str) -> tuple[bool, bool, str]:
+        body = str(text or "").strip()
+        tilde = body.startswith("~")
+        body = body.lstrip("~").strip()
+        minus = body.startswith("-")
+        return tilde, minus, body.lstrip("-").strip()
+
+    def _toggle_balance_prefix(self, symbol: str) -> None:
+        """「~」「−」 always end up in front, as 「~-number」, whatever the order."""
+        entry = self.parameter_inputs["internal_balance"]
+        tilde, minus, body = self._split_balance_prefix(entry.text())
+        if symbol == "~":
+            tilde = not tilde
+        else:
+            minus = not minus
+        entry.setText(("~" if tilde else "") + ("-" if minus else "") + body)
+        if self.isVisible() and not self.isMinimized() and self.isActiveWindow():
+            entry.setFocus()
+
+    def _sync_balance_prefix_buttons(self, text: str) -> None:
+        tilde, minus, _body = self._split_balance_prefix(text)
+        for symbol, state in (("~", tilde), ("-", minus)):
+            button = self.balance_prefix_buttons.get(symbol)
+            if button is not None and button.isChecked() != state:
+                button.setChecked(state)
+
+    def _apply_internal_balance_read(self, result: dict) -> None:
+        self._balance_read_running = False
+        self._set_balance_button_state("error" if result.get("error") else "done")
+        origin = getattr(self, "_balance_read_origin", "main")
+        self._balance_read_origin = "main"
+        if origin == "side":
+            self._side_action_active = True
+            try:
+                self._apply_internal_balance_read_now(result, origin)
+            finally:
+                self._side_action_active = False
+            return
+        self._apply_internal_balance_read_now(result, origin)
+
+    def _apply_internal_balance_read_now(self, result: dict, origin: str) -> None:
+        platform = result.get("platform", "")
+        if result.get("error"):
+            self.log(f"讀取場內餘額失敗：{result['error']}")
+            QMessageBox.warning(self, "讀取場內餘額", result["error"])
+            return
+        value = Decimal(result["value"]).quantize(Decimal("0.01"))
+        if origin == "phone" or getattr(self, "_balance_autofill_session", False):
+            self._fill_internal_balance(value)
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("讀取場內餘額")
+        box.setIcon(QMessageBox.Question)
+        box.setText(f"讀到場內 {platform} 的實際餘額：{value:,}")
+        box.setInformativeText("填入後按「更新」或 Enter 才會寫回試算表。")
+        skip = QCheckBox("這次開程式期間不再詢問，直接填入")
+        skip.setObjectName("balanceAutofillSession")
+        box.setCheckBox(skip)
+        cancel = box.addButton("取消", QMessageBox.RejectRole)
+        fill = box.addButton("填入", QMessageBox.AcceptRole)
+        box.setDefaultButton(fill)
+        box.exec()
+        if box.clickedButton() is not fill:
+            return
+        if skip.isChecked():
+            self._balance_autofill_session = True  # memory only: asks again after restart
+        self._fill_internal_balance(value)
+
+    def _fill_internal_balance(self, value) -> None:
+        """Keep any 「~」「−」 the user already chose in front of the number."""
+        entry = self.parameter_inputs["internal_balance"]
+        tilde, minus, _old = self._split_balance_prefix(entry.text())
+        entry.setText(("~" if tilde else "") + ("-" if minus else "") + str(value))
+        if self.isVisible() and not self.isMinimized():
+            entry.setFocus()
+        self.log(f"已填入場內餘額 {value}（尚未寫回試算表）。")
+
     def close_both_from_side_panel(self) -> None:
         # Its confirmations appear beside the side panel (side_origin_panel).
         self._side_action_active = True
@@ -4332,9 +4594,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                                              process_id_for_window, self.emergency,
                                              lambda x, y: pyautogui.click(x, y))
                     else:
-                        text = close_mt5(self.windows, main, points, process_id_for_window,
-                                         self.emergency, lambda x, y: pyautogui.click(x, y),
-                                         pyautogui.press)
+                        port = DemoUiBrokerPort(self.automation, self.log)
+                        text = close_mt5(
+                            self.windows, main, points, process_id_for_window,
+                            self.emergency, lambda x, y: pyautogui.click(x, y), pyautogui.press,
+                            read_positions=lambda p=platform, r=role, port=port: port.snapshot_positions(
+                                p, r, allow_pending_orders=True))
                 except EmergencyStopped:
                     results.append(f"{label}：已緊急停止，沒有繼續。")
                     self.signals.close_both_result.emit("\n".join(results))
