@@ -19,7 +19,7 @@ from .remote_tunnel import QuickTunnel, FixedTunnel
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
            "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news",
-           "close_both"}
+           "close_both", "read_balance"}
 
 
 class DeviceList(QListWidget):
@@ -319,7 +319,9 @@ class RemoteController(QObject):
                      "fill_internal": available and app.action_buttons["填入場內"].isEnabled(),
                      "fill_external": available and app.action_buttons["填入場外"].isEnabled(),
                      "update": available, "sync": available, "view_sl_tp": available,
-                     "close_both": available},
+                     "close_both": available,
+                     "read_balance": available and app.internal_platform.currentText() in ("cTrader", "MT5")
+                     and not getattr(app, "_balance_read_running", False)},
             available=available, busy=busy or bool(self.active),
             health="無法操作" if not self._desktop_ok else "執行中" if busy or self.active else
                    f"請先處理電腦上的「{modal.windowTitle() or '確認'}」視窗" if modal and modal is not self.dialog else
@@ -515,6 +517,7 @@ class RemoteController(QObject):
                 {"fill_both": app.fill_both, "fill_internal": lambda: app.fill_role("internal"),
                  "fill_external": lambda: app.fill_role("external"), "sync": app.sync_external_sl_tp,
                  "close_both": app.close_both_sides,
+                 "read_balance": lambda: app.read_internal_balance("phone"),
                  "view_sl_tp": app.show_internal_external_sl_tp}[action]()
         except Exception as exc:
             item["errors"].append(str(exc))

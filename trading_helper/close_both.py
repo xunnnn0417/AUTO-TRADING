@@ -73,7 +73,8 @@ def close_ctrader(controller, main, points, list_windows, pid_for_window, abort,
     return "cTrader：已按確認平倉，但還讀得到持倉，請到 cTrader 核對。"
 
 
-def close_mt5(controller, main, points, pid_for_window, abort, click_at, press_key) -> str:
+def close_mt5(controller, main, points, pid_for_window, abort, click_at, press_key,
+              read_positions=None) -> str:
     window = controller.focus(main)
     abort.guard()
     open_mt5_context(controller, window, points["position_order_row"])
@@ -95,7 +96,24 @@ def close_mt5(controller, main, points, pid_for_window, abort, click_at, press_k
             press_key("esc")
         raise
     click_at(*_centre(rect))
-    return "MT5：已按「所有持倉平倉」，請到 MT5 核對持倉。"
+    if read_positions is None:
+        return "MT5：已按「所有持倉平倉」，請到 MT5 核對持倉。"
+    # Same read-only MT5 connection used to confirm fills after entry.
+    left, error = None, ""
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        try:
+            left = read_positions()
+            error = ""
+        except Exception as exc:  # keep polling; report the last error
+            error = str(exc)
+            continue
+        if not left:
+            return "MT5：已平倉，持倉清單已清空。"
+    if left:
+        return f"MT5：已按平倉，但還讀到 {len(left)} 筆持倉，請到 MT5 核對。"
+    return f"MT5：已按平倉，但讀不到持倉清單（{error or '未知原因'}），請到 MT5 核對。"
 
 
 class _NoPositions(Exception):

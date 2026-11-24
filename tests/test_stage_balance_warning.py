@@ -263,7 +263,10 @@ class StageBalanceWarningTests(unittest.TestCase):
         self.assertTrue(self.w.balance_warning_badge.isVisible())
         self.assertIs(type(self.w.balance_warning_badge), type(self.w.expected_sl_warning_badge))
         self.assertEqual(self.w.balance_warning_badge.size(), self.w.expected_sl_warning_badge.size())
-        self.assertEqual(self.w.balance_warning_badge.x(), self.w.balance_warning_container.width()-14)
+        entry = self.w.parameter_inputs['internal_balance']
+        # corner of the text box, left of the flush-right read button
+        self.assertEqual(self.w.balance_warning_badge.x(),
+                         entry.geometry().right()+1-self.w.read_balance_button.width()-14)
         self.assertEqual(self.w.balance_warning_badge.y(), 1)
         self.assertIsNone(self.w.instruction)
         self.assertEqual(self.w.data_labels['internal_tp'].text(), '0')

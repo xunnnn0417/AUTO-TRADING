@@ -1,6 +1,6 @@
 """Small dropdown affordances for compact desktop controls; no workflow state."""
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QPainter, QPen
 from PySide6.QtWidgets import QComboBox, QListView, QToolButton
 
 
@@ -50,7 +50,11 @@ class HoverStageCombo(QComboBox):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        active = self.underMouse() or self.hasFocus() or self.view().isVisible()
+        # Highlight only while the pointer is really over it or the list is
+        # open. Keyboard focus (kept after choosing an item) and Qt's stale
+        # under-mouse flag after the popup closes left it looking hovered.
+        pointer_inside = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        active = pointer_inside or self.view().isVisible()
         if active and self.isEnabled():
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor('#262030'))
@@ -80,4 +84,5 @@ class HoverStageCombo(QComboBox):
 
     def hidePopup(self):
         super().hidePopup()
+        self.clearFocus()
         self.update()

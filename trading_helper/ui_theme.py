@@ -36,6 +36,8 @@ ICON_PATHS: dict[str, str] = {
     "edit": '<path d="m4 20 5-.9L20 8a2 2 0 0 0-4-4L5 15zM14 6l4 4"/>',
     "trash": '<path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7M10 11v6m4-6v6"/>',
     "check": '<path d="m4 12 5 5L20 6"/>',
+    "download": '<path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/>',
+    "x-mark": '<path d="M6 6l12 12M18 6 6 18"/>',
     "square-x": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m9 9 6 6M15 9l-6 6"/>',
     "lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
 }
