@@ -286,8 +286,8 @@ class P2CalibrationDialogTests(unittest.TestCase):
 
     def test_same_simple_calibration_structure_across_platforms(self):
         for platform, expected_tabs, expected_items in (
-            ("cTrader", 4, 20),
-            ("MT5", 5, 20),
+            ("cTrader", 4, 18),
+            ("MT5", 5, 18),
             ("TradingView", 1, 8),
         ):
             with self.subTest(platform=platform):
@@ -652,7 +652,7 @@ class P2CalibrationDialogTests(unittest.TestCase):
         self.assertIn("進場前",labels[0])
         self.assertIn("持倉列表",labels[1])
         self.assertIn("修改視窗",labels[2])
-        self.assertEqual(len(dialog.radios),20)
+        self.assertEqual(len(dialog.radios),18)
         self.assertIn("position_close_button",dialog._stage_keys[1])
         wizard=[b for b in dialog.findChildren(QPushButton)
                 if b.text()=="開始辨識進場後欄位（唯讀）"]
@@ -782,7 +782,10 @@ class P2CalibrationDialogTests(unittest.TestCase):
             self.assertTrue(all(not button.isEnabled() for button in buttons))
             dialog._finish_capture({"cancelled":True})
             self.assertFalse(dialog._capture_running)
-            self.assertTrue(all(button.isEnabled() for button in buttons))
+            # The 2nd 全關 field stays locked until the 1st is saved.
+            locked = dialog._field_capture_buttons.get("bulk_close_all")
+            self.assertTrue(all(button.isEnabled() for button in buttons if button is not locked))
+            self.assertFalse(locked.isEnabled())
         dialog._hover_outline.close()
         dialog.close()
         parent.close()

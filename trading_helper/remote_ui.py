@@ -18,7 +18,8 @@ from .remote_tunnel import QuickTunnel, FixedTunnel
 
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
-           "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news"}
+           "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news",
+           "close_both"}
 
 
 class DeviceList(QListWidget):
@@ -286,9 +287,11 @@ class RemoteController(QObject):
             for event in sorted(event for event in events_for_display(calendar, datetime.now(timezone.utc))
                                 if recent <= event.when <= datetime.now(timezone.utc)+timedelta(days=45))[:60]:
                 news.append(news_item(event, True))
-            for event in calendar.news[:30]:
+            recent = datetime.now(timezone.utc)-timedelta(days=7)  # published news: one week
+            for event in calendar.news[:150]:
                 from .news_relevance import assess_headline
-                if not recent <= event.when <= datetime.now(timezone.utc) or not assess_headline(event.title).notify:
+                from .event_summary import relevant_announcement
+                if not recent <= event.when <= datetime.now(timezone.utc) or not relevant_announcement(event.title):
                     continue
                 news.append(news_item(event, False))
         ruler = app.account_ruler.state
@@ -315,7 +318,8 @@ class RemoteController(QObject):
             actions={"fill_both": available and app.action_buttons["填入兩邊"].isEnabled(),
                      "fill_internal": available and app.action_buttons["填入場內"].isEnabled(),
                      "fill_external": available and app.action_buttons["填入場外"].isEnabled(),
-                     "update": available, "sync": available, "view_sl_tp": available},
+                     "update": available, "sync": available, "view_sl_tp": available,
+                     "close_both": available},
             available=available, busy=busy or bool(self.active),
             health="無法操作" if not self._desktop_ok else "執行中" if busy or self.active else
                    f"請先處理電腦上的「{modal.windowTitle() or '確認'}」視窗" if modal and modal is not self.dialog else
@@ -329,6 +333,7 @@ class RemoteController(QObject):
         app = self.app
         return {"auto_entry": app.auto_entry_on_fill_both,
                 "auto_sync": app.auto_sync_sl_tp_after_entry,
+                "auto_sl": app.auto_adjust_repeat_sl,
                 **{"rule:"+key: value for key, value in app.trade_rule_checkboxes.items()}}
 
     def tick(self):
@@ -509,6 +514,7 @@ class RemoteController(QObject):
             else:
                 {"fill_both": app.fill_both, "fill_internal": lambda: app.fill_role("internal"),
                  "fill_external": lambda: app.fill_role("external"), "sync": app.sync_external_sl_tp,
+                 "close_both": app.close_both_sides,
                  "view_sl_tp": app.show_internal_external_sl_tp}[action]()
         except Exception as exc:
             item["errors"].append(str(exc))
@@ -620,7 +626,7 @@ class RemoteController(QObject):
         layout.addWidget(qr_toggle)
         qr = QLabel()
         qr.setAlignment(Qt.AlignCenter)
-        qr.setFixedHeight(220)
+        qr.setFixedHeight(236)
         qr.hide()
         layout.addWidget(qr)
         code_row = QHBoxLayout()
@@ -642,8 +648,51 @@ class RemoteController(QObject):
         layout.addLayout(code_row)
         layout.addWidget(QLabel('已配對裝置'))
         devices = DeviceList()
+        devices.setObjectName('pairedDevices')
         devices.setFixedHeight(80)
+        # Fill the whole box in the dialog's colours; rows are full width with
+        # a clear (not system-blue) selection instead of a grey empty area.
+        devices.setStyleSheet(
+            'QListWidget#pairedDevices { background: #131218; border: 1px solid #34303d;'
+            ' border-radius: 8px; padding: 4px; outline: 0; }'
+            'QListWidget#pairedDevices::item { padding: 0; border: 0; border-radius: 6px;'
+            ' color: #e9e7ef; }'
+            'QListWidget#pairedDevices::item:hover:!selected { background: #1d1b24; }'
+            'QListWidget#pairedDevices::item:selected { background: #2d2738; color: #ffffff; }'
+        )
         layout.addWidget(devices)
+        test_push = QPushButton('傳送測試通知到手機')
+        test_push.setObjectName('phoneTestNotification')
+        test_push.setToolTip('傳一則測試通知給已開啟通知的手機；不含任何交易資料。')
+        layout.addWidget(test_push)
+
+        def send_test_notification():
+            origin = self.server.public_origin
+            if not origin:
+                QMessageBox.information(dialog, '測試通知', '請先建立固定入口。')
+                return
+            sent, waiting, errors = 0, 0, []
+            for device in self.store.devices():
+                try:
+                    if not self.server.notifications.subscribed(device['id'], origin):
+                        continue
+                    result = self.server.notifications.test(device['id'], origin)
+                    if result.get('queued', True):
+                        sent += 1
+                    else:
+                        waiting += 1
+                except Exception as exc:  # show why instead of failing silently
+                    errors.append(f"{device['name']}：{exc}")
+            if errors:
+                QMessageBox.warning(dialog, '測試通知', '傳送失敗：\n' + '\n'.join(errors))
+            elif sent:
+                QMessageBox.information(dialog, '測試通知', f'已傳送給 {sent} 支手機，幾秒內應該會收到。')
+            elif waiting:
+                QMessageBox.information(dialog, '測試通知', '剛剛才傳過，請等 10 秒後再試。')
+            else:
+                QMessageBox.information(dialog, '測試通知',
+                                        '沒有已開啟通知的手機。請在手機頁面開啟通知後再試。')
+        test_push.clicked.connect(send_test_notification)
 
         def fit():
             if self.settings_dialog is not dialog:
@@ -678,12 +727,13 @@ class RemoteController(QObject):
                 code.setText('新手機請按右側重整；已配對手機可直接連線。')
 
         def selection_changed():
+            # The list's own ::item:selected style paints the row; the row
+            # widget stays transparent so the colour fills the whole width.
             for index in range(devices.count()):
                 item = devices.item(index)
                 row = devices.itemWidget(item)
                 if row is not None:
                     row.findChild(QPushButton, 'phoneRevoke').setVisible(item.isSelected())
-                    row.setStyleSheet('background:'+('#2b2535' if item.isSelected() else '#101014')+';')
         devices.itemSelectionChanged.connect(selection_changed)
 
         def refresh():
@@ -716,14 +766,17 @@ class RemoteController(QObject):
                 with QSignalBlocker(devices):
                     devices.clear()
                     for device_id, name in signature:
-                        devices.addItem(name)
+                        # Text lives only in the row widget (not also drawn
+                        # underneath by the item); the item keeps it for access.
+                        devices.addItem('')
                         item = devices.item(devices.count()-1)
                         item.setData(Qt.UserRole, device_id)
+                        item.setData(Qt.AccessibleTextRole, name)
                         item.setSizeHint(QSize(0,36))
                         row = QWidget()
-                        row.setAutoFillBackground(True)
+                        row.setStyleSheet('background: transparent;')
                         row_layout = QHBoxLayout(row)
-                        row_layout.setContentsMargins(8,2,4,2)
+                        row_layout.setContentsMargins(14,2,6,2)
                         name_label = QLabel(name)
                         name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
                         row_layout.addWidget(name_label,1)
@@ -732,6 +785,14 @@ class RemoteController(QObject):
                         revoke = QPushButton(slot)
                         revoke.setObjectName('phoneRevoke')
                         revoke.setFixedSize(28,28)
+                        revoke.move(1,1)  # centred in its 30x30 slot
+                        # Plain square icon button: the dialog's button
+                        # padding/min-width pushed the icon off-centre.
+                        revoke.setStyleSheet(
+                            'QPushButton#phoneRevoke { padding: 0; margin: 0; min-width: 0; min-height: 0;'
+                            ' border: 1px solid #4a4356; border-radius: 6px; background: #1d1b24; }'
+                            'QPushButton#phoneRevoke:hover { background: #3a2730; border-color: #b9576a; }')
+                        revoke.setIconSize(QSize(16,16))
                         revoke.setIcon(themed_icon('trash'))
                         revoke.setAccessibleName('移除'+name)
                         revoke.setToolTip('移除此手機的連線授權')
@@ -739,6 +800,9 @@ class RemoteController(QObject):
                         row_layout.addWidget(slot)
                         devices.setItemWidget(item,row)
                         item.setSelected(device_id in selected)
+                # Fit the box to the phones (1–3 rows) instead of a fixed
+                # height that left an empty grey band under a single phone.
+                devices.setFixedHeight(min(max(len(signature), 1), 3) * 38 + 12)
             selection_changed()
 
         def start_fixed():

@@ -179,7 +179,8 @@ class SidePanelTests(unittest.TestCase):
         self.assertTrue(panel.collapsed)
         self.w._active_tasks = 0
         self.w._restore_after_operation()
-        self.assertFalse(self.w.isVisible())
+        # Not brought back to the front: only minimised, keeping its taskbar button.
+        self.assertTrue(self.w.isMinimized())
         self.assertTrue(panel.isVisible())
         self.assertTrue(panel.collapsed)
         # Opening the main UI explicitly restores its original behavior.
@@ -591,3 +592,72 @@ class SidePanelTests(unittest.TestCase):
         self.assertTrue(panel.mask().isEmpty())
         QTest.mouseClick(panel.handle, Qt.LeftButton)
         self.assertFalse(panel.collapsed)
+
+
+class SideProfileSelectorTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_profile_selector_comes_before_stage_and_switches_main(self):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.toggle_side_panel(True)
+        self.qtapp.processEvents()
+        panel = self.w.side_panel
+        panel.sync_from_main()
+        row = panel.stage_selector.parentWidget().layout()
+        self.assertLess(row.indexOf(panel.profile_selector), row.indexOf(panel.stage_selector))
+        names = [panel.profile_selector.itemText(i) for i in range(panel.profile_selector.count())]
+        self.assertEqual(names, [self.w.profile_combo.itemText(i) for i in range(self.w.profile_combo.count())])
+        with patch.object(self.w.profile_combo, 'setCurrentText') as switch:
+            panel.profile_selector.setEnabled(True)
+            panel._profile_selected('另一方案')
+        switch.assert_called_once_with('另一方案')
+
+
+class SidePanelStartupTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_launch_parks_the_side_panel_collapsed(self):
+        self.w.side_panel_checkbox.blockSignals(True)
+        self.w.side_panel_checkbox.setChecked(True)
+        self.w.side_panel_checkbox.blockSignals(False)
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.initialize_side_panel()
+        self.qtapp.processEvents()
+        self.assertTrue(self.w.side_panel.isVisible())
+        self.assertTrue(self.w.side_panel.collapsed)
+
+
+class SideOriginDialogTests(unittest.TestCase):
+    setUp = fixtures.CompactFollowUpControlsTests.setUp
+    tearDown = fixtures.CompactFollowUpControlsTests.tearDown
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def test_side_action_dialog_belongs_to_side_panel_and_stays_on_top(self):
+        with patch('trading_helper.calendar_events.EconomicCalendar.refresh'):
+            self.w.toggle_side_panel(True)
+        panel = self.w.side_panel
+        self.w._side_action_active = True
+        try:
+            box = gui.ThemedMessageBox(self.w)
+        finally:
+            self.w._side_action_active = False
+        self.addCleanup(box.close)
+        self.assertIs(box.parentWidget(), panel)
+        self.assertTrue(box.windowFlags() & gui.Qt.WindowStaysOnTopHint)
+        self.assertTrue(box.isWindow())
+        plain = gui.ThemedMessageBox(self.w)
+        self.addCleanup(plain.close)
+        self.assertIs(plain.parentWidget(), self.w)

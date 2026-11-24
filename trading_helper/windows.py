@@ -254,6 +254,44 @@ class EmergencyController:
             time.sleep(0.025)
 
 
+_DISPLAY_ACCOUNT_CACHE: dict[int, tuple[float, str]] = {}
+
+
+def _display_ctrader_account(window, full_read) -> str:
+    """Account label for read-only display/calibration lookups.
+
+    Native FindFirst (~0.1 s) and a 30 s per-window memo, so showing or
+    capturing a cTrader field no longer pauses ~1.5 s each time. Trading
+    paths keep the strict full read (read_ctrader_account)."""
+    now = time.monotonic()
+    cached = _DISPLAY_ACCOUNT_CACHE.get(int(window.handle))
+    if cached and now - cached[0] < 30:
+        return cached[1]
+    try:
+        from pywinauto.uia_defines import IUIA
+        uia = IUIA()
+        root = uia.iuia.ElementFromHandle(window.handle)
+        condition = uia.iuia.CreatePropertyCondition(uia.UIA_dll.UIA_AutomationIdPropertyId, ACCOUNT_ID)
+        element = root.FindFirst(uia.tree_scope["descendants"], condition)
+        value = str(element.CurrentName or "").strip() if element else ""
+    except Exception:
+        value = ""
+    if not re.fullmatch(r"\d{5,}", value):
+        return full_read(window)  # strict fallback; not memoised
+    _DISPLAY_ACCOUNT_CACHE[int(window.handle)] = (now, value)
+    return value
+
+
+def _native_names_by_automation_id(handle: int, automation_id: str) -> list[str]:
+    """Names of every element under a window with this AutomationId."""
+    from pywinauto.uia_defines import IUIA
+    uia = IUIA()
+    root = uia.iuia.ElementFromHandle(handle)
+    condition = uia.iuia.CreatePropertyCondition(uia.UIA_dll.UIA_AutomationIdPropertyId, automation_id)
+    found = root.FindAll(uia.tree_scope["descendants"], condition)
+    return [str(found.GetElement(i).CurrentName or "").strip() for i in range(found.Length)]
+
+
 class WindowController:
     _ocr_engine = None
     _ocr_lock = threading.Lock()
@@ -298,12 +336,20 @@ class WindowController:
         """Native text inspection only, including while actions are stopped."""
         from pywinauto import Desktop
         try:
-            nodes = fresh_controls(Desktop(backend="uia").window(handle=window.handle),
-                                   ("Text",), text_ids=(ACCOUNT_ID,), text_names=())
-        except Exception as exc:
-            raise AutomationError("平台帳號讀取失敗，請展開平台視窗後再試。") from exc
-        values = [str(node.window_text()).strip() for node in nodes
-                  if str(node.element_info.automation_id) == ACCOUNT_ID]
+            # UIA's native FindAll by AutomationId: ~0.1 s instead of ~1.5 s
+            # for walking cTrader's whole WPF tree in Python (that walk made
+            # every cTrader preview/capture pause before anything appeared).
+            values = _native_names_by_automation_id(window.handle, ACCOUNT_ID)
+        except Exception:
+            values = None
+        if values is None:
+            try:
+                nodes = fresh_controls(Desktop(backend="uia").window(handle=window.handle),
+                                       ("Text",), text_ids=(ACCOUNT_ID,), text_names=())
+            except Exception as exc:
+                raise AutomationError("平台帳號讀取失敗，請展開平台視窗後再試。") from exc
+            values = [str(node.window_text()).strip() for node in nodes
+                      if str(node.element_info.automation_id) == ACCOUNT_ID]
         if len(values) != 1 or not re.fullmatch(r"\d{5,}", values[0]):
             raise AutomationError("平台帳號無法唯一辨識，請展開平台視窗後再試。")
         return values[0]
@@ -406,7 +452,9 @@ class WindowController:
     def _resolve_broker_main(self, title_pattern: str, *, platform: str,
                              expected_account: str, inspection: bool) -> WindowInfo:
         guard = (lambda: None) if inspection else self.emergency.guard
-        account_reader = self._inspect_ctrader_account if inspection else self.read_ctrader_account
+        account_reader = (
+            (lambda window: _display_ctrader_account(window, self._inspect_ctrader_account))
+            if inspection else self.read_ctrader_account)
         candidates = self.find_all(title_pattern)
         main_title = self._broker_main_title(platform, title_pattern)
         matches = [

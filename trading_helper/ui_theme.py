@@ -36,6 +36,7 @@ ICON_PATHS: dict[str, str] = {
     "edit": '<path d="m4 20 5-.9L20 8a2 2 0 0 0-4-4L5 15zM14 6l4 4"/>',
     "trash": '<path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7M10 11v6m4-6v6"/>',
     "check": '<path d="m4 12 5 5L20 6"/>',
+    "square-x": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m9 9 6 6M15 9l-6 6"/>',
     "lock": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
 }
 
@@ -632,6 +633,17 @@ QDialog QTextEdit, QDialog QTabWidget::pane, QDialog QScrollArea {
     border-radius: 6px;
     selection-background-color: #5d4bd7;
 }
+QDialog QSpinBox {
+    color: #e7e3ed;
+    background: #111116;
+    border: 1px solid #302e38;
+    border-radius: 6px;
+    padding: 3px 8px;
+    min-height: 22px;
+    selection-background-color: #5d4bd7;
+}
+QDialog QSpinBox:focus { border-color: #62568e; }
+QDialog QSpinBox::up-button, QDialog QSpinBox::down-button { width: 0; border: 0; }
 QDialog QPushButton, QDialog QToolButton {
     color: #dedbe5;
     background: #1d1c24;
@@ -643,6 +655,13 @@ QDialog QPushButton, QDialog QToolButton {
 QDialog QPushButton:hover, QDialog QToolButton:hover {
     background: #292733;
     border-color: #62568e;
+}
+/* Same clearly-unavailable look as the main window's disabled buttons. */
+QDialog QPushButton:disabled, QDialog QToolButton:disabled,
+QDialog QPushButton:disabled:hover, QDialog QToolButton:disabled:hover {
+    color: #66626b;
+    background: #18171c;
+    border-color: #26252a;
 }
 QDialog QLineEdit#spreadsheetUrl QToolButton#lineEditClearButton {
     background: transparent;
@@ -1906,3 +1925,40 @@ QMainWindow#tradingHelperMain QGroupBox#editCalibrationGroup QPushButton:hover {
     border-color: #6c5c9d;
 }
 """
+
+
+def triangle_icon(direction: str, color: str = "#bcb5c0", side: float = 7.0) -> QIcon:
+    """Small equilateral triangle (all sides `side` px) pointing up/down/left/right.
+
+    Replaces Qt's built-in tool-button arrows, which render wide and flat.
+    """
+    from math import sqrt
+    canvas = QPixmap(24, 24)  # drawn at 2x for crisp edges, shown at 12x12
+    canvas.setDevicePixelRatio(2.0)
+    canvas.fill(Qt.transparent)
+    height = side * sqrt(3) / 2
+    centre_x = centre_y = 6.0
+    if direction == "down":
+        points = [(centre_x - side / 2, centre_y - height / 2), (centre_x + side / 2, centre_y - height / 2),
+                  (centre_x, centre_y + height / 2)]
+    elif direction == "up":
+        points = [(centre_x - side / 2, centre_y + height / 2), (centre_x + side / 2, centre_y + height / 2),
+                  (centre_x, centre_y - height / 2)]
+    elif direction == "left":
+        points = [(centre_x + height / 2, centre_y - side / 2), (centre_x + height / 2, centre_y + side / 2),
+                  (centre_x - height / 2, centre_y)]
+    else:  # right
+        points = [(centre_x - height / 2, centre_y - side / 2), (centre_x - height / 2, centre_y + side / 2),
+                  (centre_x + height / 2, centre_y)]
+    path = QPainterPath()
+    path.moveTo(*points[0])
+    for point in points[1:]:
+        path.lineTo(*point)
+    path.closeSubpath()
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(color))
+    painter.drawPath(path)
+    painter.end()
+    return QIcon(canvas)

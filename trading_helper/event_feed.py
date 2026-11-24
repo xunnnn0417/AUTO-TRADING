@@ -1,7 +1,7 @@
 """Shared, read-only event feed for the main workspace and sidebar."""
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QTabWidget, QSizePolicy,
 )
@@ -99,7 +99,11 @@ class EventFeedView(QWidget):
         self.event_status.setAccessibleName('消息來源狀態')
         self.event_status.setCheckable(True)
         self.event_status.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.event_status.setArrowType(Qt.DownArrow)
+        # Small equilateral triangle instead of Qt's wide, flat arrow.
+        from .ui_theme import triangle_icon
+        self.event_status.setArrowType(Qt.NoArrow)
+        self.event_status.setIconSize(QSize(12, 12))
+        self.event_status.setIcon(triangle_icon("down"))
         root.addWidget(self.event_status)
         self.source_details = QLabel()
         self.source_details.setTextFormat(Qt.PlainText)
@@ -107,8 +111,8 @@ class EventFeedView(QWidget):
         self.source_details.setProperty('muted', True)
         self.source_details.hide()
         self.event_status.toggled.connect(self.source_details.setVisible)
-        self.event_status.toggled.connect(lambda expanded: self.event_status.setArrowType(
-            Qt.UpArrow if expanded else Qt.DownArrow))
+        self.event_status.toggled.connect(lambda expanded: self.event_status.setIcon(
+            triangle_icon("up" if expanded else "down")))
         root.addWidget(self.source_details)
         self.timer = QTimer(self)
         self.timer.setInterval(30_000)
@@ -208,15 +212,15 @@ class EventFeedView(QWidget):
                                      '即將休市' if e.source == '休市提醒' else '即將發生', e.details)
                                     for e in upcoming[:20]], '目前載入資料沒有近期排程；請查看來源更新狀態。')
         recent = [(e.when, e.source+' · 已公布 · '+e.currency, e.title, e.details)
-                  for e in events if now-timedelta(hours=72) <= e.when <= now]
+                  for e in events if now-timedelta(days=7) <= e.when <= now]
         recent += [(n.when, n.source, n.title, n.details) for n in self.calendar.news
-                   if now-timedelta(hours=72) <= n.when <= now
+                   if now-timedelta(days=7) <= n.when <= now
                    and relevant_announcement(n.title)]
-        recent = sorted(set(recent), reverse=True)[:24]
+        recent = sorted(set(recent), reverse=True)[:80]
         self.news_rows.set_entries([(when, source, original, title(original), ' · 已公布 · ' in source,
                                     '已休市' if source.startswith('休市提醒 · ') else '已公布', details)
                                    for when, source, original, details in recent],
-                                  '近 72 小時沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
+                                  '近 7 天沒有已載入的相關消息；不代表沒有事件，請查看來源狀態。')
         self.news_rows.setToolTip('')
         self.event_rows.setToolTip('')
         details = ('\n'.join(self.calendar.status_lines(now)) +

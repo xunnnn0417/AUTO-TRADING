@@ -1,12 +1,17 @@
 import os,unittest
 from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-from PySide6.QtWidgets import QApplication,QMainWindow,QTabBar
+from PySide6.QtWidgets import QApplication,QMainWindow,QTabBar,QLabel
 from trading_helper.calibration_status import completion,has_saved_coordinate
 from trading_helper.gui import CalibrationDialog,CALIBRATION_TARGETS
 
 def pt():
     return {"x":0.34,"y":0.46,"window_width":1600,"window_height":900}
+
+def stage_dot(dlg,index):
+    """The 6px dot sits at the top of a text-height host in the tab button slot."""
+    host=dlg._calibration_tabs.tabBar().tabButton(index,QTabBar.RightSide)
+    return host.findChild(QLabel,"stageCalibrationIncompleteDot") if host is not None else None
 
 class ProgressTests(unittest.TestCase):
     @classmethod
@@ -35,8 +40,7 @@ class ProgressTests(unittest.TestCase):
             dlg._refresh_stage_progress()
             self.assertIn(f"({len(first)-1}/{len(first)})",
                           dlg._calibration_tabs.tabText(0))
-            marker=dlg._calibration_tabs.tabBar().tabButton(
-                0,QTabBar.RightSide)
+            marker=stage_dot(dlg,0)
             self.assertIsNotNone(marker)
             self.assertFalse(marker.isHidden())
             store["ui"]["show_calibration_badges"]=False
@@ -72,7 +76,7 @@ class ProgressTests(unittest.TestCase):
             dlg._refresh_stage_progress()
             total=len(dlg._stage_keys[0])
             self.assertIn(f"(1/{total})",dlg._calibration_tabs.tabText(0))
-            marker=dlg._calibration_tabs.tabBar().tabButton(0,QTabBar.RightSide)
+            marker=stage_dot(dlg,0)
             self.assertFalse(marker.isHidden())
             parent.store.data["ui"]["show_calibration_badges"]=False
             dlg._refresh_stage_progress()
@@ -84,7 +88,7 @@ class ProgressTests(unittest.TestCase):
             parent.close()
 
     def test_missing_ctrader_first_stage_from_full_16(self):
-        all_keys=[k for k,_ in CALIBRATION_TARGETS["cTrader"] if not k.startswith(('internal_bulk_', 'external_bulk_'))]
+        all_keys=[k for k,_ in CALIBRATION_TARGETS["cTrader"] if not k.startswith('bulk_close_')]
         first=all_keys[:9]
         saved={k:pt() for k in all_keys}
         for k in first:saved.pop(k)
@@ -102,8 +106,7 @@ class ProgressTests(unittest.TestCase):
         dlg=CalibrationDialog(parent,"cTrader")
         try:
             for index in range(dlg._calibration_tabs.count()):
-                marker=dlg._calibration_tabs.tabBar().tabButton(
-                    index,QTabBar.RightSide)
+                marker=stage_dot(dlg,index)
                 self.assertIsNotNone(marker)
                 self.assertEqual((marker.width(),marker.height()),(6,6))
                 self.assertIn("border-radius:3px", marker.styleSheet())

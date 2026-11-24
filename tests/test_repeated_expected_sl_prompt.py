@@ -55,6 +55,21 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
         self.assertIn("-8.35", prompt.call_args.args[2])
         self.assertIn("手數", prompt.call_args.args[2])
 
+    def test_auto_adjust_option_replaces_without_asking(self):
+        self.ui.auto_adjust_repeat_sl = QCheckBox()
+        self.addCleanup(self.ui.auto_adjust_repeat_sl.close)
+        self.ui.auto_adjust_repeat_sl.setChecked(True)
+        self.ui.log = MagicMock()
+        with patch("trading_helper.gui.choose_repeat_adjustment",
+                   return_value=Decimal("-9.12")),              patch("trading_helper.gui.QMessageBox.question") as prompt:
+            adjusted, did_adjust = TradingHelperApp._maybe_adjust_repeated_expected_sl(
+                self.ui, self.item, roles=("internal", "external"), dirty=(),
+            )
+        prompt.assert_not_called()
+        self.assertTrue(did_adjust)
+        self.assertEqual(adjusted.expected_sl_points, Decimal("-9.12"))
+        self.ui.log.assert_called_once()
+
     def test_same_cell_percent_alias_does_not_suppress_repeat_prompt(self):
         item = replace(self.item, expected_sl_percent=Decimal("-8.59"))
         with patch("trading_helper.gui.choose_repeat_adjustment",

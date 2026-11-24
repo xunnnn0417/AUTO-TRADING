@@ -10,12 +10,13 @@ import threading
 import time
 import webbrowser
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal, QSize, QPointF, QRectF
+import shiboken6
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QPoint, QTimer, Qt, Signal, QSize, QPointF, QRectF
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -54,6 +55,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QTabWidget,
     QTabBar,
@@ -84,11 +86,14 @@ from .entry_status_report import (
 )
 from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adjustment_range
 from .config import APP_DIR
+from . import crash_log
 from .field_detection import inspect_uia_window
-from .calibration_scan import ScanReport, inspect_all_targets
+from .calibration_scan import Candidate as ScanCandidate, ScanReport, inspect_all_targets
 from .bulk_close_calibration import (
-    targets as bulk_close_targets, role_for as bulk_close_role,
+    targets as bulk_close_targets, is_bulk_key as is_bulk_close_key,
     inspect_bulk_targets, open_mt5_context, platform_windows as bulk_platform_windows,
+    hover_mt5_bulk_actions, find_mt5_menu_item, last_mt5_menu_items,
+    ctrader_account_type, find_ctrader_confirmation, ctrader_close_all_rect,
 )
 from .calibration_confirm import (
     CalibrationConfirmationError, candidate_calibration_points,
@@ -137,11 +142,18 @@ from .windows import (
 
 
 class _CalibrationAbort:
+    """Per-calibration stop flag; also usable as a WindowController's
+    emergency object (MT5 bulk-close capture right-clicks through one)."""
+
     def __init__(self):
         self.event = threading.Event()
 
     def stop(self) -> None:
         self.event.set()
+
+    def guard(self) -> None:
+        if self.event.is_set():
+            raise EmergencyStopped("已取消本次校準。")
 
 
 PLATFORMS = ("cTrader", "MT5")
@@ -232,6 +244,42 @@ for _bulk_platform in ('cTrader', 'MT5', 'BYBIT MT5', '原版MT5'):
     CALIBRATION_TARGETS[_bulk_platform] = list(CALIBRATION_TARGETS[_bulk_platform]) + list(bulk_close_targets(_bulk_platform))
 
 
+def side_origin_panel():
+    """The side panel when the current action came from it, else None.
+
+    Messages caused by something pressed in the side panel are shown at the
+    side panel's edge instead of the middle of the screen.
+    """
+    try:
+        active = QApplication.activeWindow()
+        for widget in QApplication.topLevelWidgets():
+            panel = getattr(widget, "side_panel", None)
+            if panel is None or not isinstance(panel, QWidget):
+                continue
+            from_panel = active is not None and (active is panel or active.parentWidget() is panel)
+            if (getattr(widget, "_side_fill_active", False) is True
+                    or getattr(widget, "_side_action_active", False) is True or from_panel):
+                return panel
+    except Exception:
+        return None
+    return None
+
+
+def place_beside_side_panel(box, panel) -> None:
+    """Put a popup just left of the side panel, vertically centred on it."""
+    try:
+        frame = panel.frameGeometry()
+        screen = QApplication.screenAt(frame.center()) or QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        box.adjustSize()
+        x = max(area.left() + 8, frame.left() - box.width() - 8)
+        y = frame.center().y() - box.height() // 2
+        y = max(area.top() + 8, min(y, area.bottom() - box.height() - 8))
+        box.move(x, y)
+    except Exception:
+        pass
+
+
 class ThemedMessageBox(ThemedDialog):
     """Message box with the same titlebar and surface as other LAB dialogs."""
 
@@ -285,6 +333,7 @@ class ThemedMessageBox(ThemedDialog):
         self._icon_label.setFixedSize(30, 30)
         self._icon_label.setAlignment(Qt.AlignCenter)
         message_row.addWidget(self._icon_label, 0, Qt.AlignTop)
+        self._icon_label.hide()  # shown by setIcon(); never an empty circle
         text_stack = QVBoxLayout()
         text_stack.setSpacing(7)
         self._primary_text = QLabel(self)
@@ -309,6 +358,18 @@ class ThemedMessageBox(ThemedDialog):
         self._body.addLayout(self._button_layout)
         self.setStyleSheet(DIALOG_THEME)
         self.install_chrome()
+        self._side_panel = side_origin_panel()
+        if self._side_panel is not None:
+            # Belongs to the side panel, not the main window: clicking
+            # elsewhere must not send it behind other windows together with
+            # the main window. It stays up with the (always-on-top) panel.
+            self.setParent(self._side_panel, self.windowFlags() | Qt.WindowStaysOnTopHint)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if getattr(self, "_side_panel", None) is not None and not getattr(self, "_placed_beside", False):
+            self._placed_beside = True
+            place_beside_side_panel(self, self._side_panel)
 
     def setIcon(self, icon) -> None:
         glyph, severity = {
@@ -318,6 +379,7 @@ class ThemedMessageBox(ThemedDialog):
             QtMessageBox.Critical: ("×", "critical"),
         }.get(icon, ("i", "information"))
         self._icon_label.setText(glyph)
+        self._icon_label.show()
         self._icon_label.setProperty("severity", severity)
         self._icon_label.style().unpolish(self._icon_label)
         self._icon_label.style().polish(self._icon_label)
@@ -443,6 +505,15 @@ class ThemedMessageBox(ThemedDialog):
 QMessageBox = ThemedMessageBox
 
 
+def next_profile_name(existing) -> str:
+    """First unused 方案N (方案1, 方案2, ...) to prefill a new profile's name."""
+    taken = {str(name).strip() for name in existing}
+    number = 1
+    while f"方案{number}" in taken:
+        number += 1
+    return f"方案{number}"
+
+
 def themed_input_text(
     parent: QWidget, title: str, label_text: str, text: str = "",
 ) -> tuple[str, bool]:
@@ -456,6 +527,7 @@ def themed_input_text(
     layout.addWidget(label)
     entry = QLineEdit(dialog)
     entry.setText(text)
+    entry.selectAll()  # a prefilled suggestion is replaced by typing
     layout.addWidget(entry)
     buttons = QHBoxLayout()
     buttons.addStretch(1)
@@ -540,10 +612,45 @@ def _window_title_pattern(platform: str, title: str) -> str:
     return re.escape(title)
 
 
+BULK_CAPTURE_HINTS = {
+    # (is cTrader, field suffix) -> what to hover during the countdown.
+    # The countdown shows only the text before the first "；".
+    (True, "button"): "把游標停在 cTrader 的「全部平倉」按鈕上（不會點擊）；按 ESC 或右鍵取消",
+    (True, "confirm"): "先開好平倉確認視窗，把游標停在 Yes 上（不會點擊）；按 ESC 或右鍵取消",
+    (False, "actions"): "已開啟 MT5 右鍵選單：把游標停在「批量操作」上（不會點擊）；按 ESC 或右鍵取消",
+    (False, "all"): "子選單已展開：把游標往右移到「所有持倉平倉」上停住（不會點擊）；按 ESC 或右鍵取消",
+}
+
+
+def bulk_binding_role(app, platform: str, role: str) -> str:
+    """Window binding to use when calibrating a bulk-close field.
+
+    The close-all button/menu belongs to the platform, not to a side, so use
+    the preferred side's binding and fall back to whichever side this
+    platform is bound to (e.g. MT5 bound only as 場外).
+    """
+    store = getattr(app, "store", None)
+    titles = (getattr(store, "data", {}) or {}).get("platforms", {}).get(
+        platform, {}).get("window_title", {})
+    if str(titles.get(role, "")).strip():
+        return role
+    other = "external" if role == "internal" else "internal"
+    return other if str(titles.get(other, "")).strip() else role
+
+
 def _bound_broker_main(app, platform: str, role: str, *, display_only=False) -> WindowInfo:
     """Use the saved role/account for read-only calibration and inspection."""
     profile = app.store.data["platforms"][platform]
     pattern = profile.get("window_title", {}).get(role, "")
+    if not str(pattern or "").strip():
+        # Bindings are saved per 方案; a new or different 方案 starts unbound.
+        side = "場內" if role == "internal" else "場外"
+        name = getattr(getattr(app, "profiles", None), "active_name", "")
+        scope = f"目前方案「{name}」" if name else "目前方案"
+        raise AutomationError(
+            f"{scope}的{side}還沒綁定 {platform} 視窗。"
+            f"請先在「編輯」頁按「綁定{side}視窗」，再回來校準。"
+        )
     if isinstance(app.windows, WindowController):
         account = profile.get("account_number", {}).get(role, "")
         options = {"expected_account": account} if account else {}
@@ -578,6 +685,7 @@ class UiSignals(QObject):
     window_binding_result = Signal(object)
     auto_entry_result = Signal(object)
     remote_task_result = Signal(object)
+    close_both_result = Signal(str)
 
 
 class ProfileItemDelegate(QStyledItemDelegate):
@@ -816,6 +924,11 @@ class SheetNoteIndicator(QLabel):
 
 
 class TradingHelperApp(FramelessNativeMixin, QMainWindow):
+    # Emitted once the main window has really closed. main.py quits on this
+    # instead of Qt's "last window closed": while the main window is hidden
+    # for an operation, closing a parentless popup used to end the app.
+    main_window_closed = Signal()
+
     def __init__(self):
         super().__init__()
         # Weekend symbol substitution is now armed only by the visible,
@@ -877,6 +990,13 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.signals.log.connect(self._append_log)
         self.signals.status.connect(self._set_status)
         self.signals.error.connect(self._show_error)
+        self.signals.close_both_result.connect(self._show_close_both_result)
+        self._rest_close_done: set[str] = set()
+        self._rest_close_countdown = None
+        self._rest_close_timer = QTimer(self)
+        self._rest_close_timer.setInterval(15_000)
+        self._rest_close_timer.timeout.connect(self._check_rest_close)
+        self._rest_close_timer.start()
         self.signals.ctrader_decimal_suggestion.connect(
             self._show_ctrader_decimal_suggestion
         )
@@ -994,6 +1114,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         panel = getattr(self, "side_panel", None)
         if panel is not None:
             panel.hide()
+        self._operation_main_was_shown = not self.isHidden()
         if not self.isHidden():
             self._operation_restore_geometry = self.geometry()
             self._operation_restore_maximized = self.isMaximized()
@@ -1013,7 +1134,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
     def set_operation_hint_text(self, text: str) -> None:
         self.operation_hint.setText(text)
         self.operation_hint.adjustSize()
-        screen = self._operation_screen or self.screen()
+        screen = self._operation_screen
+        if screen is None or not shiboken6.isValid(screen):
+            # Windows may replace the QScreen mid-operation (display wake).
+            screen = self.screen()
         if screen is not None:
             area = screen.availableGeometry()
             self.operation_hint.move(
@@ -1028,22 +1152,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         panel = getattr(self, "side_panel", None)
         if getattr(self, "_side_fill_active", False) is True:
             # Side-origin fills keep the broker visible. The collapsed
-            # panel returns without activating or reopening the main UI.
+            # panel returns without activating or reopening the main UI,
+            # but the main window comes back minimised: hiding it for good
+            # removed its taskbar button until the sidebar's home button.
+            if getattr(self, "_operation_main_was_shown", True):
+                geometry = getattr(self, "_operation_restore_geometry", None)
+                if geometry is not None:
+                    self.setGeometry(geometry)
+                self.showMinimized()
             self._operation_restore_geometry = None
             self._operation_restore_maximized = False
             self._operation_screen = None
-            if panel is not None and self.side_panel_checkbox.isChecked():
-                panel.show()
-                panel.dock()
+            self._restore_side_panel_after_operation(panel)
             return
         if self._calibration_dialog_active:
             self.hide()
             self._operation_restore_geometry = None
             self._operation_restore_maximized = False
             self._operation_screen = None
-            if panel is not None and self.side_panel_checkbox.isChecked():
-                panel.show()
-                panel.dock()
+            self._restore_side_panel_after_operation(panel)
             return
         if self._operation_restore_maximized:
             self.showMaximized()
@@ -1056,15 +1183,25 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._operation_screen = None
         self.raise_()
         self.activateWindow()
-        if panel is not None and self.side_panel_checkbox.isChecked():
+        self._restore_side_panel_after_operation(panel)
+
+    def _restore_side_panel_after_operation(self, panel) -> None:
+        """Re-dock the sidebar; a docking error must not abort the caller's restore."""
+        if panel is None or not self.side_panel_checkbox.isChecked():
+            return
+        try:
             panel.show()
             panel.dock()
+        except Exception:
+            crash_log.record("re-dock sidebar after operation")
 
     def initialize_side_panel(self) -> None:
         self._get_event_calendar()  # Alerts also run when the sidebar is disabled.
-        self.toggle_side_panel(self.side_panel_checkbox.isChecked())
+        # Opening the helper parks the side panel at the screen edge; it only
+        # expands when its tab is clicked.
+        self.toggle_side_panel(self.side_panel_checkbox.isChecked(), collapsed=True)
 
-    def toggle_side_panel(self, enabled: bool) -> None:
+    def toggle_side_panel(self, enabled: bool, *, collapsed: bool = False) -> None:
         from .side_panel import SideQuickPanel
         if not hasattr(self, "side_panel"):
             self.side_panel = None
@@ -1075,6 +1212,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             if self.side_panel is None:
                 self.side_panel = SideQuickPanel(self)
             self.side_panel.start()
+            if collapsed:
+                self.side_panel.set_collapsed(True)
         elif self.side_panel is not None:
             self.side_panel.suspend()
         self.save_ui_state()
@@ -1693,6 +1832,21 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             action_layout.addWidget(button, grid_row, grid_col, row_span, col_span)
             if text in {"填入場內", "填入場外", "填入兩邊"}:
                 self.parameter_locked_buttons.append(button)
+        # 「兩邊平倉」 sits right of 「填入兩邊」, red so it is never mistaken for it.
+        action_layout.removeWidget(self.action_buttons["填入兩邊"])
+        action_layout.addWidget(self.action_buttons["填入兩邊"], 1, 0, 1, 5)
+        self.close_both_button = QPushButton("兩邊平倉")
+        self.close_both_button.setObjectName("closeBothButton")
+        self.close_both_button.setIcon(themed_icon("square-x", "#ffb4b4", 13))
+        self.close_both_button.setIconSize(QSize(13, 13))
+        self.close_both_button.setStyleSheet(
+            "QPushButton#closeBothButton { background: #4a1d24; color: #ffd5d5;"
+            " border: 1px solid #b14a58; border-radius: 7px; padding: 3px 8px; }"
+            "QPushButton#closeBothButton:hover { background: #5e2430; }"
+            "QPushButton#closeBothButton:disabled { background: #2a2027; color: #7f6c72; border-color: #4a3a40; }")
+        self.close_both_button.setToolTip("平掉場內、場外兩個帳戶的全部持倉；會先確認兩次。")
+        self.close_both_button.clicked.connect(lambda: self.close_both_sides())
+        action_layout.addWidget(self.close_both_button, 1, 5, 1, 1)
         automation_row = QWidget(actions)
         automation_row.setObjectName("automationOptionRow")
         automation_layout = QHBoxLayout(automation_row)
@@ -1744,6 +1898,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             )
         )
         automation_layout.addWidget(self.auto_draw_tv_after_entry)
+        # 進場前自動審核: when the expected SL repeats last time's, apply the
+        # suggested new value and continue instead of asking each time.
+        self.auto_adjust_repeat_sl = QCheckBox("自動調 SL", automation_row)
+        self.auto_adjust_repeat_sl.setObjectName("autoAdjustRepeatSl")
+        self.auto_adjust_repeat_sl.setStyleSheet("font-size: 10px; spacing: 3px;")
+        install_checkmark_only_indicator(self.auto_adjust_repeat_sl)
+        self.auto_adjust_repeat_sl.setChecked(
+            self.store.data["ui"].get("auto_adjust_repeat_sl") is True)
+        self.auto_adjust_repeat_sl.setToolTip(
+            "進場前自動審核：預期 SL 和上次一樣時，不再跳出詢問，"
+            "直接換成建議的新數值並繼續進場。")
+        self.auto_adjust_repeat_sl.toggled.connect(self._toggle_auto_adjust_repeat_sl)
+        automation_layout.addWidget(self.auto_adjust_repeat_sl)
         rule_separator = QFrame(automation_row)
         rule_separator.setObjectName("tradeRuleSeparator")
         rule_separator.setFrameShape(QFrame.VLine)
@@ -1771,6 +1938,40 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # The optional stages form a strict prerequisite chain:
         # entry -> synchronization -> TradingView.
         self._refresh_auto_option_dependencies()
+        rest_separator = QFrame(automation_row)
+        rest_separator.setObjectName("restCloseSeparator")
+        rest_separator.setFrameShape(QFrame.VLine)
+        rest_separator.setFixedHeight(17)
+        rest_separator.setFixedWidth(1)
+        rest_separator.setStyleSheet("background-color:#5a5465;")
+        automation_layout.addWidget(rest_separator)
+        self.rest_close_checkbox = QCheckBox("休市平倉", automation_row)
+        self.rest_close_checkbox.setObjectName("restCloseEnabled")
+        self.rest_close_checkbox.setStyleSheet("font-size: 10px; spacing: 3px;")
+        install_checkmark_only_indicator(self.rest_close_checkbox)
+        self.rest_close_checkbox.setChecked(
+            self.store.data["ui"].get("rest_close_enabled") is True
+        )
+        self.rest_close_checkbox.setToolTip(
+            "休市前自動把兩邊平倉。定時執行尚未接上，目前勾選只保存設定，不會平倉。"
+        )
+        self.rest_close_checkbox.toggled.connect(self._toggle_rest_close)
+        automation_layout.addWidget(self.rest_close_checkbox)
+        self.rest_close_settings_button = QToolButton(automation_row)
+        self.rest_close_settings_button.setObjectName("restCloseSettingsButton")
+        self.rest_close_settings_button.setIcon(themed_icon("settings", size=14))
+        self.rest_close_settings_button.setAutoRaise(True)
+        self.rest_close_settings_button.setCursor(Qt.PointingHandCursor)
+        # Icon only, flat and borderless so it blends in until hovered.
+        self.rest_close_settings_button.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0 1px;}"
+            "QToolButton:hover{background:rgba(255,255,255,18);border-radius:4px;}"
+        )
+        self.rest_close_settings_button.setToolTip(
+            "休市平倉設定：場內／場外要關對應持倉或全部持倉。只存設定，不會平倉。"
+        )
+        self.rest_close_settings_button.clicked.connect(self.open_rest_close_settings)
+        automation_layout.addWidget(self.rest_close_settings_button)
         automation_layout.addStretch(1)
         # Main fill actions come before the optional automation preferences.
         action_layout.setRowMinimumHeight(2, 10)
@@ -2088,7 +2289,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             points = self.store.data["platforms"].get(
                 platform, {}
             ).get("points", {})
-            keys = [key for key,_ in CALIBRATION_TARGETS[platform] if not bulk_close_role(key)]
+            # Optional bulk-close fields remind like every other stage.
+            keys = [key for key,_ in CALIBRATION_TARGETS[platform]]
             done,total = completion(points, keys)
             incomplete[platform] = done < total
             self.action_buttons["校準 " + platform].setToolTip(
@@ -2194,6 +2396,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # A Windows-owned tool window can lift its owner in the Z order.
         # Keep the notification independent; only "查看消息" opens the app.
         dialog = QMessageBox()
+        dialog._side_panel = None  # not caused by a side-panel action; placed below
         self._news_alert_dialog = dialog
         dialog.setWindowTitle('重大消息提醒')
         dialog.setMaximumWidth(520)
@@ -2593,6 +2796,34 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         )
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
+    def _toggle_auto_adjust_repeat_sl(self, checked: bool) -> None:
+        ui = self.store.data.setdefault("ui", {})
+        old = ui.get("auto_adjust_repeat_sl") is True
+        if checked:
+            box = QMessageBox(self)
+            box.setWindowTitle("自動調 SL")
+            box.setIcon(QMessageBox.Question)
+            box.setText("勾選後，預期 SL 和上次一樣時不再詢問，會直接換成建議數值並繼續進場。")
+            box.setInformativeText("新數值照原本規則隨機取（原始 SL 至上次減 1）；可能增加手數與保證金占用。")
+            keep = box.addButton("先不要", QMessageBox.RejectRole)
+            enable = box.addButton("開啟自動調 SL", QMessageBox.AcceptRole)
+            box.setDefaultButton(keep)
+            box.exec()
+            if box.clickedButton() is not enable:  # ✕/Esc = no
+                self.auto_adjust_repeat_sl.blockSignals(True)
+                self.auto_adjust_repeat_sl.setChecked(old)
+                self.auto_adjust_repeat_sl.blockSignals(False)
+                return
+        ui["auto_adjust_repeat_sl"] = bool(checked)
+        try:
+            self.save_config()
+        except OSError:
+            ui["auto_adjust_repeat_sl"] = old
+            self.auto_adjust_repeat_sl.blockSignals(True)
+            self.auto_adjust_repeat_sl.setChecked(old)
+            self.auto_adjust_repeat_sl.blockSignals(False)
+            QMessageBox.warning(self, "儲存失敗", "自動調 SL 設定未儲存，請重試。")
+
     def _maybe_adjust_repeated_expected_sl(
         self, instruction: TradeInstruction, *, roles: tuple[str, ...],
         dirty: tuple[str, ...] | list[str],
@@ -2633,6 +2864,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if proposed is None:
             return instruction, False
 
+        auto = getattr(self, "auto_adjust_repeat_sl", None)
+        if auto is not None and auto.isChecked():
+            self.log(f"自動調 SL：預期 SL 與上次相同（{previous}），已改為 {proposed} 並繼續。")
+            return replace(instruction, expected_sl_points=proposed), True
         answer = QMessageBox.question(
             self,
             "預期 SL 與上次相同",
@@ -3963,6 +4198,156 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._side_fill_active = False
         self._launch_fill((role,))
 
+    def _close_both_sides_plan(self, *, rest_scope: bool = False):
+        """[(role, side label, platform, points)] and the reasons it cannot run."""
+        from .close_both import missing_calibration
+        plan, problems = [], []
+        scope = self.store.data.get("ui", {}).get("rest_close_all", {}) if rest_scope else {}
+        for role, label, attr in (("internal", "場內", "internal_platform"),
+                                  ("external", "場外", "external_platform")):
+            platform = getattr(self, attr).currentText()
+            if rest_scope and scope.get(role) is not True:
+                continue  # rest-close settings: this side not selected
+            points = self.store.data["platforms"].get(platform, {}).get("points", {})
+            problem = missing_calibration(platform, points)
+            if problem:
+                problems.append(f"{label}：{problem}")
+            plan.append((role, label, platform, points))
+        return plan, problems
+
+    def close_both_sides(self, *, confirmed: bool = False) -> None:
+        """「兩邊平倉」: close all positions on both accounts after two
+        confirmations (rest-close passes confirmed=True after its countdown)."""
+        if not self.can_update():
+            QMessageBox.warning(self, "兩邊平倉", "目前正在執行其他操作，請等它完成後再平倉。")
+            return
+        plan, problems = self._close_both_sides_plan(rest_scope=confirmed)
+        if problems or not plan:
+            QMessageBox.warning(self, "兩邊平倉", ("\n".join(problems) or "沒有要平倉的一邊。")
+                                + "\n這次沒有平倉。")
+            return
+        if not confirmed:
+            sides = "\n".join(f"{label} {platform}" for _r, label, platform, _p in plan)
+            first = QMessageBox(self)
+            first.setWindowTitle("兩邊平倉")
+            first.setIcon(QMessageBox.Warning)
+            first.setText("會平掉這兩個帳戶的「全部持倉」：")
+            first.setInformativeText(sides + "\n包含同一帳戶裡的其他交易。")
+            cancel = first.addButton("取消", QMessageBox.RejectRole)
+            go_on = first.addButton("下一步", QMessageBox.AcceptRole)
+            first.setDefaultButton(cancel)
+            first.exec()
+            if first.clickedButton() is not go_on:  # ✕/Esc = cancel
+                return
+            final = QMessageBox(self)
+            final.setWindowTitle("兩邊平倉：最後確認")
+            final.setIcon(QMessageBox.Critical)
+            final.setText("按下後立即平倉，無法復原。")
+            final.setInformativeText("請再確認一次。")
+            cancel = final.addButton("取消", QMessageBox.RejectRole)
+            execute = final.addButton("立即兩邊平倉", QMessageBox.AcceptRole)
+            final.setDefaultButton(cancel)
+            final.exec()
+            if final.clickedButton() is not execute:
+                return
+        self.log("兩邊平倉：開始。")
+        self._start("兩邊平倉", lambda: self._run_close_both(plan))
+
+    def _check_rest_close(self, now=None) -> None:
+        """休市平倉: at (rest start − chosen minutes) start a 30 s countdown."""
+        if self.store.data.get("ui", {}).get("rest_close_enabled") is not True:
+            return
+        if self._rest_close_countdown is not None:
+            return
+        now = now or datetime.now(timezone.utc)
+        from .rest_reminders import rest_occurrences
+        lead = timedelta(minutes=rest_close_minutes(self.store.data))
+        for start in rest_occurrences({"enabled": True, "minutes": [60]}, now):
+            due = start - lead
+            key = start.isoformat()
+            # Only inside a short window: a helper started later never
+            # flattens late, and each rest period runs once.
+            if due <= now < due + timedelta(seconds=90) and key not in self._rest_close_done:
+                self._rest_close_done.add(key)
+                self._start_rest_close_countdown()
+                return
+
+    def _start_rest_close_countdown(self, seconds: int = 30) -> None:
+        box = QMessageBox(None)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.setWindowTitle("休市平倉")
+        box.setIcon(QMessageBox.Warning)
+        box.setInformativeText("將平掉設定中勾選帳戶的全部持倉。不想平倉請按取消。")
+        cancel = box.addButton("取消這次", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel)
+        remaining = [seconds]
+
+        def tick() -> None:
+            box.setText(f"休市平倉 {remaining[0]} 秒後執行")
+            cancel.setText(f"取消這次（{remaining[0]}）")
+            if remaining[0] <= 0:
+                timer.stop()
+                box._clicked_button = None
+                box.done(1)
+                return
+            remaining[0] -= 1
+
+        timer = QTimer(box)
+        timer.setInterval(1000)
+        timer.timeout.connect(tick)
+        tick()
+        timer.start()
+        self._rest_close_countdown = box
+        try:
+            box.exec()
+        finally:
+            timer.stop()
+            self._rest_close_countdown = None
+        if box.clickedButton() is cancel or remaining[0] > 0:
+            self.log("休市平倉：使用者取消了這一次。")
+            return
+        self.log("休市平倉：倒數結束，開始平倉。")
+        self.close_both_sides(confirmed=True)
+
+    def close_both_from_side_panel(self) -> None:
+        # Its confirmations appear beside the side panel (side_origin_panel).
+        self._side_action_active = True
+        try:
+            self.close_both_sides()
+        finally:
+            self._side_action_active = False
+
+    def _run_close_both(self, plan) -> None:
+        import pyautogui
+        from .close_both import close_ctrader, close_mt5
+        from .mouse_guard import PhysicalMouseGuard
+        results = []
+        with PhysicalMouseGuard(self.emergency):
+            for role, label, platform, points in plan:
+                self.emergency.guard()
+                try:
+                    main = _bound_broker_main(self, platform, role)
+                    if platform == "cTrader":
+                        text = close_ctrader(self.windows, main, points, self.windows.list_windows,
+                                             process_id_for_window, self.emergency,
+                                             lambda x, y: pyautogui.click(x, y))
+                    else:
+                        text = close_mt5(self.windows, main, points, process_id_for_window,
+                                         self.emergency, lambda x, y: pyautogui.click(x, y),
+                                         pyautogui.press)
+                except EmergencyStopped:
+                    results.append(f"{label}：已緊急停止，沒有繼續。")
+                    self.signals.close_both_result.emit("\n".join(results))
+                    raise
+                except Exception as exc:
+                    text = f"{platform}：沒有完成——{exc}"
+                results.append(f"{label} {text}")
+                self.log(f"兩邊平倉：{label} {text}")
+        self.signals.close_both_result.emit("\n".join(results))
+
+    def _show_close_both_result(self, text: str) -> None:
+        QMessageBox.information(self, "兩邊平倉結果", text + "\n\n請到兩個平台核對持倉。")
+
     def fill_both(self) -> None:
         self._side_fill_active = False
         self._launch_fill(("internal", "external"))
@@ -4958,6 +5343,42 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         new_balance = Decimal(text[1:].strip())
         return new_balance, (current_pnl or Decimal("0")) + (new_balance - (old_balance or Decimal("0")))
 
+    def open_rest_close_settings(self) -> None:
+        """Preference only; does not schedule or execute any close."""
+        RestCloseSettingsDialog(self).exec()
+
+    def _confirm_rest_close_enable(self) -> bool:
+        box = QMessageBox(self)
+        box.setWindowTitle("休市平倉")
+        box.setText("勾選後，休市前會自動把勾選的帳戶全部平倉。")
+        box.setInformativeText(
+            f"時間到會先倒數 30 秒，可以按取消；沒有取消就會平倉。"
+            f"目前設定：休市前 {rest_close_minutes(self.store.data)} 分鐘（齒輪可改）。")
+        keep = box.addButton("先不要", QMessageBox.RejectRole)
+        enable = box.addButton("開啟休市平倉", QMessageBox.AcceptRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is enable  # ✕/Esc means no
+
+    def _toggle_rest_close(self, checked: bool) -> None:
+        """Saves the preference only; no close is scheduled or sent."""
+        ui = self.store.data.setdefault("ui", {})
+        old = ui.get("rest_close_enabled") is True
+        if checked and not self._confirm_rest_close_enable():
+            self.rest_close_checkbox.blockSignals(True)
+            self.rest_close_checkbox.setChecked(old)
+            self.rest_close_checkbox.blockSignals(False)
+            return
+        ui["rest_close_enabled"] = bool(checked)
+        try:
+            self.save_config()
+        except OSError:
+            ui["rest_close_enabled"] = old
+            self.rest_close_checkbox.blockSignals(True)
+            self.rest_close_checkbox.setChecked(old)
+            self.rest_close_checkbox.blockSignals(False)
+            QMessageBox.warning(self, "儲存失敗", "休市平倉設定未儲存，請重試。")
+
     def open_calibration(self, platform: str) -> None:
         was_minimized = self.isMinimized()
         was_maximized = self.isMaximized()
@@ -5511,24 +5932,43 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         previous = self.profiles.active_name
         if name == previous:
             return
+        switched = False
         try:
             self.save_ui_state()
             self.profiles.set_active(name)
+            switched = True
             self.store.data = self.profiles.load_profile(name)
             self.store.save()
             self.automation.config = self.store.data
             self.automation.profile_name = name
+            # A phone switch calls this directly; keep the desktop selector
+            # showing the profile that is actually active.
+            self._set_profile_combo(name)
             self._apply_profile_ui()
             self.log(f"已切換方案：{name}")
             self.read_sheet()
         except Exception as exc:
-            self._set_profile_combo(previous)
-            QMessageBox.critical(self, "方案", str(exc))
+            if switched:
+                # Never leave the screen showing one profile while the data
+                # belongs to another: put the previous profile back fully.
+                try:
+                    self.profiles.set_active(previous)
+                    self.store.data = self.profiles.load_profile(previous)
+                    self.store.save()
+                    self.automation.config = self.store.data
+                    self.automation.profile_name = previous
+                    self._apply_profile_ui()
+                except Exception:
+                    crash_log.record("roll back failed profile switch")
+            self._set_profile_combo(self.profiles.active_name)
+            QMessageBox.critical(self, "方案", f"切換方案失敗，已保留「{self.profiles.active_name}」。\n{exc}")
 
     def create_profile(self) -> None:
         if getattr(self, "_trade_settings_busy", False):
             return
-        name, accepted = themed_input_text(self, "建立方案", "方案名稱：")
+        name, accepted = themed_input_text(
+            self, "建立方案", "方案名稱：", next_profile_name(self.profiles.names())
+        )
         name = name.strip()
         if not accepted:
             return
@@ -5736,6 +6176,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             calendar.close()
         self.emergency.close()
         event.accept()
+        self.main_window_closed.emit()
 
 
 class CalibrationDialog(ThemedDialog):
@@ -5746,6 +6187,7 @@ class CalibrationDialog(ThemedDialog):
     preview_progress = Signal(int)
     preview_guard_ready = Signal(object)
     preview_finished = Signal(object)
+    mt5_bulk_found = Signal(object)
 
     def __init__(self, app: TradingHelperApp, platform: str):
         super().__init__(app)
@@ -5773,6 +6215,15 @@ class CalibrationDialog(ThemedDialog):
             "TradingView": "按欄位右側「手動擷取」校準。",
         }
         content_layout.addWidget(QLabel(descriptions.get(platform, "選擇項目後校準；舊設定會保留到你主動變更。")))
+        if platform != "TradingView":
+            # Calibration clicks real platform controls (right-click menus,
+            # the close-all button for its confirmation); a demo account makes
+            # every step harmless.
+            demo_note = QLabel("⚠ 請先切到模擬帳戶再校準：校準會實際點擊平台上的按鈕和選單。")
+            demo_note.setObjectName("calibrationDemoAccountNote")
+            demo_note.setWordWrap(True)
+            demo_note.setStyleSheet("color:#f0b36a;")
+            content_layout.addWidget(demo_note)
         self.radios: dict[str, QRadioButton] = {}
         self._calibration_radio_group = QButtonGroup(self)
         self._calibration_tabs = QTabWidget(self)
@@ -5786,10 +6237,9 @@ class CalibrationDialog(ThemedDialog):
         self._field_capture_buttons: dict[str, QPushButton] = {}
         self._field_capture_dots: dict[str, QLabel] = {}
         self._capture_buttons: list[QPushButton] = []
-        self.bulk_scope_checkboxes = {}
         self._capture_running = False
         keys_all = tuple(key for key, _ in CALIBRATION_TARGETS[platform])
-        bulk_keys = tuple(key for key in keys_all if bulk_close_role(key))
+        bulk_keys = tuple(key for key in keys_all if is_bulk_close_key(key))
         if platform == "cTrader":
             after_keys = set(POSITION_GRID_KEYS+POSITION_EDIT_KEYS+bulk_keys)
             before = tuple(key for key in keys_all if key not in after_keys)
@@ -5886,19 +6336,31 @@ class CalibrationDialog(ThemedDialog):
                     card_layout.addWidget(target_row)
                     self.position_close_capture_button = capture
                     self.position_close_missing_dot = missing_dot
-                elif platform == "TradingView" or bulk_close_role(key):
+                elif platform == "TradingView" or is_bulk_close_key(key):
                     target_row = QWidget(page)
                     target_layout = QHBoxLayout(target_row)
                     target_layout.setContentsMargins(0, 1, 2, 1)
                     target_layout.setSpacing(8)
                     target_layout.addWidget(radio, 1)
-                    capture = QPushButton("手動擷取", target_row)
-                    capture.setObjectName(f"captureCalibration_{key}")
-                    capture.setToolTip("將滑鼠停在此欄位上，倒數結束後儲存座標")
-                    capture.clicked.connect(
-                        lambda checked=False, field_key=key, field_radio=radio:
-                            (field_radio.setChecked(True), self.capture())
-                    )
+                    if is_bulk_close_key(key):
+                        # Each bulk field is found on its own (an MT5 menu
+                        # cannot show both at once); manual capture is
+                        # offered if the automatic search fails.
+                        capture = QPushButton("自動尋找", target_row)
+                        capture.setObjectName(f"autoFindCalibration_{key}")
+                        capture.setToolTip("自動在平台上找出這個欄位，確認後才儲存；不會點平倉")
+                        capture.clicked.connect(
+                            lambda checked=False, field_key=key, field_radio=radio:
+                                (field_radio.setChecked(True), self.auto_find_bulk_field(field_key))
+                        )
+                    else:
+                        capture = QPushButton("手動擷取", target_row)
+                        capture.setObjectName(f"captureCalibration_{key}")
+                        capture.setToolTip("將滑鼠停在此欄位上，倒數結束後儲存座標")
+                        capture.clicked.connect(
+                            lambda checked=False, field_key=key, field_radio=radio:
+                                (field_radio.setChecked(True), self.capture())
+                        )
                     self._capture_buttons.append(capture)
                     badge_host = QWidget(target_row)
                     badge_grid = QGridLayout(badge_host)
@@ -5954,47 +6416,43 @@ class CalibrationDialog(ThemedDialog):
                     "請先手動開啟持倉修改視窗，再尋找欄位。"
                 ))
             if stage_keys == bulk_keys and bulk_keys:
-                scope_row = QHBoxLayout()
-                saved_scope = getattr(getattr(self.app, 'store', None), 'data', {}).get('ui', {}).get('rest_close_all', {})
-                for role, caption in (('internal', '場內全部持倉'), ('external', '場外全部持倉')):
-                    scope = QCheckBox(caption, page)
-                    scope.setObjectName('bulkCloseAll_'+role)
-                    scope.setChecked(saved_scope.get(role) is True)
-                    install_checkmark_only_indicator(scope)
-                    scope.toggled.connect(lambda checked, r=role: self._save_bulk_close_scope(r, checked))
-                    self.bulk_scope_checkboxes[role] = scope
-                    scope_row.addWidget(scope)
-                scope_row.addStretch()
-                card_layout.addLayout(scope_row)
-                card_layout.addWidget(QLabel('未勾選：只關對應持倉。此處只設定範圍，不會平倉。'))
-                hint = QLabel('場內、場外分開校準；只記位置，不會平倉。' if platform == 'cTrader' else
-                              '先選場內或場外欄位；自動開啟 SL 欄右鍵選單。只懸停，不點平倉。')
+                # The close-all scope is a trading preference; it lives in the
+                # main automation row's gear settings, not in calibration.
+                hint = QLabel('每一欄按「自動尋找」；確認視窗的 Yes 要先開好平倉確認視窗。只記位置，不會平倉。'
+                              if platform == 'cTrader' else
+                              '每一欄按「自動尋找」：會在 SL 欄按右鍵並點開「批量操作」，不會點平倉。')
+                hint.setObjectName('bulkCloseCalibrationHint')
                 hint.setWordWrap(True)
                 card_layout.addWidget(hint)
-            if platform != "TradingView":
+            # The bulk page searches per field (buttons on each row).
+            if platform != "TradingView" and not (stage_keys == bulk_keys and bulk_keys):
                 scan = QPushButton("自動尋找欄位", page)
                 scan.setToolTip("只找目前開啟畫面的候選位置；不儲存、不填值、不操作交易平台")
-                if stage_keys == bulk_keys and bulk_keys and platform != 'cTrader':
-                    scan.setText('開啟右鍵選單並擷取所選欄位')
-                    scan.setToolTip('在已校準的 SL 欄按右鍵後，將滑鼠停在指定選單項目；不會點平倉。')
-                    scan.clicked.connect(self.capture)
-                else:
-                    scan.clicked.connect(self.scan_all_calibration)
+                scan.clicked.connect(self.scan_all_calibration)
                 card_layout.addWidget(scan)
-            else:
+            elif platform == "TradingView":
                 card_layout.addWidget(QLabel(
                     "請逐一手動擷取欄位。"
                 ))
             self._stage_keys.append(tuple(stage_keys))
             self._stage_titles.append(title)
             tab_idx = self._calibration_tabs.addTab(page, title)
-            dot = QLabel()
+            # Qt centres tab buttons vertically; a text-height host keeps the
+            # dot at the caption's top-right like the other setup badges.
+            dot_host = QWidget()
+            dot_host.setObjectName("stageCalibrationDotHost")
+            dot_host.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            dot_host.setFixedSize(
+                6, self._calibration_tabs.tabBar().fontMetrics().height()
+            )
+            dot = QLabel(dot_host)
             dot.setObjectName("stageCalibrationIncompleteDot")
             dot.setFixedSize(6, 6)
             dot.setStyleSheet("background-color:#fa5362;border-radius:3px;")
             dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            dot.move(0, 0)
             self._calibration_tabs.tabBar().setTabButton(
-                tab_idx, QTabBar.RightSide, dot
+                tab_idx, QTabBar.RightSide, dot_host
             )
             self._stage_dots.append(dot)
         self._refresh_stage_progress()
@@ -6056,6 +6514,11 @@ class CalibrationDialog(ThemedDialog):
         self.preview_progress.connect(self._update_calibration_preview_countdown)
         self.preview_guard_ready.connect(self._show_inventory_preview_outlines)
         self.preview_finished.connect(self._finish_saved_preview)
+        self.mt5_bulk_found.connect(self._finish_mt5_bulk_find)
+        self._transparency_watchdog = QTimer(self)
+        self._transparency_watchdog.setInterval(1000)
+        self._transparency_watchdog.timeout.connect(self._repair_stranded_transparency)
+        self._transparency_watchdog.start()
         self.setStyleSheet(DIALOG_THEME)
         self.install_chrome(show_minimize=False, show_maximize=False)
         self._refresh_position_close_badge()
@@ -6180,15 +6643,34 @@ class CalibrationDialog(ThemedDialog):
         profile = data.get("platforms", {}).get(self.platform, {})
         point = profile.get("points", {}).get("position_close_button")
         show_dots = bool(data.get("ui", {}).get("show_calibration_badges", True))
-        dot.setVisible(show_dots and not (isinstance(point, dict) and point))
+        saved = isinstance(point, dict) and bool(point)
+        dot.setVisible(show_dots and not saved)
+        # A saved field hides its capture button until it is cleared.
+        button = getattr(self, "position_close_capture_button", None)
+        if button is not None:
+            button.setVisible(not saved)
 
     def _refresh_field_capture_badges(self) -> None:
         data = getattr(getattr(self.app, "store", None), "data", {}) or {}
         points = data.get("platforms", {}).get(self.platform, {}).get("points", {})
         show_dots = bool(data.get("ui", {}).get("show_calibration_badges", True))
+        bulk_order = [key for key, _ in CALIBRATION_TARGETS.get(self.platform, ()) if is_bulk_close_key(key)]
         for key, dot in self._field_capture_dots.items():
             point = points.get(key)
-            dot.setVisible(show_dots and not (isinstance(point, dict) and point))
+            saved = isinstance(point, dict) and bool(point)
+            dot.setVisible(show_dots and not saved)
+            # A saved field hides its capture/search button until cleared.
+            button = self._field_capture_buttons.get(key)
+            if button is not None:
+                button.setVisible(not saved)
+                if key in bulk_order[1:]:
+                    # The 2nd 全關 field is reached through the 1st (MT5 submenu
+                    # under 批量操作; cTrader Yes behind the close-all button).
+                    previous = points.get(bulk_order[bulk_order.index(key) - 1])
+                    ready = isinstance(previous, dict) and bool(previous)
+                    button.setEnabled(ready)
+                    button.setToolTip("請先完成上一欄。" if not ready else
+                                      "自動在平台上找出這個欄位，確認後才儲存；不會點平倉")
 
     def _refresh_clear_calibration_button(self) -> None:
         button = getattr(self, "clear_calibration_button", None)
@@ -6361,15 +6843,11 @@ class CalibrationDialog(ThemedDialog):
         if self._calibration_abort is None:
             return
         self._calibration_abort = None
-        restore = getattr(self.app, "_restore_after_operation", None)
-        if callable(restore):
-            restore()
-        else:
-            show_app = getattr(self.app, "showNormal", None)
-            if callable(show_app):
-                show_app()
+        # This dialog is modal: bring it back FIRST. If restoring the main
+        # window or sidebar fails, the user must never be left with an
+        # invisible window that blocks the whole helper.
         opacity = getattr(self, "_calibration_dialog_restore_opacity", 1.0)
-        self.setWindowOpacity(opacity)
+        self.setWindowOpacity(opacity if opacity > 0.05 else 1.0)
         if getattr(self, "_calibration_dialog_restore_maximized", False):
             self.showMaximized()
         else:
@@ -6380,6 +6858,44 @@ class CalibrationDialog(ThemedDialog):
         self._calibration_dialog_restore_geometry = None
         self._calibration_dialog_restore_maximized = False
         self._calibration_dialog_restore_opacity = 1.0
+        try:
+            restore = getattr(self.app, "_restore_after_operation", None)
+            if callable(restore):
+                restore()
+            else:
+                show_app = getattr(self.app, "showNormal", None)
+                if callable(show_app):
+                    show_app()
+        except Exception:
+            crash_log.record("restore main window/sidebar after calibration operation")
+        self.raise_()
+        self.activateWindow()
+
+    def _calibration_operation_idle(self) -> bool:
+        return not (
+            self._calibration_abort is not None
+            or getattr(self, "_candidate_preview_running", False)
+            or getattr(self, "_capture_running", False)
+            or getattr(self, "_inventory_running", False)
+            or getattr(self, "_inspection_running", False)
+            or getattr(self, "_hover_running", False)
+        )
+
+    def _repair_stranded_transparency(self) -> None:
+        """Safety net: an idle modal dialog must never stay invisible."""
+        if not self.isVisible() or not self._calibration_operation_idle():
+            return
+        if self.windowOpacity() >= 0.99:
+            return
+        try:
+            raise RuntimeError(f"calibration dialog left at opacity {self.windowOpacity():.2f} while idle")
+        except RuntimeError:
+            crash_log.record("stranded transparent calibration dialog repaired")
+        self.setWindowOpacity(1.0)
+        hint = getattr(self.app, "operation_hint", None)
+        if hint is not None and hasattr(hint, "hide"):
+            hint.hide()
+        self.showNormal()
         self.raise_()
         self.activateWindow()
 
@@ -6452,14 +6968,30 @@ class CalibrationDialog(ThemedDialog):
         markers: list[tuple[int, int]] = []
         unavailable: list[str] = []
         labels = dict(CALIBRATION_TARGETS[self.platform])
+        self._preview_menu_open = False  # MT5 bulk menu: right-click once per preview
         for key in keys:
             point = points.get(key)
             if not isinstance(point, dict) or not point:
                 unavailable.append(labels.get(key, key) + "（未校準）")
                 continue
             try:
-                if bulk_close_role(key):
-                    main = _bound_broker_main(self.app, self.platform, bulk_close_role(key), display_only=True)
+                if is_bulk_close_key(key):
+                    main = _bound_broker_main(
+                        self.app, self.platform, self._bulk_window_role(),
+                        display_only=True,
+                    )
+                    if (self.platform != "cTrader"
+                            and isinstance(self.app.windows, WindowController)):
+                        # MT5 menus only exist while open: open the saved
+                        # SL-cell menu (and rest on 批量操作 for its submenu)
+                        # first. Only the 批量操作 submenu header is clicked;
+                        # 所有持倉平倉 is never clicked.
+                        rect = self._open_mt5_bulk_menu_for_preview(main, key, points)
+                        rectangles.append(rect)
+                        continue
+                    if self.platform == "cTrader" and isinstance(self.app.windows, WindowController):
+                        rectangles.append(self._ctrader_bulk_rect_for_preview(main, key, points))
+                        continue
                     report = inspect_bulk_targets(main, self.platform, ((key, labels[key]),),
                                                   self.app.windows.list_windows(), process_id_for_window)
                     if report.warnings or key not in report.candidates:
@@ -6534,6 +7066,7 @@ class CalibrationDialog(ThemedDialog):
             overlay.hide()
             overlay.close()
         self._inventory_overlays.clear()
+        self._dismiss_preview_confirmation()  # cancel a cTrader confirmation we opened
         self._hover_outline.hide()
         self._candidate_preview_running = False
         self._restore_calibration_operation()
@@ -6616,18 +7149,21 @@ class CalibrationDialog(ThemedDialog):
             QMessageBox.information(self, "完整校準掃描", "目前只支援 cTrader 與 MT5 系列。")
             return
         selected_key = next(key for key, radio in self.radios.items() if radio.isChecked())
-        if bulk_close_role(selected_key) and self.platform != 'cTrader':
-            # A context menu closes when the result dialog takes focus.
-            # Capture while it is open, rather than offering stale scan results.
-            self.capture()
+        if is_bulk_close_key(selected_key) and self.platform != 'cTrader':
+            # MT5 menus close as soon as a result dialog takes focus, so read
+            # and convert both items while the menu is open (see below).
+            self.auto_find_mt5_bulk()
             return
-        scan_role = bulk_close_role(selected_key) or self._display_role("lot_input")
+        scan_role = self._display_role("lot_input")
+        # Which window to read; bulk fields may use the other side's binding.
+        window_role = (self._bulk_window_role()
+                       if is_bulk_close_key(selected_key) else scan_role)
         profile = self.app.store.data["platforms"][self.platform]
-        pattern = profile.get("window_title", {}).get(scan_role, "")
+        pattern = profile.get("window_title", {}).get(window_role, "")
         try:
             if not str(pattern or "").strip():
                 raise ValueError("尚未綁定此交易平台視窗，請先設定視窗標題")
-            matched = _bound_broker_main(self.app, self.platform, scan_role, display_only=True)
+            matched = _bound_broker_main(self.app, self.platform, window_role, display_only=True)
             # The configured title regex (e.g. "cTrader") may also match
             # "Modify order or position - cTrader". Scan must bind to the
             # unique *main terminal* first, then select modal by same PID.
@@ -6648,9 +7184,9 @@ class CalibrationDialog(ThemedDialog):
         stage = set(self._stage_keys[self._calibration_tabs.currentIndex()])
         is_position_grid = stage == set(POSITION_GRID_KEYS)
         is_position_modify = stage == set(POSITION_EDIT_KEYS)
-        is_bulk = bool(bulk_close_role(selected_key))
+        is_bulk = is_bulk_close_key(selected_key)
         if is_bulk:
-            stage = {key for key in stage if bulk_close_role(key) == scan_role}
+            stage = {selected_key}  # the 全關 page searches one field at a time
         if is_position_modify:
             other=select_modify_dialog(
                 target, self.app.windows.list_windows(), self.platform,
@@ -6713,6 +7249,9 @@ class CalibrationDialog(ThemedDialog):
                     if abort.event.is_set():
                         self.inventory_finished.emit({"cancelled": True})
                         return
+                    # Bring the scanned platform window forward first (it is
+                    # restored if minimised); scanning reads only, no clicks.
+                    WindowController(abort).focus(target)
                     if is_bulk:
                         if self.platform != 'cTrader':
                             open_mt5_context(WindowController(abort), target, profile.get('points', {}).get('position_order_row'))
@@ -6746,6 +7285,14 @@ class CalibrationDialog(ThemedDialog):
             return
         if not isinstance(report, ScanReport):
             self.result.setText("尋找失敗；沒有更改校準位置。")
+            return
+        if (not report.candidates and report.targets
+                and all(is_bulk_close_key(key) for key, _ in report.targets)):
+            labels = "、".join(label for _, label in report.targets)
+            detail = "；".join(report.warnings) or "；".join(report.reasons.values())
+            self.result.setText("沒有找到這個欄位；沒有儲存。")
+            self._offer_manual_capture(
+                "自動尋找欄位", f"找不到「{labels}」。" + (f"\n{detail}" if detail else ""))
             return
         self.result.setText(
             f"掃描完成：{len(report.candidates)}/{len(report.targets)} 個單一候選，均未套用或儲存"
@@ -6848,7 +7395,7 @@ class CalibrationDialog(ThemedDialog):
             # Re-read every field of the stage (not only selected fields)
             # to reject stale, moved, duplicate or differently identified UI.
             stage = {key for key,_ in state["report"].targets}
-            if all(bulk_close_role(key) for key in stage):
+            if all(is_bulk_close_key(key) for key in stage):
                 fresh = inspect_bulk_targets(original, self.platform, state['report'].targets,
                                              self.app.windows.list_windows(), process_id_for_window)
             elif stage == set(POSITION_GRID_KEYS):
@@ -6876,7 +7423,7 @@ class CalibrationDialog(ThemedDialog):
                         f"{key} 的欄位已移動或辨識變更，請重新掃描並預覽"
                     )
             visible = self.app.windows.list_windows()
-            if all(bulk_close_role(key) for key in stage):
+            if all(is_bulk_close_key(key) for key in stage):
                 visible = bulk_platform_windows(original, visible, process_id_for_window)
             points = candidate_calibration_points(
                 fresh, selected, visible,
@@ -7140,10 +7687,16 @@ class CalibrationDialog(ThemedDialog):
         ):
             return
         key = next(key for key, radio in self.radios.items() if radio.isChecked())
-        guided_close_capture = key == "position_close_button"
-        hint = (
+        bulk_role = self._bulk_window_role() if is_bulk_close_key(key) else None
+        try:
+            focus_role = self._display_role(key)  # read Qt state on the GUI thread
+        except AttributeError:
+            focus_role = None  # no platform selector (e.g. a bare preview parent)
+        guided_close_capture = key == "position_close_button" or bool(bulk_role)
+        hint = BULK_CAPTURE_HINTS.get((self.platform == "cTrader", key.rsplit("_", 1)[-1])) if bulk_role else None
+        hint = hint or (
             "正在擷取平倉按鈕；移到目標後等待倒數，按 ESC 或右鍵取消"
-            if guided_close_capture else
+            if key == "position_close_button" else
             "正在擷取欄位；移到目標後等待倒數，按 ESC 或右鍵取消"
         )
         self._capture_running = True
@@ -7158,13 +7711,37 @@ class CalibrationDialog(ThemedDialog):
                 from .mouse_guard import PhysicalMouseGuard
                 countdown = (5, 4, 3, 2, 1) if guided_close_capture else (3, 2, 1)
                 with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
-                    bulk_role = bulk_close_role(key)
                     bulk_main = None
+                    if (not bulk_role and focus_role
+                            and self.platform in {"cTrader", "MT5", "BYBIT MT5", "原版MT5"}):
+                        # Bring the bound platform forward so the field is
+                        # visible; failing to find it must not block a capture.
+                        try:
+                            WindowController(abort).focus(_bound_broker_main(
+                                self.app, self.platform, focus_role, display_only=True))
+                        except EmergencyStopped:
+                            raise
+                        except Exception:
+                            pass
                     if bulk_role:
-                        bulk_main = _bound_broker_main(self.app, self.platform, bulk_role, display_only=True)
+                        bulk_main = _bound_broker_main(
+                            self.app, self.platform, bulk_role, display_only=True,
+                        )
+                        # Bring the platform forward so the target is visible.
+                        bulk_main = WindowController(abort).focus(bulk_main)
                         if self.platform != 'cTrader':
                             profile = self.app.store.data['platforms'][self.platform]
                             open_mt5_context(WindowController(abort), bulk_main, profile.get('points', {}).get('position_order_row'))
+                            if key == 'bulk_close_all':
+                                # Left-click 批量操作 (a submenu header only)
+                                # so the submenu is already open; the user
+                                # only moves right onto 所有持倉平倉.
+                                import pyautogui
+                                abort.guard()
+                                hover_mt5_bulk_actions(
+                                    bulk_main, process_id_for_window,
+                                    lambda x, y: pyautogui.click(x, y),
+                                )
                     for count in countdown:
                         self.preview_progress.emit(count)
                         if abort.event.wait(1):
@@ -7209,7 +7786,11 @@ class CalibrationDialog(ThemedDialog):
                                         detected_rect or (x-4, y-4, x+4, y+4), ancestors=(active.title,))
                         report = match_controls(self.platform, ((key, ''),), [probe])
                         if key not in report.candidates:
-                            raise AutomationError('游標不在指定的批量平倉欄位，沒有儲存。')
+                            seen = f"{snapshot.control_type or '未知類型'}「{snapshot.name or '（無名稱）'}」"
+                            raise AutomationError(
+                                f'游標不在指定的批量平倉欄位，沒有儲存。\n'
+                                f'游標下讀到的是：{seen}，所在視窗：「{active.title or "（無標題）"}」。'
+                            )
                         point['calibration_role'] = bulk_role
                         point['control_name'] = snapshot.name
                     preview_rect, preview_source = manual_capture_confirmation_rect(
@@ -7268,6 +7849,10 @@ class CalibrationDialog(ThemedDialog):
 
     def show_position(self, *, show_all: bool = False) -> None:
         """Preview saved calibration centers without invoking automation guards."""
+        if not self._calibration_operation_idle():
+            # Previously the status text changed and then nothing happened.
+            self.result.setText("上一個校準動作還沒結束；請等倒數完成或按 ESC 停止後再查看。")
+            return
         if show_all:
             stage_index = self._calibration_tabs.currentIndex()
             keys = self._stage_keys[stage_index] if stage_index >= 0 else ()
@@ -7278,6 +7863,7 @@ class CalibrationDialog(ThemedDialog):
             ),)
         rectangles, markers, unavailable = self._saved_point_rectangles(keys)
         if not rectangles and not markers:
+            self._dismiss_preview_confirmation()
             detail = "\n".join(unavailable) if unavailable else "尚無已保存的位置。"
             QMessageBox.warning(self, "查看已校準位置", detail)
             return
@@ -7307,34 +7893,405 @@ class CalibrationDialog(ThemedDialog):
             )
         self._preview_saved_calibration(rectangles, markers)
 
-    def _save_bulk_close_scope(self, role: str, checked: bool) -> None:
-        choice = self.bulk_scope_checkboxes[role]
-        data = getattr(getattr(self.app, 'store', None), 'data', None)
-        if data is None:
+    def auto_find_bulk_field(self, key: str) -> None:
+        """Per-field automatic search on the 全關 page (both platforms)."""
+        if self.platform == "cTrader":
+            self.auto_find_ctrader_bulk(key)
+        else:
+            self.auto_find_mt5_bulk((key,))
+
+    def auto_find_ctrader_bulk(self, key: str) -> None:
+        """Bring cTrader forward and find one 全關 field; save after confirm.
+
+        Read-only: never clicks. The close-all button is NOT clicked to open
+        the confirmation (with confirmation disabled in cTrader that click
+        would close every position), so the Yes field needs the user to have
+        opened the confirmation window first.
+        """
+        if not self._calibration_operation_idle():
             return
-        old = dict(data.get('ui', {}).get('rest_close_all', {}))
-        if checked:
-            caption = '場內' if role == 'internal' else '場外'
-            if QMessageBox.question(self, '確認平倉範圍',
-                    f'之後執行休市平倉時，關閉{caption}帳戶所有持倉？',
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-                choice.blockSignals(True)
-                choice.setChecked(old.get(role) is True)
-                choice.blockSignals(False)
-                return
-        data.setdefault('ui', {})['rest_close_all'] = dict(old, **{role: checked})
+        labels = dict(CALIBRATION_TARGETS[self.platform])
+        points_saved = self.app.store.data["platforms"][self.platform].get("points", {})
+        button_point = points_saved.get("bulk_close_button")
+        open_confirmation = key == "bulk_close_confirm"
         try:
-            self.app.save_config()
-        except OSError:
-            data['ui']['rest_close_all'] = old
-            choice.blockSignals(True)
-            choice.setChecked(old.get(role) is True)
-            choice.blockSignals(False)
-            QMessageBox.warning(self, '儲存失敗', '平倉範圍未儲存，請重試。')
+            main = _bound_broker_main(self.app, self.platform, self._bulk_window_role(), display_only=True)
+            if open_confirmation and not (isinstance(button_point, dict) and button_point):
+                raise AutomationError("請先完成「全部平倉按鈕」那一欄。")
+        except Exception as exc:
+            QMessageBox.warning(self, "自動尋找欄位", str(exc))
+            return
+        if open_confirmation:
+            box = QMessageBox(self)
+            box.setWindowTitle("叫出平倉確認視窗")
+            box.setIcon(QMessageBox.Warning)
+            box.setText("會按一下 cTrader 的「全部平倉」叫出確認視窗，找到 Yes 後自動按取消，不會按 Yes。")
+            box.setInformativeText(
+                "只在模擬帳戶執行：程式會先讀取帳戶類型，不是 Demo 就停止。\n"
+                "需要至少一筆模擬持倉，確認視窗才會出現。")
+            cancel = box.addButton("取消", QMessageBox.RejectRole)
+            go = box.addButton("是模擬帳戶，繼續", QMessageBox.AcceptRole)
+            box.setDefaultButton(cancel)
+            box.exec()
+            if box.clickedButton() is not go:  # ✕/Esc = cancel
+                return
+        self._inventory_running = True
+        self.result.setText("正在切到 cTrader 尋找欄位……")
+        self._begin_calibration_operation("正在自動尋找欄位；按 ESC 或右鍵取消")
+        self.setWindowOpacity(0.0)
+        abort = self._calibration_abort
+
+        def task() -> None:
+            try:
+                from .mouse_guard import PhysicalMouseGuard
+                with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    controller = WindowController(abort)
+                    window = controller.focus(main)
+                    abort.guard()
+                    if open_confirmation:
+                        points, reason, yes_rect, dismiss = self._find_ctrader_yes(
+                            controller, window, button_point, abort)
+                        self.mt5_bulk_found.emit({"points": points,
+                                                  "missing": [] if points else [labels[key]],
+                                                  "reason": reason,
+                                                  "rects": {key: yes_rect} if yes_rect else {},
+                                                  "dismiss": dismiss})
+                        return
+                    fast = ctrader_close_all_rect(window) if key == "bulk_close_button" else None
+                    if fast is not None:  # fixed id: no full-window scan needed
+                        report = ScanReport(self.platform, ((key, labels[key]),))
+                        report.candidates[key] = ScanCandidate(key, fast, "cTrader 全部平倉按鈕")
+                    else:
+                        report = inspect_bulk_targets(window, self.platform, ((key, labels[key]),),
+                                                      self.app.windows.list_windows(), process_id_for_window)
+                    points = {}
+                    if not report.warnings and key in report.candidates:
+                        points = candidate_calibration_points(
+                            report, (key,), self.app.windows.list_windows(), window,
+                            process_id_for_window(window.handle), process_id_for_window,
+                        )
+                    reason = "；".join(report.warnings) or report.reasons.get(key, "")
+                    self.mt5_bulk_found.emit({
+                        "points": points,
+                        "missing": [] if points else [labels[key]],
+                        "reason": reason,
+                        "rects": {k: c.rect for k, c in report.candidates.items()},
+                    })
+            except EmergencyStopped:
+                self.mt5_bulk_found.emit({"cancelled": True})
+            except Exception as exc:
+                self.mt5_bulk_found.emit({"error": str(exc)})
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _find_ctrader_yes(self, controller, window, button_point, abort):
+        """Demo only: open cTrader's close-all confirmation and read its Yes.
+        Yes is NEVER clicked; the caller dismisses the window afterwards.
+        Returns (points, reason, yes_rect, dismiss_target)."""
+        pid = process_id_for_window(window.handle)
+        account = ctrader_account_type(window)
+        if account != "Demo":
+            raise AutomationError(
+                f"帳戶類型讀到「{account or '讀不到'}」，不是 Demo，沒有按「全部平倉」。"
+                "請切到模擬帳戶，或自己開好平倉確認視窗後再試。")
+        found = find_ctrader_confirmation(window, self.app.windows.list_windows(), process_id_for_window)
+        if found is None:
+            controller.click(window, button_point)  # opens the confirmation (demo)
+            deadline = time.monotonic() + 3
+            while found is None and time.monotonic() < deadline:
+                abort.guard()
+                time.sleep(0.2)
+                found = find_ctrader_confirmation(window, self.app.windows.list_windows(),
+                                                  process_id_for_window)
+        if found is None:
+            return {}, ("按下「全部平倉」後沒有出現確認視窗。需要至少一筆模擬持倉；"
+                        "也請到 cTrader 確認持倉狀態。"), None, None
+        report = ScanReport(self.platform, (("bulk_close_confirm", "平倉確認視窗的 Yes"),))
+        report.candidates["bulk_close_confirm"] = ScanCandidate("bulk_close_confirm", found["yes"], "")
+        points = candidate_calibration_points(
+            report, ("bulk_close_confirm",), self.app.windows.list_windows(), window,
+            pid, process_id_for_window)
+        # Left open so the yellow box can be checked against it; the GUI
+        # cancels it (No/Cancel, else Esc) right after the save decision.
+        return points, "", found["yes"], (found["cancel"] or "esc")
+
+    def _offer_manual_capture(self, title: str, message: str) -> None:
+        """Automatic search failed: explain, and offer the manual fallback."""
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setIcon(QMessageBox.Warning)
+        box.setText(message)
+        box.setInformativeText("原本的校準位置沒有變更。")
+        close = box.addButton("關閉", QMessageBox.RejectRole)
+        manual = box.addButton("改用手動擷取", QMessageBox.AcceptRole)
+        box.setDefaultButton(close)
+        box.exec()
+        # Only the explicit button starts a capture; the title-bar ✕ or Esc
+        # leaves clickedButton() empty and must do nothing.
+        if box.clickedButton() is manual:
+            self.capture()
+
+    def auto_find_mt5_bulk(self, keys: tuple[str, ...] | None = None) -> None:
+        """Find MT5 bulk-close menu items automatically.
+
+        Right-clicks the saved SL cell, left-clicks only the 批量操作 submenu
+        header, then reads both items and converts them to calibration points
+        WHILE the menu is open (it closes once the helper takes focus).
+        Nothing is saved until the user confirms; 所有持倉平倉 is never clicked.
+        """
+        if not self._calibration_operation_idle():
+            return
+        labels = dict(CALIBRATION_TARGETS[self.platform])
+        keys = tuple(keys or (key for key in labels if is_bulk_close_key(key)))
+        open_submenu = "bulk_close_all" in keys
+        row = self.app.store.data["platforms"][self.platform].get("points", {}).get("position_order_row")
+        try:
+            if not isinstance(row, dict) or not row:
+                raise AutomationError("請先校準「③ 持倉列表」的 SL 欄，再自動尋找全關欄位。")
+            main = _bound_broker_main(self.app, self.platform, self._bulk_window_role(), display_only=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "自動尋找欄位", str(exc))
+            return
+        self._inventory_running = True
+        self.result.setText("正在開啟 MT5 右鍵選單並尋找全關欄位；不會點平倉……")
+        self._begin_calibration_operation("正在自動尋找全關欄位；按 ESC 或右鍵取消")
+        self.setWindowOpacity(0.0)
+        abort = self._calibration_abort
+
+        def task() -> None:
+            try:
+                import pyautogui
+                from .mouse_guard import PhysicalMouseGuard
+                with PhysicalMouseGuard(abort, suppress_physical_mouse=False):
+                    controller = WindowController(abort)
+                    # Bring MT5 forward (restores it if minimised) and use its
+                    # refreshed position for every later step.
+                    window = controller.focus(main)
+                    open_mt5_context(controller, window, row)
+                    abort.guard()
+                    if open_submenu:
+                        hover_mt5_bulk_actions(main, process_id_for_window,
+                                               lambda x, y: pyautogui.click(x, y))
+                        abort.guard()
+                    report = ScanReport(self.platform, tuple((key, labels[key]) for key in keys))
+                    for key in keys:
+                        rect = find_mt5_menu_item(main, key, process_id_for_window)
+                        if rect is None:
+                            report.reasons[key] = "選單裡找不到唯一的這個項目"
+                        else:
+                            report.candidates[key] = ScanCandidate(key, rect, "MT5 右鍵選單項目")
+                    found = tuple(key for key in keys if key in report.candidates)
+                    points = {}
+                    if found:
+                        visible = bulk_platform_windows(window, self.app.windows.list_windows(),
+                                                        process_id_for_window)
+                        points = candidate_calibration_points(
+                            report, found, visible, window,
+                            process_id_for_window(window.handle), process_id_for_window,
+                        )
+                    self.mt5_bulk_found.emit({"points": points, "missing": [
+                        labels[key] for key in keys if key not in report.candidates],
+                        "seen": list(last_mt5_menu_items()),
+                        "rects": {k: c.rect for k, c in report.candidates.items()}})
+            except EmergencyStopped:
+                self.mt5_bulk_found.emit({"cancelled": True})
+            except Exception as exc:
+                self.mt5_bulk_found.emit({"error": str(exc)})
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _finish_mt5_bulk_find(self, result: object) -> None:
+        result = result if isinstance(result, dict) else {}
+        # A cTrader confirmation opened by the search is cancelled once the
+        # decision below is made (or right away if nothing is to be decided).
+        self._preview_confirmation_cancel = result.get("dismiss")
+        # The calibration dialog stays hidden until the user has decided, so
+        # it cannot cover the platform menu / confirmation being checked.
+        # The confirmation is cancelled BEFORE the dialog comes back, so the
+        # cancel click can never land on this dialog.
+        try:
+            self._decide_found_bulk_fields(result)
+        finally:
+            try:
+                self._dismiss_preview_confirmation()
+            finally:
+                self._inventory_running = False
+                self._restore_calibration_operation()
+
+    def _show_found_outlines(self, rects) -> list:
+        outlines = []
+        for rect in rects:
+            try:
+                outline = CandidateOutline()
+                outline.display(tuple(rect), 600_000)
+                outlines.append(outline)
+            except Exception:
+                crash_log.record("show found bulk-close outline")
+        return outlines
+
+    def _place_beside(self, box, rects) -> None:
+        """Put the decision box beside the found targets, never over them."""
+        try:
+            rects = [tuple(r) for r in rects]
+            if not rects:
+                return
+            left = min(r[0] for r in rects)
+            right = max(r[2] for r in rects)
+            top = min(r[1] for r in rects)
+            screen = QApplication.screenAt(QPoint((left + right) // 2, top)) or QApplication.primaryScreen()
+            ratio = screen.devicePixelRatio() or 1.0
+            area = screen.availableGeometry()
+            box.adjustSize()
+            width, height = box.width(), box.height()
+            # Target rects are physical pixels; Qt geometry is logical.
+            left_l, right_l, top_l = int(left / ratio), int(right / ratio), int(top / ratio)
+            if right_l + 24 + width <= area.right():
+                x = right_l + 24
+            elif left_l - 24 - width >= area.left():
+                x = left_l - 24 - width
+            else:
+                x = area.left() + 24
+            y = max(area.top() + 12, min(top_l, area.bottom() - height - 12))
+            box.move(x, y)
+        except Exception:
+            crash_log.record("place found-fields decision box")
+
+    def _decide_found_bulk_fields(self, result: dict) -> None:
+        if result.get("cancelled"):
+            self.result.setText("已取消自動尋找；沒有儲存。")
+            return
+        if result.get("error"):
+            self.result.setText(f"自動尋找失敗：{result['error']}")
+            self._dismiss_preview_confirmation()
+            self._restore_calibration_operation()
+            self._offer_manual_capture("自動尋找欄位", str(result["error"]))
+            return
+        points = result.get("points") or {}
+        labels = dict(CALIBRATION_TARGETS[self.platform])
+        if not points:
+            seen = result.get("seen") or []
+            self.result.setText("沒有找到這個欄位；沒有儲存。")
+            where = "畫面上" if self.platform == "cTrader" else "右鍵選單裡"
+            reason = result.get("reason") or ""
+            self._dismiss_preview_confirmation()
+            self._restore_calibration_operation()
+            self._offer_manual_capture(
+                "自動尋找欄位",
+                where + "找不到「" + "、".join(result.get("missing") or []) + "」。"
+                + (f"\n{reason}" if reason else "")
+                + ("\n選單裡讀到的項目：" + "、".join(seen) if seen else ""),
+            )
+            return
+        found = "、".join(labels[key] for key in points)
+        missing = result.get("missing") or []
+        rects = list((result.get("rects") or {}).values())
+        # Yellow boxes first, with the platform menu / confirmation still
+        # open and nothing of ours in front, so the user can actually see
+        # what was found before any question appears.
+        outlines = self._show_found_outlines(rects)
+        loop = QEventLoop()
+        QTimer.singleShot(2500, loop.quit)
+        loop.exec()
+        box = QMessageBox(None)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        box.setWindowTitle("自動尋找欄位")
+        box.setIcon(QMessageBox.Question)
+        box.setText(f"已找到：{found}。")
+        box.setInformativeText(
+            ("未找到：" + "、".join(missing) + "（可改用手動擷取）。\n" if missing else "")
+            + "請先核對黃色框有沒有框對位置，再決定是否儲存。只記位置，不會平倉。"
+        )
+        discard = box.addButton("不儲存", QMessageBox.RejectRole)
+        save = box.addButton("儲存這些位置", QMessageBox.AcceptRole)
+        box.setDefaultButton(discard)
+        self._place_beside(box, rects)
+        try:
+            box.exec()
+        finally:
+            for outline in outlines:
+                outline.hide()
+                outline.close()
+        if box.clickedButton() is not save:  # ✕/Esc must not save
+            self.result.setText("已找到但未儲存。")
+            return
+        try:
+            save_confirmed_points(self.app, self.platform, points)
+        except Exception as exc:
+            QMessageBox.warning(self, "自動尋找欄位", f"儲存失敗：{exc}")
+            return
+        self._refresh_stage_progress()
+        self.result.setText(f"已儲存 {len(points)} 個全關欄位。")
+
+    def _ctrader_bulk_rect_for_preview(self, main, key: str, points: dict):
+        """cTrader 全關 rectangles for 「查看已校準位置」.
+
+        Close-all button: direct id lookup (fast). Yes: on a Demo account only,
+        click close-all to open the confirmation; it is cancelled (never Yes)
+        when the preview ends.
+        """
+        if key == "bulk_close_button":
+            rect = ctrader_close_all_rect(main)
+            if rect is None:
+                raise AutomationError("cTrader 畫面上找不到「全部平倉」按鈕。")
+            return rect
+        found = find_ctrader_confirmation(main, self.app.windows.list_windows(), process_id_for_window)
+        if found is None:
+            if ctrader_account_type(main) != "Demo":
+                raise AutomationError("不是模擬帳戶，不會自動按「全部平倉」；請自己開好確認視窗再查看。")
+            self.app.windows.click(main, points.get("bulk_close_button"))
+            deadline = time.monotonic() + 3
+            while found is None and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.2)
+                found = find_ctrader_confirmation(main, self.app.windows.list_windows(),
+                                                  process_id_for_window)
+            if found is None:
+                raise AutomationError("確認視窗沒有出現（需要至少一筆模擬持倉）。")
+            # Opened by us: cancel it once the preview is over.
+            self._preview_confirmation_cancel = found["cancel"] or "esc"
+        return found["yes"]
+
+    def _dismiss_preview_confirmation(self) -> None:
+        """Close a confirmation the preview opened. Never clicks Yes."""
+        target = getattr(self, "_preview_confirmation_cancel", None)
+        self._preview_confirmation_cancel = None
+        if not target:
+            return
+        import pyautogui
+        if target == "esc":
+            pyautogui.press("esc")
+        else:
+            left, top, right, bottom = target
+            pyautogui.click((left + right) // 2, (top + bottom) // 2)
+
+    def _open_mt5_bulk_menu_for_preview(self, main, key: str, points: dict):
+        """Open (once per preview) the MT5 context menu and return the item's
+        rectangle. Right-clicks the saved SL cell and, for the submenu item,
+        left-clicks only the 批量操作 header; 所有持倉平倉 is never clicked."""
+        import pyautogui
+        if not getattr(self, "_preview_menu_open", False):
+            open_mt5_context(self.app.windows, main, points.get("position_order_row"))
+            self._preview_menu_open = True
+        if key == "bulk_close_all":
+            hover_mt5_bulk_actions(main, process_id_for_window,
+                                   lambda x, y: pyautogui.click(x, y))
+        rect = find_mt5_menu_item(main, key, process_id_for_window)
+        if rect is None:
+            raise AutomationError("右鍵選單裡找不到這個項目；請確認 MT5 持倉列表有顯示。")
+        return rect
+
+    def _platform_side(self) -> str:
+        current = getattr(getattr(self.app, "internal_platform", None), "currentText", None)
+        return "internal" if callable(current) and current() == self.platform else "external"
+
+    def _bulk_window_role(self) -> str:
+        """Bulk-close fields are per platform; read the window of whichever
+        side this platform is bound to."""
+        return bulk_binding_role(self.app, self.platform, self._platform_side())
 
     def _display_role(self, key: str) -> str:
-        if bulk_close_role(key):
-            return bulk_close_role(key)
+        if is_bulk_close_key(key):
+            return self._bulk_window_role()
         if key.startswith("position_") or key == "positions_entry_price":
             # Both platforms can be configured on either side. The native
             # post-entry column belongs to the currently selected platform,
@@ -7350,6 +8307,7 @@ class CalibrationDialog(ThemedDialog):
         self._capture_running = False
         for button in self._capture_buttons:
             button.setEnabled(True)
+        self._refresh_field_capture_badges()  # keep the 2nd 全關 field locked if needed
         self._restore_calibration_operation()
         if isinstance(result, dict) and result.get("cancelled"):
             self.result.setText("已取消擷取；原本的校準位置沒有變更。")
@@ -7371,6 +8329,11 @@ class CalibrationDialog(ThemedDialog):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+            # The status line alone is easy to miss after the dialog returns.
+            QMessageBox.warning(
+                self, "擷取失敗",
+                f"{result['error']}\n\n原本的校準位置沒有變更。",
+            )
             return
         self.result.setText(f"已儲存：{key}" if key else "擷取失敗。")
         if key and preview_rect:
@@ -7572,6 +8535,147 @@ class PostEntryCalibrationDialog(ThemedDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._finish_session(0)
         event.accept()
+
+
+REST_CLOSE_MINUTE_CHOICES = (15, 30, 45, 60)
+REST_CLOSE_CUSTOM_RANGE = (1, 240)
+
+
+def rest_close_minutes(data) -> int:
+    """Minutes before the rest period; presets or a custom 1–240 value."""
+    value = (data or {}).get("ui", {}).get("rest_close_minutes", 15)
+    low, high = REST_CLOSE_CUSTOM_RANGE
+    return value if type(value) is int and low <= value <= high else 15
+
+
+def next_rest_close_time(data, now):
+    """Next time the pre-close flatten runs: rest start − chosen minutes."""
+    from .rest_reminders import rest_occurrences
+    lead = timedelta(minutes=rest_close_minutes(data))
+    times = sorted(t - lead for t in rest_occurrences({"enabled": True, "minutes": [60]}, now))
+    return next((t for t in times if t > now), None)
+
+
+class RestCloseSettingsDialog(ThemedDialog):
+    """Close-all scope for the future pre-close flatten. Saves a preference
+    only; nothing here closes, sends or modifies any position."""
+
+    ROLES = (("internal", "場內全部持倉"), ("external", "場外全部持倉"))
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.setWindowTitle("休市前平倉設定")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 12)
+        layout.setSpacing(8)
+        saved = self._data().get("ui", {}).get("rest_close_all", {})
+        self.scope_checkboxes: dict[str, QCheckBox] = {}
+        for role, caption in self.ROLES:
+            choice = QCheckBox(caption, self)
+            choice.setObjectName("bulkCloseAll_" + role)
+            choice.setChecked(saved.get(role) is True)
+            install_checkmark_only_indicator(choice)
+            choice.toggled.connect(lambda checked, r=role: self._save_scope(r, checked))
+            self.scope_checkboxes[role] = choice
+            layout.addWidget(choice)
+        timing = QHBoxLayout()
+        timing.addWidget(QLabel("執行時間：休市前", self))
+        self.minutes_combo = QComboBox(self)
+        self.minutes_combo.setObjectName("restCloseMinutes")
+        for minutes in REST_CLOSE_MINUTE_CHOICES:
+            self.minutes_combo.addItem("1 小時" if minutes == 60 else f"{minutes} 分鐘", minutes)
+        self.minutes_combo.addItem("自訂", None)
+        current = rest_close_minutes(self._data())
+        self.custom_minutes = QSpinBox(self)
+        self.custom_minutes.setObjectName("restCloseCustomMinutes")
+        self.custom_minutes.setRange(*REST_CLOSE_CUSTOM_RANGE)
+        self.custom_minutes.setSuffix(" 分鐘")
+        self.custom_minutes.setButtonSymbols(QSpinBox.NoButtons)  # typed, like the other fields
+        self.custom_minutes.setFixedWidth(96)
+        self.custom_minutes.setValue(current)
+        self.minutes_combo.setCurrentIndex(
+            REST_CLOSE_MINUTE_CHOICES.index(current) if current in REST_CLOSE_MINUTE_CHOICES
+            else len(REST_CLOSE_MINUTE_CHOICES))
+        self.custom_minutes.setVisible(self.minutes_combo.currentData() is None)
+        self.minutes_combo.currentIndexChanged.connect(lambda _index: self._save_minutes())
+        self.custom_minutes.editingFinished.connect(lambda: self._save_minutes())
+        timing.addWidget(self.minutes_combo)
+        timing.addWidget(self.custom_minutes)
+        timing.addStretch(1)
+        layout.insertLayout(0, timing)
+        self.next_label = QLabel(self)
+        self.next_label.setObjectName("restCloseNext")
+        layout.insertWidget(1, self.next_label)
+        self._refresh_next()
+        note = QLabel("勾選的帳戶會平掉全部持倉；沒勾選的一邊休市時不會平倉。"
+                      "時間到會先倒數 30 秒，可以取消。")
+        note.setObjectName("restCloseScopeNote")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        close = QPushButton("關閉", self)
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, 0, Qt.AlignRight)
+        self.setStyleSheet(DIALOG_THEME)
+        self.install_chrome(show_minimize=False, show_maximize=False)
+        self.resize(360, 0)
+
+    def _data(self) -> dict:
+        return getattr(getattr(self.app, "store", None), "data", None) or {}
+
+    def _refresh_next(self) -> None:
+        when = next_rest_close_time(self._data(), datetime.now(timezone.utc))
+        self.next_label.setText(
+            "下次約 " + when.astimezone(timezone(timedelta(hours=8))).strftime("%m/%d %H:%M") + " 執行（台北時間）"
+            if when else "下次執行時間：無")
+
+    def _save_minutes(self) -> None:
+        data = getattr(getattr(self.app, "store", None), "data", None)
+        if data is None:
+            return
+        old = data.setdefault("ui", {}).get("rest_close_minutes")
+        preset = self.minutes_combo.currentData()
+        self.custom_minutes.setVisible(preset is None)
+        data["ui"]["rest_close_minutes"] = int(preset if preset is not None else self.custom_minutes.value())
+        try:
+            self.app.save_config()
+        except OSError:
+            data["ui"]["rest_close_minutes"] = old
+            QMessageBox.warning(self, "儲存失敗", "執行時間未儲存，請重試。")
+        self._refresh_next()
+
+    def _confirm_all_positions(self, caption: str) -> bool:
+        box = QMessageBox(self)
+        box.setWindowTitle("確認平倉範圍")
+        box.setText(f"之後執行休市平倉時，會關閉{caption}帳戶的所有持倉，包括其他交易。")
+        keep = box.addButton("不要勾選", QMessageBox.RejectRole)
+        change = box.addButton(f"改為{caption}全部平倉", QMessageBox.AcceptRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is change  # ✕/Esc means no
+
+    def _restore_choice(self, role: str, value: bool) -> None:
+        choice = self.scope_checkboxes[role]
+        choice.blockSignals(True)
+        choice.setChecked(value)
+        choice.blockSignals(False)
+
+    def _save_scope(self, role: str, checked: bool) -> None:
+        data = getattr(getattr(self.app, "store", None), "data", None)
+        if data is None:
+            return
+        old = dict(data.get("ui", {}).get("rest_close_all", {}))
+        caption = "場內" if role == "internal" else "場外"
+        if checked and not self._confirm_all_positions(caption):
+            self._restore_choice(role, old.get(role) is True)
+            return
+        data.setdefault("ui", {})["rest_close_all"] = dict(old, **{role: checked})
+        try:
+            self.app.save_config()
+        except OSError:
+            data["ui"]["rest_close_all"] = old
+            self._restore_choice(role, old.get(role) is True)
+            QMessageBox.warning(self, "儲存失敗", "平倉範圍未儲存，請重試。")
 
 
 class SettingsDialog(ThemedDialog):

@@ -23,7 +23,9 @@ def ensure_native_sidebar(widget, screen, desired_y, diagnostic_path=None):
     if sys.platform != 'win32' or QGuiApplication.platformName() != 'windows':
         return None
     try:
-        user32 = ctypes.windll.user32
+        # Private handle so argtypes set by other modules on the shared
+        # ctypes.windll.user32 cannot break these calls (and vice versa).
+        user32 = ctypes.WinDLL("user32")
         hwnd = wintypes.HWND(int(widget.winId()))
         rect = wintypes.RECT()
         if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -101,5 +103,5 @@ def ensure_native_sidebar(widget, screen, desired_y, diagnostic_path=None):
             except (OSError, ValueError):
                 pass
         return result
-    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError, ctypes.ArgumentError):
         return None

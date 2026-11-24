@@ -24,7 +24,10 @@ def trading_session(now, settings):
 
 
 def relevant_announcement(title):
-    return assess_headline(title).notify
+    """Listed in the news pages: every market-related headline the sources
+    keep (they are filtered by market topics when read), except routine
+    notices and plain price recaps. Pop-ups / phone pushes use the stricter `.push`."""
+    return assess_headline(title).category not in ('一般公告', '行情回顧')
 
 
 def event_summary(events, now, settings, day_is_loaded, title=lambda text: text):

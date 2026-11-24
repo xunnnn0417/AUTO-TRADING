@@ -35,20 +35,53 @@ def delivery_groups(rows):
 
 
 def combined_payload(rows):
+    """Phone shows: app line (iOS adds 「from 對沖小幫手」), a bold title, a body.
+    The title carries the point (what happened / which event); the body the
+    details (when, how long until, other items)."""
+    from .calendar_events import format_event_time
     payload = json.loads(rows[0][2])
-    # Also shorten notifications queued before this version was installed.
-    payload['title'] = NOTIFICATION_TITLE
+    kind = str(payload.get('kind', ''))
+    when = payload.get('when')
+    clock = format_event_time(datetime.fromisoformat(when)) if when else ''
     if len(rows) > 1:
-        from .calendar_events import format_event_time
-        prefix = payload['body'].split(' · ',1)[0] if payload['kind'] != 'breaking' else '突發重大消息'
-        heading = f'{prefix} · {format_event_time(datetime.fromisoformat(payload["when"]))} · {len(rows)} 則'
         names = list(dict.fromkeys(json.loads(row[2])['headline'] for row in rows))
-        body = heading+'\n'+'\n'.join('• '+name for name in names)
-        payload.update(body=body if len(body)<=300 else body[:299]+'…',
+        prefix = payload['body'].split(' · ',1)[0] if kind != 'breaking' else '突發重大消息'
+        title = f'{names[0]} 等 {len(rows)} 則' if len(names) > 1 else f'{names[0]} · {len(rows)} 則'
+        body = ' · '.join(part for part in (prefix, clock) if part)+'\n'+'\n'.join('• '+name for name in names[1:])
+        payload.update(title=title, body=body.strip(),
                        tag=hashlib.sha256('\n'.join(sorted(row[1] for row in rows)).encode()).hexdigest(),
                        expires=min(row[3] for row in rows))
+    else:
+        headline = str(payload.get('headline') or '').strip()
+        body = str(payload.get('body') or '')
+        if kind.startswith('rest:'):
+            parts = body.split(' · ')
+            payload.update(title=parts[0], body=' · '.join(parts[1:2]))
+        elif headline and kind == 'breaking':
+            payload.update(title=headline, body=' · '.join(p for p in ('突發重大消息', clock) if p))
+        elif headline and kind in ('before', 'release'):
+            parts = [part for part in body.split(' · ') if part != headline]
+            payload.update(title=headline, body=' · '.join(parts))
+        else:
+            payload = two_line(payload)
+    payload['title'] = str(payload.get('title') or NOTIFICATION_TITLE)[:80]
+    payload['body'] = str(payload.get('body') or '')[:300]
     payload.pop('when',None)
     payload.pop('headline',None)
+    return payload
+
+
+def two_line(payload):
+    """The phone already shows the app name, so a fixed 「對沖小幫手」 title
+    made three lines. The message itself becomes the (bold) title and any
+    further lines the body: app name + message, nothing repeated."""
+    first, _, rest = str(payload.get('body') or '').partition('\n')
+    first = first.strip() or NOTIFICATION_TITLE
+    if len(first) > 80:
+        rest = first[79:] + ('\n' + rest if rest else '')
+        first = first[:79] + '…'
+    payload['title'] = first
+    payload['body'] = rest.strip()
     return payload
 
 
@@ -267,7 +300,7 @@ class MobileNotifications(QObject):
         news, self._news = self._news, []
         for item in news:
             if (item.source in SOURCE_NAMES.values() and 0 <= now-item.when.timestamp() <= 900
-                    and assess_headline(item.title).notify):
+                    and assess_headline(item.title).push):
                 self._enqueue('breaking', item, '突發重大消息', calendar.title(item.title), now, now+180)
         self._dispatch(now)
 

@@ -150,7 +150,7 @@ class MobileTransportTests(unittest.TestCase):
         for _ in range(5):
             status, _, body = self.http(path='/api/session', headers={'Cookie': cookie})
             self.assertEqual(status, 200)
-            self.assertEqual(json.loads(body), {'paired': True})
+            self.assertEqual(json.loads(body), {'paired': True, 'passkey': False})
         self.assertEqual(len(self.store.devices()), 1)
         self.assertEqual(self.server.pair_code, '')
 

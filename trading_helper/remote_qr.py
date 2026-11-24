@@ -7,7 +7,10 @@ def phone_qr_image(origin):
     import cv2
     text = normalized_origin(origin)
     matrix = cv2.QRCodeEncoder_create().encode(text)
-    matrix = cv2.copyMakeBorder(matrix, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=255)
+    # The encoder already adds a 2-module quiet zone; one more module (3 in
+    # total) is the thinnest frame that still decodes reliably, and the code
+    # is scaled up to fill the display area.
+    matrix = cv2.copyMakeBorder(matrix, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=255)
     scale = max(1, 232 // matrix.shape[0])
     matrix = cv2.resize(matrix, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
     # High contrast with a softer quiet zone than a glaring pure-white tile.

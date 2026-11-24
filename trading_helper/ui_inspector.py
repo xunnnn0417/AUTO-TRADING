@@ -187,7 +187,10 @@ class _MonitorInfo(ctypes.Structure):
 
 def _native_monitor_at(x: int, y: int) -> tuple[int, tuple[int, int, int, int]]:
     """Locate a physical screen using Win32; no mouse movement or input."""
-    user32 = ctypes.windll.user32
+    # Private handle: setting argtypes on the shared ctypes.windll.user32 made
+    # other modules' GetMonitorInfoW calls fail (sidebar docking raised
+    # "expected LP__MonitorInfo instance" after any calibration preview).
+    user32 = ctypes.WinDLL("user32")
     user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
     user32.MonitorFromPoint.restype = wintypes.HANDLE
     user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_MonitorInfo)]

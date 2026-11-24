@@ -36,6 +36,58 @@ def acquire_single_instance():
     return mutex, not already_running
 
 
+def focus_running_instance() -> bool:
+    """Bring the already-running helper (main window or a calibration
+    dialog) to the front. Only visible Qt windows of another python process
+    with our window titles are considered; nothing is closed or changed."""
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    own_pid = os.getpid()
+    found = []
+
+    def exe_name(pid: int) -> str:
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(1024)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return Path(buffer.value).name.lower()
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
+            return True
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, title, 256)
+        klass = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, klass, 256)
+        text = title.value
+        if not klass.value.startswith("Qt") or not (
+                text == "對沖小幫手" or text.startswith("校準 ")):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value != own_pid and exe_name(pid.value) in {"pythonw.exe", "python.exe"}:
+            found.append(hwnd)
+        return True
+
+    try:
+        user32.EnumWindows(visit, 0)
+        for hwnd in found:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            if user32.SetForegroundWindow(hwnd):
+                return True
+    except (AttributeError, OSError):
+        pass
+    return False
+
+
 def main() -> None:
     # Existing desktop/taskbar shortcuts keep working after a runtime update.
     # Select the private, verified runtime before importing any Qt/OCR DLLs.
@@ -46,6 +98,8 @@ def main() -> None:
         subprocess.Popen([str(selected),str(APP_BASE/"main.py")],cwd=APP_BASE)
         return
     enable_dpi_awareness()
+    from trading_helper import crash_log
+    crash_log.install()
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except (AttributeError, OSError):
@@ -62,13 +116,20 @@ def main() -> None:
         qt.setWindowIcon(QIcon(str(APP_ICON)))
     mutex, is_first = acquire_single_instance()
     if not is_first:
-        QMessageBox.warning(
-            None,
-            "對沖小幫手",
-            "工具已經在執行中。請先關閉舊視窗，再重新開啟新版。",
-        )
+        if not focus_running_instance():
+            QMessageBox.warning(
+                None,
+                "對沖小幫手",
+                "工具已經在執行中，但找不到可顯示的視窗。\n"
+                "請查看螢幕右側的側邊快捷；若仍無反應，請先關閉舊的小幫手再重新開啟。",
+            )
         sys.exit(0)
     app = TradingHelperApp()
+    # Only closing the main window ends the helper. With Qt's default, a
+    # parentless popup closed while the main window was hidden for an
+    # operation (e.g. a sidebar fill) silently quit the whole app.
+    qt.setQuitOnLastWindowClosed(False)
+    app.main_window_closed.connect(qt.quit)
     app.show()
     QTimer.singleShot(100, app.initialize_side_panel)
     updater = UpdateController(app, APP_BASE)

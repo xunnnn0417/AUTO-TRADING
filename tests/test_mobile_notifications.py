@@ -115,8 +115,9 @@ class MobileNotificationTests(unittest.TestCase):
                    kind='release', tag='stable-event-id', expires=self.now+180)
         row = ('phone', 'event', json.dumps(old), self.now+180, 'subscription')
         delivered = combined_payload([row])
-        self.assertEqual(delivered['title'], '對沖小幫手')
-        self.assertEqual(delivered['body'], old['body'])
+        # Two lines on the phone: app name (by iOS) + the message as title.
+        self.assertEqual(delivered['title'], old['body'])
+        self.assertEqual(delivered['body'], '')
         self.assertEqual(delivered['tag'], old['tag'])
         self.assertEqual(json.loads(row[2]), old)
 
@@ -152,9 +153,9 @@ class MobileNotificationTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not self.service._busy))
             self.assertEqual(send.call_count,1)
             payload = send.call_args.args[1]
-            self.assertEqual(payload['title'], '對沖小幫手')
-            self.assertIn('13 則',payload['body'])
-            for name in names:self.assertIn(name,payload['body'])
+            self.assertIn('13 則',payload['title'])
+            self.assertTrue(payload['title'].startswith('指標00'))  # the point first
+            for name in names:self.assertIn(name,payload['title']+payload['body'])
             self.assertTrue(all(row[2]=='sent' for row in self.rows()))
             MobileNotifications._dispatch(self.service,self.now+61)
             self.assertEqual(send.call_count,1)
@@ -368,3 +369,25 @@ class MobileNotificationTests(unittest.TestCase):
         verifier = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), decode(public))
         verifier.verify(utils.encode_dss_signature(int.from_bytes(sig[:32]), int.from_bytes(sig[32:])),
                         (header+'.'+claims).encode(), ec.ECDSA(hashes.SHA256()))
+
+
+class HeadlineFirstPayloadTests(unittest.TestCase):
+    def payload(self, **fields):
+        import json as _json
+        from trading_helper.remote_notifications import combined_payload
+        row = ('phone', 'event', _json.dumps(fields, ensure_ascii=False), 0, 'subscription')
+        return combined_payload([row])
+
+    def test_title_is_the_point_and_body_the_details(self):
+        when = '2026-11-24T13:30:00+00:00'
+        before = self.payload(kind='before', headline='美國 CPI', when=when,
+                              body='5 分鐘後公布 · 9:30 PM · 美國 CPI')
+        self.assertEqual((before['title'], before['body']), ('美國 CPI', '5 分鐘後公布 · 9:30 PM'))
+        news = self.payload(kind='breaking', headline='川普宣布加徵關稅', when=when, body='川普宣布加徵關稅')
+        self.assertEqual(news['title'], '川普宣布加徵關稅')
+        self.assertIn('突發重大消息', news['body'])
+        rest = self.payload(kind='rest:15', headline='黃金例行休市', when=when,
+                            body='15 分鐘後例行休市 · 6:00 AM · 黃金例行休市')
+        self.assertEqual((rest['title'], rest['body']), ('15 分鐘後例行休市', '6:00 AM'))
+        test = self.payload(kind='test', body='手機通知已接通。')
+        self.assertEqual((test['title'], test['body']), ('手機通知已接通。', ''))

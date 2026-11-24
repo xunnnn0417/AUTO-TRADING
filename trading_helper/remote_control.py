@@ -90,6 +90,10 @@ class RemoteStore:
                 device TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
                 action TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL,
                 created REAL NOT NULL, PRIMARY KEY(device,id));
+            CREATE TABLE IF NOT EXISTS passkeys (
+                id TEXT PRIMARY KEY, device TEXT NOT NULL, x BLOB NOT NULL,
+                y BLOB NOT NULL, sign_count INTEGER NOT NULL, origin TEXT NOT NULL,
+                created REAL NOT NULL);
         """)
         if 'origin' not in {row[1] for row in self.db.execute('PRAGMA table_info(devices)')}:
             self.db.execute("ALTER TABLE devices ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
@@ -143,6 +147,38 @@ class RemoteStore:
     def revoke(self, device: str):
         with self.db:
             self.db.execute("UPDATE devices SET revoked=1 WHERE id=?", (device,))
+            # A removed phone must pair with a code again, even with Face ID.
+            self.db.execute("DELETE FROM passkeys WHERE device=?", (device,))
+
+    def add_passkey(self, device: str, credential: dict, origin: str):
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO passkeys(id,device,x,y,sign_count,origin,created) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (credential["id"], device, credential["x"], credential["y"],
+                 int(credential["sign_count"]), origin, time.time()))
+
+    def passkey(self, credential_id: str) -> dict | None:
+        row = self.db.execute(
+            "SELECT p.device,p.x,p.y,p.sign_count,p.origin FROM passkeys p "
+            "JOIN devices d ON d.id=p.device WHERE p.id=? AND d.revoked=0",
+            (credential_id,)).fetchone()
+        return dict(device=row[0], x=row[1], y=row[2], sign_count=row[3], origin=row[4]) if row else None
+
+    def has_passkey(self, device: str) -> bool:
+        return self.db.execute("SELECT 1 FROM passkeys WHERE device=?", (device,)).fetchone() is not None
+
+    def relink(self, device: str, credential_id: str, sign_count: int) -> str:
+        """New session token for the SAME device entry (no duplicate)."""
+        token = secrets.token_urlsafe(32)
+        with self.db:
+            changed = self.db.execute(
+                "UPDATE devices SET digest=?, expires=? WHERE id=? AND revoked=0",
+                (self.digest(token), time.time()+SESSION_SECONDS, device)).rowcount
+            if not changed:
+                raise ValueError("這支手機已被移除，請重新用配對碼配對。")
+            self.db.execute("UPDATE passkeys SET sign_count=? WHERE id=?", (int(sign_count), credential_id))
+        return token
 
     def operation(self, device: str, identifier: str) -> dict | None:
         row = self.db.execute(
@@ -198,6 +234,9 @@ class MobileServer(QObject):
         self.pair_code = ""
         self.pair_until = 0.0
         self.pair_attempts = 0
+        # One-time WebAuthn challenges: value -> (purpose, device, expiry).
+        self.passkey_challenges: dict[str, tuple[str, str, float]] = {}
+        self.passkey_failures: deque = deque(maxlen=20)
         self._last_encoded = ""
 
     @property
@@ -346,9 +385,9 @@ class MobileServer(QObject):
             sock.read(end+4+length)
             if method == "GET" and path == "/api/session" and not length:
                 authenticated = self.store.authenticate(self._cookie_token(headers.get("cookie", "")), origin)
-                self._respond(sock, 200 if authenticated else 401,
-                              b'{"paired":true}' if authenticated else b'{"paired":false}',
-                              "application/json")
+                body = (json.dumps({"paired": True, "passkey": self.store.has_passkey(authenticated)}).encode()
+                        if authenticated else b'{"paired":false}')
+                self._respond(sock, 200 if authenticated else 401, body, "application/json")
                 return
             if (path == '/api/notifications' and method in ('GET', 'POST')
                     or path == '/api/notifications/test' and method == 'POST'):
@@ -391,6 +430,9 @@ class MobileServer(QObject):
                               self.ruler_image if authenticated else b'Pairing required',
                               'image/png' if authenticated else 'text/plain')
                 return
+            if method == "POST" and path.startswith("/api/passkey/"):
+                self._passkey_request(sock, path, headers, origin, raw[end+4:end+4+length])
+                return
             if method == "POST" and path == "/api/pair":
                 if (headers.get("origin") != origin
                         or headers.get("content-type", "").split(";")[0] != "application/json"):
@@ -425,6 +467,100 @@ class MobileServer(QObject):
             self._respond(sock, 400, b"Invalid request")
         except (sqlite3.Error, OSError):
             self._respond(sock, 503, "手機連線儲存失敗，請在電腦確認。".encode("utf-8"))
+
+    def _new_passkey_challenge(self, purpose: str, device: str = "") -> str:
+        from .passkey import b64url_encode
+        now = time.monotonic()
+        self.passkey_challenges = {key: value for key, value in self.passkey_challenges.items()
+                                   if value[2] > now}
+        if len(self.passkey_challenges) >= 20:
+            raise ValueError("太多次嘗試，請稍後再試。")
+        challenge = b64url_encode(secrets.token_bytes(32))
+        self.passkey_challenges[challenge] = (purpose, device, now + 120)
+        return challenge
+
+    def _take_passkey_challenge(self, client_data_b64: str, purpose: str) -> tuple[str, str]:
+        """Pop (single use) the challenge named in clientDataJSON."""
+        from .passkey import PasskeyError, b64url_decode
+        try:
+            challenge = json.loads(b64url_decode(client_data_b64)).get("challenge", "")
+        except (ValueError, AttributeError) as exc:
+            raise PasskeyError("通行密鑰資料格式不正確。") from exc
+        entry = self.passkey_challenges.pop(challenge, None)
+        if not entry or entry[0] != purpose or entry[2] < time.monotonic():
+            raise PasskeyError("通行密鑰驗證已過期，請再試一次。")
+        return challenge, entry[1]
+
+    def _passkey_request(self, sock, path, headers, origin, body):
+        """Face ID re-linking. Registration needs an already paired session;
+        sign-in issues a new session for the SAME device entry."""
+        from .passkey import PasskeyError, verify_assertion, verify_registration
+        if (headers.get("origin") != origin
+                or headers.get("content-type", "").split(";")[0] != "application/json"):
+            self._respond(sock, 403, b"Invalid origin")
+            return
+        if not origin.startswith("https://"):
+            self._respond(sock, 400, "通行密鑰需要固定 HTTPS 入口。".encode())
+            return
+        rp_id = urlsplit(origin).hostname or ""
+        recent = [stamp for stamp in self.passkey_failures if stamp > time.monotonic() - 600]
+        if len(recent) >= 10:
+            self._respond(sock, 429, "失敗次數過多，請 10 分鐘後再試或改用配對碼。".encode())
+            return
+        try:
+            payload = json.loads(body or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError()
+            if path in ("/api/passkey/register/options", "/api/passkey/register"):
+                device = self.store.authenticate(self._cookie_token(headers.get("cookie", "")), origin)
+                if not device:
+                    self._respond(sock, 401, b"Pairing required")
+                    return
+                if path.endswith("/options"):
+                    from .passkey import b64url_encode
+                    challenge = self._new_passkey_challenge("register", device)
+                    name = next((d["name"] for d in self.store.devices() if d["id"] == device), "我的手機")
+                    self._respond(sock, 200, json.dumps({
+                        "challenge": challenge, "rpId": rp_id, "name": name,
+                        "userId": b64url_encode(device.encode("ascii")),
+                    }).encode(), "application/json")
+                    return
+                challenge, owner = self._take_passkey_challenge(payload.get("clientDataJSON", ""), "register")
+                if owner != device:
+                    raise PasskeyError("通行密鑰驗證已過期，請再試一次。")
+                credential = verify_registration(
+                    payload.get("clientDataJSON", ""), payload.get("attestationObject", ""),
+                    challenge=challenge, origin=origin, rp_id=rp_id)
+                self.store.add_passkey(device, credential, origin)
+                self._respond(sock, 200, b'{"registered":true}', "application/json")
+                return
+            if path == "/api/passkey/login/options":
+                challenge = self._new_passkey_challenge("login")
+                self._respond(sock, 200, json.dumps({"challenge": challenge, "rpId": rp_id}).encode(),
+                              "application/json")
+                return
+            if path == "/api/passkey/login":
+                challenge, _ = self._take_passkey_challenge(payload.get("clientDataJSON", ""), "login")
+                record = self.store.passkey(str(payload.get("id", "")))
+                if not record or record["origin"] != origin:
+                    raise PasskeyError("找不到這支手機的通行密鑰，請用配對碼配對。")
+                count = verify_assertion(
+                    payload.get("clientDataJSON", ""), payload.get("authenticatorData", ""),
+                    payload.get("signature", ""), challenge=challenge, origin=origin, rp_id=rp_id,
+                    x=record["x"], y=record["y"], stored_count=record["sign_count"])
+                token = self.store.relink(record["device"], str(payload["id"]), count)
+                cookie = (f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
+                          f"Max-Age={SESSION_SECONDS}; Secure")
+                self._respond(sock, 200, b'{"paired":true}', "application/json", [f"Set-Cookie: {cookie}"])
+                self.changed.emit()
+                return
+            self._respond(sock, 404, b"Not found")
+        except ImportError:
+            self._respond(sock, 503, "通行密鑰元件無法載入，請改用配對碼。".encode())
+        except (PasskeyError, ValueError, KeyError, TypeError) as exc:
+            self.passkey_failures.append(time.monotonic())
+            message = str(exc) if isinstance(exc, PasskeyError) or str(exc) else "通行密鑰資料格式不正確。"
+            self._respond(sock, 400, message.encode("utf-8"))
 
     def _respond(self, sock, status, body, content_type="text/plain; charset=utf-8", extra=()):
         self.pending.discard(sock)

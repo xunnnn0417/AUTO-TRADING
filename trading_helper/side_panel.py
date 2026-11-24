@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QSignalBlocker, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPalette, QPen, QRegion
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPalette, QPen, QRegion
+import shiboken6
 from PySide6.QtWidgets import (
     QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSizePolicy, QStyle, QStyleOptionToolButton, QTabWidget, QToolButton, QVBoxLayout, QWidget,
@@ -47,10 +48,12 @@ class EventSummaryButton(QToolButton):
         self.initStyleOption(option)
         option.text = ''
         option.arrowType = Qt.NoArrow
+        option.icon = QIcon()  # the triangle is painted below, once
         self.style().drawComplexControl(QStyle.CC_ToolButton, option, painter, self)
-        option.rect = QRect(3, (self.height()-12)//2, 12, 12)
-        self.style().drawPrimitive(QStyle.PE_IndicatorArrowRight if self.isChecked()
-                                  else QStyle.PE_IndicatorArrowLeft, option, painter, self)
+        # Small equilateral triangle instead of the style's wide, flat arrow.
+        from .ui_theme import triangle_icon
+        triangle_icon("right" if self.isChecked() else "left").paint(
+            painter, QRect(3, (self.height()-12)//2, 12, 12))
         painter.setPen(QColor('#ece8f1'))
         rect = QRect(23, 0, max(1, self.width()-27), self.height())
         painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft,
@@ -79,6 +82,7 @@ class WarningFlyout(QFrame):
 class SideQuickPanel(QWidget):
     WIDTH = 340
     HANDLE_HEIGHT = 40
+    PARKED_HEIGHT = 28  # parked tab at the screen edge: shorter than the drag ball
 
     def __init__(self, app):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -122,6 +126,8 @@ class SideQuickPanel(QWidget):
             QPushButton#sideFill { background: #7053d9; border: 1px solid #9278ed; min-height: 26px; padding: 3px; }
             QPushButton#sideFill:hover { background: #8063e9; }
             QPushButton#sideFill:disabled { background: #393442; border-color: #494050; }
+            QToolButton#sideCloseBoth { background: #4a1d24; border: 1px solid #b14a58; border-radius: 7px; }
+            QToolButton#sideCloseBoth:hover { background: #5e2430; }
             QToolButton#sideHome { border: 1px solid rgba(245,243,250,55); border-radius: 7px; }
             QToolButton#sideHandle, QToolButton#sideHandle:hover { background: transparent; border: 0; padding: 0; }
             QScrollArea { background: transparent; border: 0; }
@@ -160,7 +166,14 @@ class SideQuickPanel(QWidget):
         self.stage_selector.setAccessibleName('側邊階段')
         self.stage_selector.setPlaceholderText('尚未讀取')
         self.stage_selector.currentTextChanged.connect(self._stage_selected)
+        # 方案 first, then 階段 (a stage belongs to the chosen 方案).
+        self.profile_selector = HoverStageCombo()
+        self.profile_selector.setObjectName('sideProfileSelector')
+        self.profile_selector.setAccessibleName('側邊方案')
+        self.profile_selector.setToolTip('切換方案')
+        self.profile_selector.currentTextChanged.connect(self._profile_selected)
         row.addWidget(title)
+        row.addWidget(self.profile_selector, 0, Qt.AlignBottom)
         row.addWidget(self.stage_selector, 0, Qt.AlignBottom)
         row.addStretch()
         self.update_button = self._icon_button('refresh', '更新數值')
@@ -241,6 +254,14 @@ class SideQuickPanel(QWidget):
         self.fill_button.setIcon(themed_icon('arrow-left-right', '#ffffff', 16))
         self.fill_button.clicked.connect(app.fill_both_from_side_panel)
         actions.addWidget(self.fill_button, 1)
+        self.close_both_button = QToolButton()
+        self.close_both_button.setObjectName('sideCloseBoth')
+        self.close_both_button.setAccessibleName('兩邊平倉')
+        self.close_both_button.setToolTip('兩邊平倉：平掉場內、場外全部持倉（會確認兩次）')
+        self.close_both_button.setIcon(themed_icon('square-x', '#ffb4b4', 16))
+        self.close_both_button.setFixedSize(36, 36)
+        self.close_both_button.clicked.connect(app.close_both_from_side_panel)
+        actions.addWidget(self.close_both_button)
         home = self._icon_button('home', '開啟主畫面')
         home.setObjectName('sideHome')
         home.setFixedSize(36, 36)
@@ -261,7 +282,11 @@ class SideQuickPanel(QWidget):
         self.events_button = EventSummaryButton()
         self.events_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.events_button.setCheckable(True)
-        self.events_button.setArrowType(Qt.LeftArrow)
+        # Small equilateral triangle instead of Qt's wide, flat arrow.
+        from .ui_theme import triangle_icon
+        self.events_button.setArrowType(Qt.NoArrow)
+        self.events_button.setIconSize(QSize(12, 12))
+        self.events_button.setIcon(triangle_icon("left"))
         self.events_button.setAccessibleName('重大事件')
         self.events_button.toggled.connect(self._expand_events)
         root.addWidget(self.events_button)
@@ -379,6 +404,14 @@ class SideQuickPanel(QWidget):
                 label.setText(f'{value:.2f}' if value.is_finite() else '—')
             except InvalidOperation:
                 label.setText(raw or '—')
+        profiles = app.profile_combo
+        with QSignalBlocker(self.profile_selector):
+            names = [profiles.itemText(i) for i in range(profiles.count())]
+            if names != [self.profile_selector.itemText(i) for i in range(self.profile_selector.count())]:
+                self.profile_selector.clear()
+                self.profile_selector.addItems(names)
+            self.profile_selector.setCurrentIndex(profiles.currentIndex())
+        self.profile_selector.setEnabled(not busy and profiles.isEnabled())
         source = app.stage_selector
         with QSignalBlocker(self.stage_selector):
             options = [source.itemText(i) for i in range(source.count())]
@@ -392,6 +425,7 @@ class SideQuickPanel(QWidget):
                 or self.ruler.placeholder != app.account_ruler.placeholder):
             self.ruler.set_state(app.account_ruler.state, app.account_ruler.placeholder)
         self.fill_button.setEnabled(not busy and app.action_buttons['填入兩邊'].isEnabled())
+        self.close_both_button.setEnabled(not busy)
         self.update_button.setEnabled(not busy)
         for key, visible in (
             ('expected_sl_combined', app._expected_sl_warning_values() is not None),
@@ -469,7 +503,7 @@ class SideQuickPanel(QWidget):
         return True
 
     def _position_warning_flyout(self):
-        if self._warning_key is None or self._screen is None:
+        if self._warning_key is None or self._valid_screen() is None:
             return
         area = self._screen.availableGeometry()
         popup = self.warning_flyout
@@ -487,7 +521,8 @@ class SideQuickPanel(QWidget):
         self.warning_flyout.hide()
 
     def _expand_events(self, expanded):
-        self.events_button.setArrowType(Qt.RightArrow if expanded else Qt.LeftArrow)
+        from .ui_theme import triangle_icon
+        self.events_button.setIcon(triangle_icon("right" if expanded else "left"))
         self.event_flyout.setVisible(expanded and not self.collapsed)
         if expanded:
             self._hide_warning()
@@ -498,7 +533,7 @@ class SideQuickPanel(QWidget):
             self.calendar.refresh()
 
     def _position_event_flyout(self):
-        if not self.event_flyout.isVisible() or self._screen is None:
+        if not self.event_flyout.isVisible() or self._valid_screen() is None:
             return
         area = self._screen.availableGeometry()
         width = min(320, max(160, self.x() - area.left() - 8))
@@ -506,6 +541,17 @@ class SideQuickPanel(QWidget):
         self.event_flyout.setFixedSize(width, height)
         self.event_flyout.move(max(area.left(), self.x() - width - 8),
             max(area.top(), min(self.y()+self.height()-height, area.bottom()-height+1)))
+
+    def _profile_selected(self, value):
+        if not self.profile_selector.isEnabled() or value == self.app.profile_combo.currentText():
+            return
+        # Any question the switch asks appears beside the side panel.
+        self.app._side_action_active = True
+        try:
+            self.app.profile_combo.setCurrentText(value)
+        finally:
+            self.app._side_action_active = False
+        self.sync_from_main()
 
     def _stage_selected(self, value):
         if self.stage_selector.isEnabled():
@@ -552,8 +598,8 @@ class SideQuickPanel(QWidget):
 
     def _fit_contents(self):
         if self.collapsed:
-            self.handle.setFixedSize(28, self.HANDLE_HEIGHT)
-            self.setFixedSize(28, self.HANDLE_HEIGHT)
+            self.handle.setFixedSize(28, self.PARKED_HEIGHT)
+            self.setFixedSize(28, self.PARKED_HEIGHT)
             return
         # adjustSize alone retains the expanded layout's old minimum height
         # after hiding its scroll area. Recompute before fixing the height.
@@ -567,8 +613,26 @@ class SideQuickPanel(QWidget):
         self.layout().activate()
         self.setFixedHeight(self.layout().sizeHint().height())
 
+    def _valid_screen(self):
+        """The docking screen, re-resolved if Windows replaced it.
+
+        Display sleep/wake or a resolution/RDP change can delete the QScreen
+        captured at startup; using it then raised "Internal C++ object
+        (QScreen) already deleted" (seen when switching profiles).
+        """
+        screen = self._screen
+        if screen is not None and shiboken6.isValid(screen):
+            return screen
+        replacement = self.screen() or QGuiApplication.primaryScreen()
+        if replacement is not None and shiboken6.isValid(replacement):
+            replacement.availableGeometryChanged.connect(self.dock)
+            self._screen = replacement
+            return replacement
+        self._screen = None
+        return None
+
     def dock(self, *_):
-        if self._screen is None or self._handle_dragging:
+        if self._valid_screen() is None or self._handle_dragging:
             return
         area = self._screen.availableGeometry()
         self.move(area.right() - self.width() + 1,
@@ -611,11 +675,14 @@ class SideQuickPanel(QWidget):
         self.update()
 
     def _move_handle_drag(self, point):
-        screen = QGuiApplication.screenAt(point) or self._screen
-        if screen is not self._screen:
-            self._screen.availableGeometryChanged.disconnect(self.dock)
+        screen = QGuiApplication.screenAt(point) or self._valid_screen()
+        if screen is not None and screen is not self._screen:
+            if self._screen is not None and shiboken6.isValid(self._screen):
+                self._screen.availableGeometryChanged.disconnect(self.dock)
             self._screen = screen
             self._screen.availableGeometryChanged.connect(self.dock)
+        if self._screen is None:
+            return
         area = self._screen.availableGeometry()
         radius = self.HANDLE_HEIGHT // 2
         self.move(max(area.left(), min(point.x() - radius, area.right() - self.width() + 1)),
@@ -626,7 +693,8 @@ class SideQuickPanel(QWidget):
         dragging = self._handle_dragging
         if dragging:
             self._move_handle_drag(point)
-            self._y = self.y()
+            # Centre the (shorter) parked tab on where the ball was dropped.
+            self._y = self.y() + self.HANDLE_HEIGHT // 2 - self.PARKED_HEIGHT // 2
         self._handle_dragging = False
         self._handle_press = self._handle_pointer = None
         self.handle.releaseMouse()
@@ -764,6 +832,11 @@ class SideQuickPanel(QWidget):
         painter.setPen(QPen(QColor(245, 243, 250, 70), 0.7))
         painter.setBrush(QColor('#08080b'))
         rect = QRectF(0.35, 0.35, self.width() - 0.7, self.height() - 0.7)
+        if self._handle_dragging or self.collapsed:
+            # Parked / dragged handle: deep purple, so it does not vanish
+            # against dark windows the way the near-black body did.
+            painter.setPen(QPen(QColor('#8a6fe0'), 0.9))
+            painter.setBrush(QColor('#4a2f96'))
         if self._handle_dragging:
             painter.drawEllipse(rect)
         elif self.collapsed:

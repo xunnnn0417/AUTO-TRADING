@@ -44,7 +44,8 @@ SOURCE_TTLS = {'ff': timedelta(minutes=30), 'bea': timedelta(hours=6),
 MARKET_TOPICS = re.compile(
     '黃金|金價|貴金屬|美元|美匯|美債|國債|收益率|孳息|聯儲|聯準|鮑威爾|央行|利率|減息|加息|'
     '通脹|通膨|物價|非農|就業|失業|零售|GDP|PCE|CPI|PPI|PMI|特朗普|川普|關稅|'
-    '制裁|戰爭|空襲|停火|導彈|核武|伊朗|以色列|烏克蘭|俄羅斯|霍爾木茲|中東|油價|金融危機', re.I)
+    '制裁|戰爭|空襲|停火|導彈|核武|伊朗|以色列|烏克蘭|俄羅斯|霍爾木茲|中東|油價|金融危機|'
+    '黃仁勳|輝達|英偉達|習近平|普京|普丁|馬斯克', re.I)
 
 
 @dataclass(frozen=True, order=True)
@@ -64,6 +65,19 @@ class Announcement:
     details: str = field(default='', compare=False)
     scheduled: bool = field(default=False, compare=False)
     reminder_kind: str = field(default='', compare=False)
+
+
+NEWS_RETENTION = timedelta(days=7)
+
+
+def keep_recent_news(previous, fresh, now):
+    """A news feed only lists its latest items, so a headline used to vanish
+    within a day. Keep published headlines for a week; newest first."""
+    merged = {item: None for item in fresh}
+    for item in previous:
+        if now - NEWS_RETENTION <= item.when <= now + timedelta(minutes=5):
+            merged.setdefault(item, None)
+    return sorted(merged, key=lambda item: item.when, reverse=True)[:400]
 
 
 def format_event_time(when):
@@ -524,7 +538,11 @@ class EconomicCalendar(QObject):
                 self.source_errors.pop(key, None)
                 self.source_times[key] = fetched_at
                 if data is not None:  # HTTP 304 confirms the existing data unchanged.
-                    (self._events_by_source if key in self._events_by_source else self._news_by_source)[key] = data
+                    if key in self._events_by_source:
+                        self._events_by_source[key] = data
+                    else:
+                        self._news_by_source[key] = keep_recent_news(
+                            self._news_by_source[key], data, datetime.now(UTC))
         self.error = '；'.join(f'{SOURCE_NAMES[key]}：{error}' for key, error in self.source_errors.items())
         self._combine()
         self._save_cache()
@@ -544,7 +562,7 @@ class EconomicCalendar(QObject):
             identity = hashlib.sha256(f'{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
             if (primed and item not in previous and identity not in self._seen_news
                     and now-timedelta(minutes=15) <= item.when <= now
-                    and assess_headline(item.title).notify):
+                    and assess_headline(item.title).push):
                 alerts.append(item)
             self._seen_news[identity] = None
         self._seen_news = dict(list(self._seen_news.items())[-500:])

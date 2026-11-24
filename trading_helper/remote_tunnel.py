@@ -28,6 +28,63 @@ def tailscale_path() -> str:
     return str(path) if root and path.is_file() else shutil.which('tailscale') or ''
 
 
+def stale_funnel_pids(local_origin, own_pid=None, processes=None):
+    """PIDs of LEFTOVER Funnel sessions this helper itself started.
+
+    Only `tailscale.exe funnel --https=8443 <this helper's local origin>`
+    whose parent is this helper or no longer exists. Never the Tailscale
+    service, its tray app, or a command the user runs in a live terminal.
+    """
+    own_pid = os.getpid() if own_pid is None else own_pid
+    if processes is None:
+        processes = _tailscale_processes()
+    alive = {pid for pid, _parent, _cmd in processes} | set(_alive_pids())
+    found = []
+    for pid, parent, command in processes:
+        words = command.replace('"', ' ').split()
+        if ('funnel' in words and '--https=8443' in words and local_origin in words
+                and (parent == own_pid or parent not in alive)):
+            found.append(pid)
+    return found
+
+
+def _tailscale_processes():
+    import subprocess
+    script = ("Get-CimInstance Win32_Process -Filter \"Name='tailscale.exe'\" | "
+              "ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }")
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True,
+                             text=True, timeout=8, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split('|', 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+    return rows
+
+
+def _alive_pids():
+    import ctypes
+    from ctypes import wintypes
+    psapi = ctypes.WinDLL('psapi')
+    buffer = (wintypes.DWORD * 8192)()
+    size = wintypes.DWORD()
+    if not psapi.EnumProcesses(buffer, ctypes.sizeof(buffer), ctypes.byref(size)):
+        return []
+    return list(buffer[:size.value // ctypes.sizeof(wintypes.DWORD)])
+
+
+def end_stale_funnels(local_origin):
+    import subprocess
+    pids = stale_funnel_pids(local_origin)
+    for pid in pids:
+        subprocess.run(['taskkill', '/PID', str(pid), '/F'], capture_output=True, timeout=5,
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return pids
+
+
 class QuickTunnel(QObject):
     ready = Signal(str)
     failed = Signal(str)
@@ -199,6 +256,13 @@ class FixedTunnel(QuickTunnel):
         executable = tailscale_path()
         if not executable:
             raise ValueError('請先安裝 Tailscale 並登入，再按「建立固定入口」。不需要購買網域。')
+        # A Funnel left behind by an earlier run (or a stop that did not
+        # finish) holds port 8443 and makes the new one fail with
+        # "listener already exists". End only those leftovers of ours.
+        self._local_origin = local_origin
+        ended = end_stale_funnels(local_origin)
+        if ended:
+            self._record('fixed_stale_ended', pids=ended)
         self._stopping = self._failed = self.connected = self._available = False
         self.url = self._buffer = self.approval_url = ''
         self._tail.clear()
@@ -233,6 +297,7 @@ class FixedTunnel(QuickTunnel):
             if self._available and match and not self.connected:
                 self.url = match.group(0).rstrip('/')
                 self.connected = True
+                self._retried = False
                 self.timeout.stop()
                 self.approval_url = ''
                 self.message = '固定入口已準備好，請用手機掃碼。'
@@ -252,4 +317,11 @@ class FixedTunnel(QuickTunnel):
     def _finished(self, exit_code=0, *_):
         if not self._stopping and not self._failed:
             self._read()
+            if (any('listener already exists' in line for line in self._tail)
+                    and not getattr(self, '_retried', False)):
+                # Port still held by a leftover of ours: clear it, retry once.
+                self._retried = True
+                self._record('fixed_retry_after_busy_port')
+                self.start(self._local_origin)
+                return
             self._fail('固定入口已停止，請確認 Tailscale 登入與允許設定後重試。', exit_code=exit_code)

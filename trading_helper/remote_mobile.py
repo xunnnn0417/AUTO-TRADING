@@ -3,7 +3,7 @@
 HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#101015"><meta name="apple-mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" type="image/png" href="/icon-192.png"><link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="stylesheet" href="/app.css"><title>對沖小幫手</title></head><body>
 <main><header><div><strong>對沖小幫手</strong><small id="stageLabel">手機控制</small></div>
 <div class="header-actions"><span id="health" class="health" role="status" aria-live="polite">尚未連線</span><button id="connect" class="subtle">連線</button></div></header>
@@ -12,7 +12,11 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <section id="pairing" hidden><h2>第一次配對</h2><p>在電腦的「手機連線」取得配對碼。配對後會記住這支手機。</p>
 <label>裝置名稱<input id="deviceName" maxlength="32" value="我的手機" autocomplete="off"></label>
 <label>配對碼<input id="pairCode" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code"></label>
-<button id="pair" class="primary">配對並連線</button></section>
+<button id="pair" class="primary">配對並連線</button>
+<button id="passkeyLogin" hidden>以前配對過？用 Face ID／指紋重新連線</button></section>
+<section id="passkeyOffer" class="install-card" hidden><h2>設定 Face ID 快速重新連線</h2>
+<p>之後就算刪掉桌面圖示，重新開啟也能用 Face ID 直接連線，不用再輸入配對碼，也不會多出一個裝置。</p>
+<div class="row"><button id="passkeySetup" class="primary">設定 Face ID</button><button id="passkeySkip" class="subtle">稍後</button></div></section>
 <p id="healthDetail" class="muted" hidden></p>
 <nav class="workspace-tabs" aria-label="手機頁面"><button id="tradeTab" aria-selected="true">交易操作</button><button id="newsTab" aria-selected="false">消息</button></nav>
 <section id="trade"><div class="selects"><label>方案<select id="profile" data-control></select></label>
@@ -25,6 +29,7 @@ HTML = '''<!doctype html><html lang="zh-Hant"><head>
 <label>每日獲利／虧損<input data-field="daily_pnl" inputmode="decimal" autocomplete="off" data-control></label></div>
 <p id="draftStatus" class="muted" aria-live="polite">數值以電腦回報為準</p>
 <div class="row"><button id="update" data-control>更新</button><button id="fill" class="primary" data-control>⇆ 填入兩邊</button></div>
+<div class="row"><button data-action="close_both" data-control style="background:#4a1d24;color:#ffd5d5;border:1px solid #b14a58">兩邊平倉（電腦會再確認兩次）</button></div>
 <section class="progress"><h2>帳號進度</h2><img id="ruler" alt="帳號進度，與電腦使用相同進度尺" width="340" height="186"><p id="rulerNote" class="muted"></p></section>
 <details id="more"><summary>其他交易操作</summary><div class="grid">
 <button data-action="fill_internal" data-control>填入場內</button><button data-action="fill_external" data-control>填入場外</button>
@@ -102,7 +107,7 @@ let pushTestUntil=0,pushTestSending=false;
 function testCooldown(){const seconds=Math.max(0,Math.ceil((pushTestUntil-Date.now())/1000));$('pushTest').disabled=pushTestSending||seconds>0;$('pushTest').textContent=pushTestSending?'發送中…':seconds?'測試通知（'+seconds+'秒）':'測試通知';}
 $('pushTest').onclick=async()=>{if(pushTestSending||Date.now()<pushTestUntil)return;pushTestSending=true;testCooldown();try{const result=await pushRequest('/api/notifications/test',{});pushTestUntil=Date.now()+(result.cooldown||10)*1000;$('pushHint').textContent=result.queued===false?'請等按鈕倒數結束後再測試。':'已送出測試請求；手機顯示時間依系統與網路而定。';}catch(error){$('pushHint').textContent=error.message;}finally{pushTestSending=false;testCooldown();}};
 installCard();
-const optionNames={auto_entry:"自動進場",auto_sync:"同步 SL／TP","rule:C2":"來回打","rule:B6":"最小交易日目標","rule:E14":"固定場內止盈"};
+const optionNames={auto_entry:"自動進場",auto_sync:"同步 SL／TP",auto_sl:"自動調 SL","rule:C2":"來回打","rule:B6":"最小交易日目標","rule:E14":"固定場內止盈"};
 function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;}
 function localNotice(message,title="提醒"){ $("resultTitle").textContent=title;$("resultText").textContent=message;if(!$("result").open)$("result").showModal(); }
 function connected(){return socket&&socket.readyState===WebSocket.OPEN&&Date.now()-seen<4000;}
@@ -164,11 +169,12 @@ function retryConnection(){if(reconnectTimer||!$("pairing").hidden||document.hid
  reconnectTimer=setTimeout(()=>{reconnectTimer=null;connect();},retryDelay);retryDelay=Math.min(10000,retryDelay*2);}
 async function connect(){const attempt=++connectionAttempt;clearTimeout(reconnectTimer);reconnectTimer=null;connecting=true;
  if(socket){socket.onclose=null;socket.onmessage=null;socket.close();socket=null;}disable();$("connect").textContent="重新連線";seen=0;health();
- const abort=new AbortController();const timeout=setTimeout(()=>abort.abort(),8000);
+ const abort=new AbortController();const timeout=setTimeout(()=>abort.abort(),8000);let sessionInfo={};
  try{const session=await fetch("/api/session",{credentials:"same-origin",cache:"no-store",signal:abort.signal});if(attempt!==connectionAttempt)return;
- if(session.status===401){$("pairing").hidden=false;connecting=false;health();return;}if(!session.ok)throw new Error("連線失敗");}
+ if(session.status===401){$("pairing").hidden=false;$("passkeyLogin").hidden=!passkeySupported();connecting=false;health();return;}if(!session.ok)throw new Error("連線失敗");
+ sessionInfo=await session.json().catch(()=>({}));}
  catch(error){if(attempt===connectionAttempt){connecting=false;retryConnection();}return;}finally{clearTimeout(timeout);}
- $("pairing").hidden=true;preparePush();const current=new WebSocket(location.origin.replace(/^http/,"ws")+"/ws");socket=current;
+ $("pairing").hidden=true;offerPasskey(sessionInfo);preparePush();const current=new WebSocket(location.origin.replace(/^http/,"ws")+"/ws");socket=current;
  const handshake=setTimeout(()=>{if(socket===current&&!connected())current.close();},8000);
  current.onmessage=event=>{if(socket!==current)return;clearTimeout(handshake);connecting=false;retryDelay=1000;seen=Date.now();const message=JSON.parse(event.data);if(message.type==="state"){revision=message.revision;lease=message.lease;$("pairing").hidden=true;render(message.state);result(message.operation);}
  else if(message.type==="result"){const p=pending.get(message.operation.id);if(p){clearTimeout(p.timer);pending.delete(message.operation.id);p.resolve(message);}result(message.operation);}
@@ -192,6 +198,24 @@ window.addEventListener('scroll',updateBackTop,{passive:true});
 $('backTop').onclick=()=>window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
 if(location.hash==='#news')workspace(true);
 if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',event=>{if(event.data&&event.data.type==='open-news')workspace(true);});
+/* Face ID / fingerprint passkey: re-link THIS phone after its home-screen app was deleted,
+   keeping one device entry. Registration needs an already paired session. */
+function b64uEncode(buffer){return btoa(String.fromCharCode(...new Uint8Array(buffer))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");}
+function b64uDecode(text){return Uint8Array.from(atob(text.replace(/-/g,"+").replace(/_/g,"/")+"===".slice((text.length+3)%4)),c=>c.charCodeAt(0));}
+function passkeySupported(){return window.isSecureContext&&location.protocol==="https:"&&!!window.PublicKeyCredential&&!!(navigator.credentials&&navigator.credentials.create);}
+async function postJSON(url,body){const response=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{}),credentials:"same-origin",cache:"no-store"});if(!response.ok)throw new Error(await response.text()||"通行密鑰設定失敗");return response.json();}
+function passkeyMessage(error){return error&&error.name==="NotAllowedError"?"已取消，或 Face ID／指紋驗證沒有完成。":(error&&error.message)||"通行密鑰設定失敗";}
+function offerPasskey(info){let skipped=false;try{skipped=localStorage.getItem("passkeySkip")==="1";}catch(e){}
+ $("passkeyOffer").hidden=!(info&&info.paired&&info.passkey===false&&passkeySupported()&&!skipped);}
+async function setupPasskey(){const options=await postJSON("/api/passkey/register/options");
+ const credential=await navigator.credentials.create({publicKey:{rp:{id:options.rpId,name:"對沖小幫手"},user:{id:b64uDecode(options.userId),name:options.name,displayName:options.name},challenge:b64uDecode(options.challenge),pubKeyCredParams:[{type:"public-key",alg:-7}],authenticatorSelection:{residentKey:"required",requireResidentKey:true,userVerification:"required"},attestation:"none",timeout:60000}});
+ await postJSON("/api/passkey/register",{clientDataJSON:b64uEncode(credential.response.clientDataJSON),attestationObject:b64uEncode(credential.response.attestationObject)});}
+async function loginPasskey(){const options=await postJSON("/api/passkey/login/options");
+ const credential=await navigator.credentials.get({publicKey:{challenge:b64uDecode(options.challenge),rpId:options.rpId,userVerification:"required",timeout:60000}});
+ await postJSON("/api/passkey/login",{id:b64uEncode(credential.rawId),clientDataJSON:b64uEncode(credential.response.clientDataJSON),authenticatorData:b64uEncode(credential.response.authenticatorData),signature:b64uEncode(credential.response.signature)});}
+$("passkeySetup").onclick=async()=>{const b=$("passkeySetup");b.disabled=true;try{await setupPasskey();$("passkeyOffer").hidden=true;localNotice("已設定 Face ID。之後刪掉桌面圖示，重新開啟時按「用 Face ID 重新連線」即可。","完成");}catch(e){localNotice(passkeyMessage(e));}finally{b.disabled=false;}};
+$("passkeySkip").onclick=()=>{$("passkeyOffer").hidden=true;try{localStorage.setItem("passkeySkip","1");}catch(e){}};
+$("passkeyLogin").onclick=async()=>{const b=$("passkeyLogin");b.disabled=true;try{await loginPasskey();connect();}catch(e){localNotice(passkeyMessage(e));}finally{b.disabled=false;}};
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!connected())connect();});window.addEventListener("online",()=>{if(!connected())connect();});window.addEventListener("pageshow",e=>{if(e.persisted&&!connected())connect();});
 setInterval(()=>{health();if(connected())socket.send(JSON.stringify({type:"ping",echo:Date.now()}));else if(socket&&!connecting){socket.close();}else if(!connecting)retryConnection();},1500);disable();connect();
 '''
@@ -230,15 +254,36 @@ CSS += '''html{color-scheme:dark;scrollbar-width:thin;scrollbar-color:#514b5a #0
 CSS += '''header{flex-wrap:wrap}.header-actions{display:flex;align-items:center;gap:8px}.health{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:4px 8px;font-size:11px;white-space:nowrap}.health::before{content:"";width:6px;height:6px;border-radius:50%;background:#69c68c;flex:none}.health.bad::before{background:#e4ac70}.header-actions #connect{min-height:32px;font-size:11px}.row>#update{min-height:44px;align-self:stretch}#backTop{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom));width:42px;height:42px;padding:0;background:#24202e;border:1px solid #78688f;border-radius:50%;font-size:23px;line-height:1;box-shadow:0 3px 12px #0008;z-index:3}#healthDetail{margin:8px 0}'''
 
 
+def _desktop_icon():
+    """Largest frame of the desktop app icon, so phone and PC share one logo."""
+    import sys
+    from pathlib import Path
+    from PySide6.QtGui import QImageReader
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    reader = QImageReader(str(base / "assets" / "app.ico"))
+    best = None
+    for index in range(max(1, reader.imageCount())):
+        reader.jumpToImage(index)
+        frame = reader.read()
+        if not frame.isNull() and (best is None or frame.width() > best.width()):
+            best = frame
+    return best
+
+
 def _icon_png(size):
     from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
-    image = QImage(size, size, QImage.Format_ARGB32)
-    image.fill(Qt.transparent)
-    painter = QPainter(image)
-    QSvgRenderer(ICON.encode('utf-8')).render(painter)
-    painter.end()
+    source = _desktop_icon()
+    if source is not None:
+        image = source.convertToFormat(QImage.Format_ARGB32).scaled(
+            size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    else:  # Missing asset: keep the previous drawn icon rather than none.
+        image = QImage(size, size, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        painter = QPainter(image)
+        QSvgRenderer(ICON.encode('utf-8')).render(painter)
+        painter.end()
     data = QByteArray()
     buffer = QBuffer(data)
     buffer.open(QIODevice.WriteOnly)
@@ -249,7 +294,6 @@ ASSETS = {
     "/": ("text/html; charset=utf-8", HTML),
     "/app.css": ("text/css; charset=utf-8", CSS),
     "/app.js": ("text/javascript; charset=utf-8", JS),
-    "/icon.svg": ("image/svg+xml", ICON),
     "/icon-180.png": ("image/png", _icon_png(180)),
     "/icon-192.png": ("image/png", _icon_png(192)),
     "/icon-512.png": ("image/png", _icon_png(512)),
@@ -259,7 +303,7 @@ self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 self.addEventListener('push',event=>{let data={};try{data=event.data.json();if(!data||typeof data!=='object')data={};}catch(error){}
 const stale=typeof data.expires==='number'&&data.expires*1000<Date.now();
 event.waitUntil(self.registration.showNotification(String(data.title||'對沖小幫手').slice(0,80),{
-body:stale?'較早的提醒，請開啟消息查看最新狀況。':String(data.body||'有新的消息，請開啟查看。').slice(0,300),
+body:stale?'較早的提醒，請開啟消息查看最新狀況。':String(data.body||'').slice(0,300),
 icon:'/icon-192.png',badge:'/icon-192.png',tag:String(data.tag||'helper-news').slice(0,80),data:{page:'news'}}));});
 self.addEventListener('notificationclick',event=>{event.notification.close();event.waitUntil((async()=>{
 const pages=await clients.matchAll({type:'window',includeUncontrolled:true});
