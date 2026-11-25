@@ -108,7 +108,19 @@ class ClosedDetectionTests(unittest.TestCase):
     def test_exit_deal_on_the_same_account_is_a_close(self):
         self.deals = [SimpleNamespace(entry=0), SimpleNamespace(entry=1)]
         self.mon._read_account(self.mt, self.entry)
-        self.assertEqual(self.closed, [{"ticket": 7, "profile": "測試"}])
+        self.assertEqual(self.closed, [{"ticket": 7, "profile": "測試", "outcome": None}])
+
+    def test_tp_or_sl_close_says_which_external_side_hit(self):
+        # MT5 is 場外 here: its own TP close (reason 5) is 場外止盈.
+        self.deals = [SimpleNamespace(entry=1, reason=5)]
+        self.mon._read_account(self.mt, self.entry)
+        self.assertEqual(self.closed[-1]["outcome"], "tp")
+        from trading_helper.live_pnl import LivePnlMonitor
+        # MT5 is 場內: its SL (reason 4) means 場外 hit TP; manual close = none.
+        self.deals = [SimpleNamespace(entry=1, reason=4)]
+        self.assertEqual(LivePnlMonitor._close_outcome(self.mt, 7, "internal"), "tp")
+        self.deals = [SimpleNamespace(entry=1, reason=0)]
+        self.assertIsNone(LivePnlMonitor._close_outcome(self.mt, 7, "external"))
 
     def test_other_account_without_positions_is_not_a_close(self):
         self.deals = [SimpleNamespace(entry=1)]
@@ -194,3 +206,32 @@ class StaleTargetTests(unittest.TestCase):
             mon._read_account(mt, {"profile": "A", "terminal": "T", "account": NS(account_id="1", server="S")})
             self.assertEqual(list(mon._targets), [6])   # A's old ticket dropped, B untouched
             self.assertEqual(closed, [])                # no after-close update for it
+
+
+class MainScreenLiveProfileTests(unittest.TestCase):
+    """Main screen shows the same 方案 as the side panel / phone."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls.qtapp = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, "tests")
+        import test_compact_followup_controls as fx
+        fx.CompactFollowUpControlsTests.setUp(self)
+        self._fx = fx
+
+    def tearDown(self):
+        self._fx.CompactFollowUpControlsTests.tearDown(self)
+
+    def test_main_follows_the_shared_choice(self):
+        w = self.w
+        state = {"x": 0.5, "zero": 0.5}
+        w._show_live_pnl({"profile": "lark", "choices": ["測試", "lark"], "state": state})
+        self.assertEqual(w.live_pnl_bar.state, state)          # shown even if not active
+        self.assertEqual(w.live_pnl_profile.currentText(), "lark")
+        self.assertFalse(w.live_pnl_profile.locked)
+        w.set_live_preference("測試")
+        self.assertEqual(w._live_prefer, "測試")

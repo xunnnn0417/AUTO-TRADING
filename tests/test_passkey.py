@@ -153,13 +153,22 @@ class StoreTests(unittest.TestCase):
         self.store.db.close()
         self.temp.cleanup()
 
-    def test_relink_keeps_one_device_and_replaces_the_old_session(self):
+    def test_relink_keeps_one_device_and_the_other_sign_in(self):
+        """Face ID in Safari must not sign the home-screen app out (and back)."""
         device, old = self.store.pair("我的手機", ORIGIN)
         self.store.add_passkey(device, {"id": "cid", "x": b"x" * 32, "y": b"y" * 32, "sign_count": 0}, ORIGIN)
         self.assertTrue(self.store.has_passkey(device))
         new = self.store.relink(device, "cid", 0)
         self.assertEqual(len(self.store.devices()), 1)
         self.assertEqual(self.store.authenticate(new, ORIGIN), device)
+        self.assertEqual(self.store.authenticate(old, ORIGIN), device)
+        newer = self.store.relink(device, "cid", 1)
+        self.assertEqual(self.store.authenticate(new, ORIGIN), device)   # both stay
+        self.assertEqual(self.store.authenticate(newer, ORIGIN), device)
+        for count in range(2, 8):                                        # only a few kept
+            self.store.relink(device, "cid", count)
+        self.assertIsNone(self.store.authenticate(new, ORIGIN))
+        self.store.revoke(device)                                        # removal ends all
         self.assertIsNone(self.store.authenticate(old, ORIGIN))
 
     def test_removed_device_cannot_come_back_with_face_id(self):

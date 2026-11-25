@@ -86,6 +86,11 @@ class RemoteStore:
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, digest TEXT NOT NULL UNIQUE,
                 expires REAL NOT NULL, revoked INTEGER NOT NULL DEFAULT 0,
                 origin TEXT NOT NULL DEFAULT '');
+            -- Extra sign-ins of the SAME phone (home-screen app and Safari keep
+            -- separate cookies): each keeps its own session.
+            CREATE TABLE IF NOT EXISTS device_sessions (
+                digest TEXT PRIMARY KEY, device TEXT NOT NULL, expires REAL NOT NULL,
+                created REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS operations (
                 device TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
                 action TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL,
@@ -126,9 +131,14 @@ class RemoteStore:
     def authenticate(self, token: str, origin: str | None = None) -> str | None:
         if not token or len(token) > 100:
             return None
+        digest, now = self.digest(token), time.time()
         row = self.db.execute(
             "SELECT id,origin FROM devices WHERE digest=? AND revoked=0 AND expires>?",
-            (self.digest(token), time.time())).fetchone()
+            (digest, now)).fetchone()
+        if row is None:
+            row = self.db.execute(
+                "SELECT d.id,d.origin FROM device_sessions s JOIN devices d ON d.id=s.device "
+                "WHERE s.digest=? AND s.expires>? AND d.revoked=0", (digest, now)).fetchone()
         # A temporary hostname may later belong to somebody else. A cookie
         # from that hostname must never authorize a different/new endpoint.
         if row and origin is not None and row[1] != origin:
@@ -171,12 +181,19 @@ class RemoteStore:
     def relink(self, device: str, credential_id: str, sign_count: int) -> str:
         """New session token for the SAME device entry (no duplicate)."""
         token = secrets.token_urlsafe(32)
+        now = time.time()
         with self.db:
-            changed = self.db.execute(
-                "UPDATE devices SET digest=?, expires=? WHERE id=? AND revoked=0",
-                (self.digest(token), time.time()+SESSION_SECONDS, device)).rowcount
-            if not changed:
+            # Add a session instead of replacing the old one: signing in from
+            # Safari must not sign the home-screen app out (and back).
+            if not self.db.execute("SELECT 1 FROM devices WHERE id=? AND revoked=0", (device,)).fetchone():
                 raise ValueError("這支手機已被移除，請重新用配對碼配對。")
+            self.db.execute("UPDATE devices SET expires=? WHERE id=?", (now+SESSION_SECONDS, device))
+            self.db.execute("INSERT INTO device_sessions(digest,device,expires,created) VALUES (?,?,?,?)",
+                            (self.digest(token), device, now+SESSION_SECONDS, now))
+            self.db.execute(
+                "DELETE FROM device_sessions WHERE device=? AND digest NOT IN "
+                "(SELECT digest FROM device_sessions WHERE device=? ORDER BY created DESC LIMIT 4)",
+                (device, device))
             self.db.execute("UPDATE passkeys SET sign_count=? WHERE id=?", (int(sign_count), credential_id))
         return token
 

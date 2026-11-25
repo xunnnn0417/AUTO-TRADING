@@ -224,7 +224,8 @@ class LivePnlMonitor:
                 # Only a real close counts: same account, and MT5's own
                 # history shows the closing deal.
                 if self._has_closing_deal(mt, ticket):
-                    self.closed({"ticket": ticket, "profile": profile})
+                    self.closed({"ticket": ticket, "profile": profile,
+                                 "outcome": self._close_outcome(mt, ticket, entry.get("mt5_role"))})
                 if self._targets.pop(ticket, None) is not None:
                     self._save_targets()
         if key not in self._open:
@@ -280,6 +281,23 @@ class LivePnlMonitor:
         except Exception:
             return False
         return any(int(getattr(deal, "entry", -1)) in (1, 3) for deal in deals or ())  # OUT / OUT_BY
+
+    @staticmethod
+    def _close_outcome(mt, ticket, mt5_role):
+        """Read-only: "tp" when the 場外 side hit its TP, "sl" when it hit
+        its SL, None when unknown. MT5 holds one side; the other is opposite."""
+        try:
+            deals = mt.history_deals_get(position=int(ticket)) or ()
+            reasons = {int(getattr(d, "reason", -1)) for d in deals
+                       if int(getattr(d, "entry", -1)) in (1, 3)}
+        except Exception:
+            return None
+        # MT5 DEAL_REASON_SL = 4, DEAL_REASON_TP = 5; anything else (manual,
+        # stop-out, ...) is not a TP/SL close.
+        mine = "tp" if 5 in reasons else "sl" if 4 in reasons else None
+        if mine is None or mt5_role not in ("external", "internal"):
+            return None
+        return mine if mt5_role == "external" else ("sl" if mine == "tp" else "tp")
 
     def _shown(self, value):
         if value == getattr(self, "_last_shown", object()):

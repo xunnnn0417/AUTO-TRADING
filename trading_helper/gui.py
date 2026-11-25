@@ -2366,6 +2366,18 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         live_title = QLabel("目前持倉", self.live_pnl_section)
         live_title.setObjectName("accountRulerTitle")  # same look as 帳號進度
         live_heading.addWidget(live_title)
+        # Which 方案's position is shown - one choice shared by the main
+        # screen, the side panel and the phone.
+        from .compact_controls import LiveProfileCombo
+        self.live_pnl_profile = LiveProfileCombo(self.live_pnl_section)
+        self.live_pnl_profile.setObjectName("liveProfileSelectorMain")
+        self.live_pnl_profile.setAccessibleName("目前持倉方案")
+        self.live_pnl_profile.textActivated.connect(self.set_live_preference)
+        try:
+            self.live_pnl_profile.show_payload(None, self.profiles.active_name)
+        except Exception:
+            pass
+        live_heading.addWidget(self.live_pnl_profile, 0, Qt.AlignBottom)
         live_heading.addStretch(1)
         live_layout.addLayout(live_heading)
         from .live_pnl_view import LivePnlBar
@@ -3056,21 +3068,39 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
                            "profiles": entries} if entries else None)
 
     def set_live_preference(self, name) -> None:
-        """Side panel / phone chose which 方案's position to show."""
+        """Main screen / side panel / phone chose which 方案's position to
+        show; all three follow (the read loop publishes the new choice)."""
         self._live_prefer = name or None
+        if getattr(self, "_live_ctx", None):
+            self._live_ctx = dict(self._live_ctx, prefer=self._live_prefer)
+
+    def _refresh_after_close_card(self) -> None:
+        self.signals.live_pnl.emit(getattr(self, "live_pnl_payload", None)
+                                   or {"profile": self.profiles.active_name, "choices": [], "state": None})
+
+    def shown_after_close_card(self, value=None):
+        """The 「訂單已結束」 card for the shown 方案 while it has no position."""
+        card = getattr(self, "after_close_card", None)
+        value = value if value is not None else getattr(self, "live_pnl_payload", None) or {}
+        if card is None or value.get("state") is not None:
+            return None
+        return card if card["profile"] == (value.get("profile") or self.profiles.active_name) else None
 
     def _show_live_pnl(self, value) -> None:
-        """value: {"profile", "choices", "state"} from the read loop. The main
-        screen (and phone) show the ACTIVE 方案 only; the side panel any."""
+        """value: {"profile", "choices", "state"} from the read loop. Main
+        screen, side panel and phone all show the same 方案."""
         self.live_pnl_payload = value
-        active = self.profiles.active_name
-        state = value.get("state") if value and value.get("profile") == active else None
+        state = (value or {}).get("state")
+        card = getattr(self, "after_close_card", None)
+        if state is not None and card is not None and card["profile"] == (value or {}).get("profile"):
+            self.after_close_card = None  # a new position: the card has done its job
         self.live_pnl_state = state
         section = getattr(self, "live_pnl_section", None)
         if section is None:
             return
         # Always shown; without a position it just says so.
         self.live_pnl_bar.set_state(state)
+        self.live_pnl_profile.show_payload(value, self.profiles.active_name)
 
     def _align_live_pnl(self) -> None:
         """目前持倉's top line level with 帳號進度's (idempotent: once they
@@ -3112,6 +3142,14 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         are left - the same words as on 帳號進度."""
         opened_in = str((_info or {}).get("profile") or "")
         self._after_close_switched = ""
+        # Side panel / phone PiP: 「訂單已結束」 card until the next position.
+        # Only after a TP / SL close; any other close just shows 目前沒有持倉.
+        outcome = (_info or {}).get("outcome")
+        self.after_close_card = ({"profile": opened_in or self.profiles.active_name,
+                                  "ticket": (_info or {}).get("ticket"), "outcome": outcome,
+                                  "balance": "", "tp": "", "sl": ""}
+                                 if outcome in ("tp", "sl") else None)
+        self._refresh_after_close_card()
         if opened_in and opened_in != self.profiles.active_name:
             # The balance belongs to the 方案 that opened the trade: switch
             # back to it first (never write into another 方案's sheet).
@@ -3186,11 +3224,16 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             return
         win = self.account_ruler._segment_text(state.win_hint, win=True)
         loss = self.account_ruler._segment_text(state.loss_hint, win=False)
+        card = getattr(self, "after_close_card", None)
+        if card is not None:
+            card.update(balance=money(state.balance) if state.balance is not None else "",
+                        tp=loss.split(" · ", 1)[-1], sl=win.split(" · ", 1)[-1])
+            self._refresh_after_close_card()
         self._push_trade_message(
             "目前持倉已結束 · 餘額已更新",
             (getattr(self, "_after_close_switched", "") and self._after_close_switched + "\n")
             + (f"場內餘額 {money(state.balance)}\n" if state.balance is not None else "")
-            + win + "\n" + loss)
+            + loss + "\n" + win)  # 場外止盈 first, then 場外止損
 
     def eventFilter(self, watched, event) -> bool:
         if (watched in (getattr(self, "ruler_section", None), getattr(self, "live_pnl_section", None))
@@ -6779,6 +6822,9 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self.log(f"已切換方案：{name}")
             # 目前持倉 follows the 方案 you switch to (a drop-down choice is reset).
             self._live_prefer = None
+            payload = getattr(self, "live_pnl_payload", None)
+            if not (payload or {}).get("choices"):
+                self.live_pnl_profile.show_payload(None, name)
             self.read_sheet()
             QTimer.singleShot(1500, self._prefetch_ctrader_tabs)
         except Exception as exc:

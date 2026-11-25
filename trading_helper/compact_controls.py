@@ -82,6 +82,20 @@ class LiveProfileCombo(HoverStageCombo):
         self.locked = True
         self.setFocusPolicy(Qt.NoFocus)
 
+    def show_payload(self, value, active_name: str) -> None:
+        """Same 方案 list / choice on the main screen, side panel and phone."""
+        from PySide6.QtCore import QSignalBlocker
+        value = value or {}
+        name = value.get('profile') or active_name
+        choices = list(value.get('choices') or [])
+        items = choices if name in choices else [name] + choices
+        with QSignalBlocker(self):
+            if [self.itemText(i) for i in range(self.count())] != items:
+                self.clear()
+                self.addItems(items)
+            self.setCurrentText(name)
+        self.set_locked(len(choices) < 2)
+
     def set_locked(self, locked: bool) -> None:
         self.locked = bool(locked)
         self.setCursor(Qt.ArrowCursor if self.locked else Qt.PointingHandCursor)
