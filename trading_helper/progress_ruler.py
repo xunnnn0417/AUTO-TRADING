@@ -161,6 +161,45 @@ SHEET_RULER_REFERENCES = {
     "運算區": ("B2", "F7", "F6", "B9", "C20"),
     "主要計算區": ("E2", "F2"),
 }
+# Optional cells for the NORMAL single trade (the sheet shrinks E2/F2 to
+# what is left near a limit, which would always read as "1 單"):
+#   loss = 單次虧損上限金額 B15 − 每日止損少抓 E17 (or the random SL J8 when I2 = 是)
+#   win  = 獲利目標 B8 ÷ 獲利一致性次數 E12 (when E12 > 1)
+SHEET_NORMAL_TRADE_REFERENCES = {
+    "運算區": ("B15", "E17", "B8", "E12", "B3", "B7", "B24", "E16"),
+    "主要計算區": ("I2", "J8", "B6"),
+}
+
+
+def normal_trade_amounts(calc, main):
+    """(normal SL cash, normal TP cash); None where the sheet has no value."""
+    sl = tp = None
+    if str(main.get("I2", "")).strip() == "是" and decimal_value(main.get("J8")) is not None:
+        sl = abs(decimal_value(main.get("J8")))
+    else:
+        cap, short = decimal_value(calc.get("B15")), decimal_value(calc.get("E17"))
+        if cap is not None and short is not None and cap > 0:
+            sl = abs(-cap - short)
+    # 最小交易日目標 on (B24 ≠ 0 and 主要計算區 B6 = 是): a day's target is
+    # B24 × 初始餘額 + 獲利目標多抓; otherwise 獲利目標 ÷ 一致性次數.
+    min_day, initial, extra = (percent_value(calc.get("B24")), decimal_value(calc.get("B2")),
+                               decimal_value(calc.get("E16")))
+    if (str(main.get("B6", "")).strip() == "是" and min_day and initial is not None
+            and extra is not None and min_day > 0):
+        return sl, min_day * initial + extra
+    goal, times = decimal_value(calc.get("B8")), decimal_value(calc.get("E12"))
+    if goal is not None and times is not None and goal > 0 and times > 1:
+        tp = goal / times
+    return sl, tp
+
+
+def percent_value(value):
+    """「0.50%」→ 0.005; a plain number is taken as already a fraction."""
+    text = str(value if value is not None else "").replace(",", "").strip()
+    if text.endswith("%"):
+        number = decimal_value(text[:-1])
+        return None if number is None else number / 100
+    return decimal_value(text)
 
 
 def calculate_ruler_from_sheet(
@@ -207,11 +246,25 @@ def calculate_ruler_from_sheet(
     ):
         return None, "考核門檻必須有效，且主要計算區 E2 應為負、F2 應為正"
     daily_start = balance - daily_pnl
+    # C20 / F6 were computed by the sheet from ITS balance (B3) and P/L (B7).
+    # A balance typed here before the sheet is re-read must not be mixed with
+    # them, or today's target jumps up and then back: anchor to the sheet's day.
+    # C20 is the take-profit amount from the CURRENT balance (it already
+    # adds back today's loss), so today's target = balance + C20, not day start + C20.
+    anchor = balance
+    sheet_balance, sheet_pnl = decimal_value(calc.get("B3")), decimal_value(calc.get("B7"))
+    if sheet_balance is not None and sheet_pnl is not None:
+        daily_start = sheet_balance - sheet_pnl
+        anchor = sheet_balance
     daily_floor = daily_start - daily_limit
-    today_target = daily_start + daily_target
+    today_target = anchor + daily_target
     sl_cash, tp_cash = abs(raw_loss), raw_win
     win_remaining = min(today_target, target_balance) - balance
     loss_remaining = balance - max(daily_floor, maximum_floor)
+    # Count with a NORMAL trade, not the one the sheet shrank to what is left.
+    normal_sl, normal_tp = normal_trade_amounts(calc, main)
+    sl_cash = max(sl_cash, normal_sl or 0)
+    tp_cash = max(tp_cash, normal_tp or 0)
     win_crossing = max(0, int((win_remaining / tp_cash).to_integral_value(rounding=ROUND_CEILING)))
     loss_crossing = max(0, int((loss_remaining / sl_cash).to_integral_value(rounding=ROUND_CEILING)))
     return RulerState(

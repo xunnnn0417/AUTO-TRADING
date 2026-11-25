@@ -393,6 +393,47 @@ class DemoUiBrokerPort:
             raise AutomationError("cTrader Positions 清單不唯一或未顯示。")
         return grids[0]
 
+    _ctrader_tabs: dict = {}
+
+    @classmethod
+    def find_ctrader_tabs(cls, handle):
+        """Read-only lookup of the Orders / Positions tabs (about 2 s), kept
+        per window. Done in the background at start-up, so the switch while
+        filling only takes about 0.25 s."""
+        tabs=cls._ctrader_tabs.get(int(handle))
+        if tabs is not None:
+            return tabs
+        from pywinauto import Desktop
+        root=Desktop(backend="uia").window(handle=int(handle))
+        found={str(t.element_info.automation_id):t
+               for t in root.descendants(control_type="TabItem")}
+        tabs=(found.get("PendingOrdersTab_AId"),found.get("PositionsTab_AId"))
+        if None in tabs:
+            return None
+        cls._ctrader_tabs[int(handle)]=tabs
+        return tabs
+
+    def refresh_ctrader_positions_tab(self, window) -> None:
+        """While 填入場內 has cTrader in front: Orders -> Positions once
+        (view only), so Windows can read the Positions list later and the
+        read before sending never has to touch cTrader. Tabs are found once
+        per window and reused; never raises (the read before sending still
+        refuses to trade when the list is not readable)."""
+        try:
+            handle=int(window.handle)
+            tabs=self.find_ctrader_tabs(handle)
+            if tabs is None:
+                return
+            orders,positions=tabs
+            try:
+                orders.select()
+                time.sleep(0.12)
+                positions.select()
+            except Exception:
+                type(self)._ctrader_tabs.pop(handle,None)  # stale: find again next time
+        except Exception:
+            pass
+
     def _ctrader_positions(self, platform, role, account):
         grid=self._ctrader_grid(platform,role)
         rows=timed_call("cTrader持倉列讀取",self._ctrader_rows,grid,

@@ -21,6 +21,7 @@ import threading
 import time
 
 from .windows import AutomationError
+from . import fill_progress
 from .recovery_policy import validate_terminal_rejection
 from .phase_timing_report import (
     LocalPhaseTimingStore, record_submit_timings, timed_call, timed_operation,
@@ -205,6 +206,7 @@ class AutoEntryJournal:
             entry["time"]=time.strftime("%Y-%m-%d %H:%M:%S")
             data[key]=entry
             self._write(data)
+        fill_progress.notify_status(f"confirmed_{role}")
 
     def note_leg_fill(self, key: str, role: str, pos: Position) -> None:
         """Keep the leg's fill price/direction for the receipt's spread line."""
@@ -251,6 +253,8 @@ class AutoEntryJournal:
                 entry["sl_tp_synchronized"]=True
             data[key]=entry
             self._write(data)
+        # Display only (phone progress card), after the durable write.
+        fill_progress.notify_status(status)
 
 
 class AutoEntryWorkflow:

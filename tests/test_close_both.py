@@ -126,7 +126,7 @@ class CloseBothConfirmationTests(unittest.TestCase):
         start.assert_not_called()
 
     def test_rest_close_countdown_cancel_and_timeout(self):
-        with self.answer("取消這次（30）"), patch.object(self.w, "close_both_sides") as close:
+        with self.answer("取消這次（30）"), patch.object(self.w, "run_rest_close") as close:
             self.w._start_rest_close_countdown()
         close.assert_not_called()
 
@@ -134,9 +134,9 @@ class CloseBothConfirmationTests(unittest.TestCase):
             box._clicked_button = None
             return 1
         with patch.object(gui.ThemedMessageBox, "exec", run_out), \
-             patch.object(self.w, "close_both_sides") as close:
-            self.w._start_rest_close_countdown(seconds=0)
-        close.assert_called_once_with(confirmed=True)
+             patch.object(self.w, "run_rest_close") as close:
+            self.w._start_rest_close_countdown(seconds=0, schemes=["測試"])
+        close.assert_called_once_with(["測試"])
 
     def test_settings_offer_15_30_45_60_and_custom(self):
         self.w.store.data["ui"]["rest_close_minutes"] = 20
@@ -185,3 +185,66 @@ class Mt5CloseReadbackTests(unittest.TestCase):
 
     def test_positions_still_open_are_reported(self):
         self.assertIn("還讀到 2 筆", self.run_close([("p1", "p2")] * 100))
+
+
+class CloseBothButtonsLookTests(CloseBothConfirmationTests):
+    def test_step_one_leads_to_next_and_final_button_is_red(self):
+        seen = []
+
+        def exec_(box):
+            seen.append({b.text(): (b.isDefault(), b.property("danger")) for b in box._buttons})
+            box._clicked_button = next(b for b in box._buttons if b.text() in ("下一步", "取消") and
+                                       (b.text() == "下一步" or len(seen) == 2))
+            return 0
+        with self.ready_plan(), patch.object(gui.ThemedMessageBox, "exec", exec_), \
+             patch.object(self.w, "_start") as start:
+            self.w.close_both_sides()
+        start.assert_not_called()
+        self.assertTrue(seen[0]["下一步"][0])          # step 1: 「下一步」 is the default
+        self.assertTrue(seen[1]["立即兩邊平倉"][1])     # step 2: execute marked danger (red)
+        self.assertTrue(seen[1]["取消"][0])            # step 2: still defaults to cancel
+
+
+class MultiSchemeRestCloseTests(CloseBothConfirmationTests):
+    def test_every_scheme_with_rest_close_on_runs_even_when_not_open(self):
+        active = self.w.profiles.active_name
+        other = dict(self.w.store.data, ui=dict(self.w.store.data["ui"], rest_close_enabled=True,
+                                                rest_close_minutes=30))
+        self.w.store.data["ui"]["rest_close_enabled"] = False
+        with patch.object(self.w.profiles, "names", return_value=[active, "別的方案"]), \
+             patch.object(self.w.profiles, "load_profile", return_value=other):
+            schedule = self.w.rest_close_schedule()
+            self.assertEqual([row[1] for row in schedule], ["別的方案"])
+            due = schedule[0][0]
+            with patch.object(self.w, "_start_rest_close_countdown") as countdown:
+                self.w._check_rest_close(due + timedelta(seconds=5))
+            countdown.assert_called_once_with(schemes=["別的方案"])
+
+    def test_other_scheme_is_closed_with_its_own_bindings(self):
+        other = dict(self.w.store.data, ui=dict(self.w.store.data["ui"], rest_close_enabled=True,
+                                                rest_close_all={"internal": True, "external": False},
+                                                internal_platform="cTrader"))
+        with patch.object(self.w.profiles, "names", return_value=["別的方案"]), \
+             patch.object(self.w.profiles, "load_profile", return_value=other), \
+             patch.object(self.w, "_close_both_sides_plan",
+                          return_value=([("internal", "場內", "cTrader", {})], [])) as plan, \
+             patch.object(self.w, "_start") as start:
+            self.w.run_rest_close(["別的方案"])
+        self.assertIs(plan.call_args.kwargs["config"], other)
+        start.assert_called_once()
+
+    def test_rest_close_always_plans_both_sides(self):
+        # An old one-sided choice no longer limits 休市平倉: both sides close.
+        self.w.store.data["ui"]["rest_close_all"] = {"internal": False, "external": False}
+        plan, _ = self.w._close_both_sides_plan(rest_scope=True)
+        self.assertEqual([row[0] for row in plan], ["internal", "external"])
+
+    def test_auto_adjust_sl_is_shared_by_all_schemes(self):
+        with patch.object(self.w.profiles, "save"), patch.object(self.w, "save_config"), \
+             patch.object(gui.ThemedMessageBox, "exec",
+                          lambda box: setattr(box, "_clicked_button", box._buttons[-1]) or 0):
+            self.w.auto_adjust_repeat_sl.setChecked(True)
+        self.assertTrue(self.w.profiles.data["shared"]["auto_adjust_repeat_sl"])
+        self.w.store.data["ui"]["auto_adjust_repeat_sl"] = False  # another 方案's old value
+        self.w._apply_profile_ui()
+        self.assertTrue(self.w.auto_adjust_repeat_sl.isChecked())

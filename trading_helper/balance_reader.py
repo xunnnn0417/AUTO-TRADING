@@ -167,6 +167,12 @@ def read_ctrader_balance(window, point=None, *, capture=capture_window, ocr=_ocr
 
 def read_mt5_balance(expected, *, terminal_path, sdk=None) -> Decimal:
     """Balance from the official read-only MT5 connection (exact value)."""
+    from .mt5_native_readonly import MT5_LOCK
+    with MT5_LOCK:
+        return _read_mt5_balance(expected, terminal_path=terminal_path, sdk=sdk)
+
+
+def _read_mt5_balance(expected, *, terminal_path, sdk=None) -> Decimal:
     from .mt5_native_readonly import _sdk
     if not (expected.verified and expected.account_id.isdigit() and expected.server):
         raise AutomationError("MT5 唯讀前無法確認目標帳戶。")

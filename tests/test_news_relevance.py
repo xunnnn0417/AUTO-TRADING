@@ -46,3 +46,17 @@ class NewsRelevanceTests(unittest.TestCase):
         self.assertNotIn('<img', result)
         self.assertIn('&lt;img', result)
         self.assertIn('CPI</span>', result)
+
+
+class MinorLeaderFalsePositiveTests(unittest.TestCase):
+    def test_courtesy_visits_of_minor_leaders_do_not_push(self):
+        from trading_helper.news_relevance import assess_headline
+        for title in ('李家超晤秘魯總統　稱兩地貿易錄雙位數增長', '秘魯總統辭職',
+                      'Peru president says trade grows'):
+            with self.subTest(title=title):
+                self.assertFalse(assess_headline(title).push)
+        # Key people and major economies still alert.
+        for title in ('鮑威爾表示通脹仍高', '美國總統宣布辭職', '日本首相稱將提高關稅',
+                      'US president says tariffs will rise', '加拿大央行總裁突然宣布辭職　明年6月生效'):
+            with self.subTest(title=title):
+                self.assertTrue(assess_headline(title).push)

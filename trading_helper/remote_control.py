@@ -273,9 +273,28 @@ class MobileServer(QObject):
         self.pair_attempts = 0
         return self.pair_code
 
+    # Display-only values that change many times a second. They never bump
+    # the revision (a phone command must not be rejected because a P/L
+    # number moved) and travel as a small separate message.
+    LIVE_KEYS = ("live_pnl", "live_profile", "live_choices")
+
     def publish(self, state: dict):
+        live = {key: state.get(key) for key in self.LIVE_KEYS}
+        state = {key: value for key, value in state.items() if key not in self.LIVE_KEYS}
         encoded = json.dumps(state, ensure_ascii=False, sort_keys=True, allow_nan=False)
-        if encoded != self._last_encoded or time.monotonic() >= self.lease_until-5:
+        live_encoded = json.dumps(live, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        changed = encoded != self._last_encoded or time.monotonic() >= self.lease_until-5
+        if live_encoded != getattr(self, "_last_live", None) or changed:
+            self._last_live = live_encoded
+            self.live = live
+            if not changed:
+                if self.state is not None:
+                    self.state = dict(self.state, **live)  # new connections see it too
+                for sock, device in list(self.sockets.items()):
+                    if self.store.authorized(device):
+                        self.send(sock, dict(type="live", **live))
+        state = dict(state, **getattr(self, "live", {}))
+        if changed:
             self._last_encoded = encoded
             self.state = state
             self.revision += 1

@@ -34,40 +34,76 @@ def delivery_groups(rows):
     return list(groups.values())
 
 
+def _values_text(values, *, with_actual=True):
+    """「公布值 0.5% · 預期 0.3% · 前值 0.4%」; missing ones are left out."""
+    labels = (('actual', '公布值'),) if with_actual else ()
+    labels += (('forecast', '預期'), ('previous', '前值'))
+    return [f'{label} {values[key]}' for key, label in labels if (values or {}).get(key)]
+
+
+def _lead(body):
+    """「1 小時後公布」 / 「15 分鐘後公布」 from the scheduled reminder text."""
+    first = str(body or '').split(' · ', 1)[0]
+    return first if first.endswith('後公布') else ''
+
+
 def combined_payload(rows):
     """Phone shows: app line (iOS adds 「from 對沖小幫手」), a bold title, a body.
-    The title carries the point (what happened / which event); the body the
-    details (when, how long until, other items)."""
+    Formats agreed with the user (①–⑥):
+      ① rest      60 分鐘後例行休市（6:00 AM） / 休市時段 … · 休市平倉：…
+      ②③ before   1 小時後公布 · 美國 CPI / 9:30 PM 公布 · 預期 · 前值 (· 目前有持倉)
+      ④ release   美國 CPI 已公布 / 公布值 · 預期 · 前值
+      ⑤ breaking  headline / 分類 · 7:30 PM · 來源
+      ⑥ several   1 小時後公布 3 項 · 美國 CPI 等 / one line per item"""
     from .calendar_events import format_event_time
-    payload = json.loads(rows[0][2])
+    payloads = [json.loads(row[2]) for row in rows]
+    payload = payloads[0]
     kind = str(payload.get('kind', ''))
     when = payload.get('when')
     clock = format_event_time(datetime.fromisoformat(when)) if when else ''
+    headline = str(payload.get('headline') or '').strip()
     if len(rows) > 1:
-        names = list(dict.fromkeys(json.loads(row[2])['headline'] for row in rows))
-        prefix = payload['body'].split(' · ',1)[0] if kind != 'breaking' else '突發重大消息'
-        title = f'{names[0]} 等 {len(rows)} 則' if len(names) > 1 else f'{names[0]} · {len(rows)} 則'
-        body = ' · '.join(part for part in (prefix, clock) if part)+'\n'+'\n'.join('• '+name for name in names[1:])
-        payload.update(title=title, body=body.strip(),
+        items = list({str(p.get('headline') or ''): p for p in payloads}.values())
+        first = str(items[0].get('headline') or '')
+        if kind == 'breaking':
+            title = f'突發重大消息 {len(items)} 則 · {first} 等'
+            lines = ['• ' + str(p.get('headline') or '') for p in items]
+        else:
+            if kind == 'release':
+                title = f'{clock} 已公布 {len(items)} 項 · {first} 等'
+            else:
+                lead = _lead(payload.get('body')) or f'{clock} 公布'
+                title = f'{lead} {len(items)} 項 · {first} 等'
+            lines = ([f'{clock} 公布'] if kind != 'release' else []) + [
+                '• ' + ' · '.join([str(p.get('headline') or '')]
+                                  + _values_text(p.get('values'), with_actual=kind == 'release')[:2])
+                for p in items]
+        payload.update(title=title, body='\n'.join(lines),
                        tag=hashlib.sha256('\n'.join(sorted(row[1] for row in rows)).encode()).hexdigest(),
                        expires=min(row[3] for row in rows))
+    elif kind.startswith('rest:'):
+        minutes = kind.split(':', 1)[1]
+        payload.update(title=f'{minutes} 分鐘後例行休市（{clock}）',
+                       body=' · '.join(p for p in (payload.get('rest_window'), payload.get('rest_close')) if p))
+    elif headline and kind == 'breaking':
+        payload.update(title=headline, body=' · '.join(
+            p for p in (payload.get('category'), clock, payload.get('source')) if p))
+    elif headline and kind.startswith('before'):
+        lead = _lead(payload.get('body'))
+        parts = [f'{clock} 公布'] + _values_text(payload.get('values'), with_actual=False)
+        if kind == 'before' and payload.get('has_position'):
+            parts.append('目前有持倉')
+        payload.update(title=f'{lead} · {headline}' if lead else headline, body=' · '.join(parts))
+    elif headline and kind == 'release':
+        values = _values_text(payload.get('values'))
+        payload.update(title=f'{headline} 已公布', body=' · '.join(values or [f'{clock} 公布時間已到']))
     else:
-        headline = str(payload.get('headline') or '').strip()
-        body = str(payload.get('body') or '')
-        if kind.startswith('rest:'):
-            parts = body.split(' · ')
-            payload.update(title=parts[0], body=' · '.join(parts[1:2]))
-        elif headline and kind == 'breaking':
-            payload.update(title=headline, body=' · '.join(p for p in ('突發重大消息', clock) if p))
-        elif headline and kind in ('before', 'release'):
-            parts = [part for part in body.split(' · ') if part != headline]
-            payload.update(title=headline, body=' · '.join(parts))
-        else:
-            payload = two_line(payload)
+        payload = two_line(payload)
     payload['title'] = str(payload.get('title') or NOTIFICATION_TITLE)[:80]
     payload['body'] = str(payload.get('body') or '')[:300]
-    payload.pop('when',None)
-    payload.pop('headline',None)
+    for key in ('when', 'headline', 'values', 'category', 'source', 'rest_window',
+                'rest_close', 'has_position'):
+        payload.pop(key, None)
     return payload
 
 
@@ -238,17 +274,60 @@ class MobileNotifications(QObject):
         self._dispatch(now)
         return dict(queued=True, cooldown=10)
 
+    def notify_all(self, title, body, kind='trade', ttl=600):
+        """One message to every subscribed phone (e.g. a position ended)."""
+        if not self.enabled or not self.origin.startswith('https://'):
+            return False
+        now = time.time()
+        identity = kind+'-'+uuid4().hex
+        payload = json.dumps(dict(title=NOTIFICATION_TITLE, body=(title+'\n'+body)[:300], tag=identity,
+                                  kind=kind, expires=now+ttl), ensure_ascii=False)
+        with self.store.db:
+            self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
+                (device,event,origin,payload,expires,created)
+                SELECT p.device,?,p.origin,?,?,? FROM push_subscriptions p
+                JOIN devices d ON d.id=p.device WHERE p.origin=? AND d.revoked=0 AND d.expires>?''',
+                (identity, payload, now+ttl, now, self.origin, now))
+        self._dispatch(now)
+        return True
+
     def _receive_news(self, items):
         if self.enabled:
             self._news = (self._news + [item for item in items if not item.scheduled])[-20:]
             if self._news:
                 self.poll(self.calendar,self.origin)
 
+    # Optional desktop hook: {"rest_close": [(when, 方案, minutes)], "has_position": bool}
+    context = None
+
+    def _extras(self, kind, item):
+        """What the agreed phone formats show besides the headline."""
+        from .calendar_events import format_event_time, publication_values
+        from datetime import timedelta
+        try:
+            context = (self.context or (lambda: {}))() or {}
+        except Exception:
+            context = {}
+        if kind.startswith('rest:'):
+            end = item.when + timedelta(hours=1)
+            runs = [(at, name) for at, name, _minutes in context.get('rest_close', ())
+                    if item.when - timedelta(hours=4) < at < item.when]
+            close = ('休市平倉：' + '、'.join(f'{name} {format_event_time(at)}' for at, name in runs) + ' 執行'
+                     if runs else '休市平倉：未開啟')
+            return dict(rest_window=f'休市時段 {format_event_time(item.when)}–{format_event_time(end)}（台北）',
+                        rest_close=close)
+        if kind == 'breaking':
+            from .news_relevance import assess_headline
+            return dict(category=assess_headline(item.title).category, source=item.source)
+        return dict(values=publication_values(item.details or ''),
+                    has_position=bool(context.get('has_position')))
+
     def _enqueue(self, kind, item, title, body, now, expires):
         identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
         payload = json.dumps(dict(title=NOTIFICATION_TITLE, body=body[:300], tag=identity, kind=kind,
                                   expires=expires, when=item.when.isoformat(),
-                                  headline=self.calendar.title(item.title)), ensure_ascii=False)
+                                  headline=self.calendar.title(item.title), **self._extras(kind, item)),
+                             ensure_ascii=False)
         with self.store.db:
             self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
                 (device,event,origin,payload,expires,created)

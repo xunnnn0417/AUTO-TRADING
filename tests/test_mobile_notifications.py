@@ -144,7 +144,7 @@ class MobileNotificationTests(unittest.TestCase):
     def test_simultaneous_release_members_share_one_delivery_and_all_keep_receipts(self):
         from test_mobile_remote import wait_for
         when = datetime.fromtimestamp(self.now+590,timezone.utc)
-        names = [f'指標{i:02}' for i in range(13)]
+        names = [f'CPI 指標{i:02}' for i in range(13)]
         self.calendar.events = [CalendarEvent(when,'USD',name) for name in names]
         self.service.poll(self.calendar,self.origin,self.now)
         self.assertEqual(len(self.rows()),13)
@@ -153,8 +153,8 @@ class MobileNotificationTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not self.service._busy))
             self.assertEqual(send.call_count,1)
             payload = send.call_args.args[1]
-            self.assertIn('13 則',payload['title'])
-            self.assertTrue(payload['title'].startswith('指標00'))  # the point first
+            self.assertIn('13 項',payload['title'])                   # ⑥ several at once
+            self.assertTrue(payload['title'].endswith('CPI 指標00 等'))
             for name in names:self.assertIn(name,payload['title']+payload['body'])
             self.assertTrue(all(row[2]=='sent' for row in self.rows()))
             MobileNotifications._dispatch(self.service,self.now+61)
@@ -332,7 +332,7 @@ class MobileNotificationTests(unittest.TestCase):
         actual = EconomicCalendar(Path(self.temp.name)/'calendar.json')
         self.addCleanup(actual.close)
         actual.events = [CalendarEvent(datetime.fromtimestamp(self.now+590, timezone.utc),
-                                      'USD', 'Interest Rate Decision')]
+                                      'USD', 'Federal Funds Rate')]
         actual.source_times = self.calendar.source_times
         actual.fetched_at = self.calendar.source_times['ff']
         self.service.poll(actual, self.origin, self.now)
@@ -380,14 +380,46 @@ class HeadlineFirstPayloadTests(unittest.TestCase):
 
     def test_title_is_the_point_and_body_the_details(self):
         when = '2026-11-24T13:30:00+00:00'
-        before = self.payload(kind='before', headline='美國 CPI', when=when,
-                              body='5 分鐘後公布 · 9:30 PM · 美國 CPI')
-        self.assertEqual((before['title'], before['body']), ('美國 CPI', '5 分鐘後公布 · 9:30 PM'))
-        news = self.payload(kind='breaking', headline='川普宣布加徵關稅', when=when, body='川普宣布加徵關稅')
-        self.assertEqual(news['title'], '川普宣布加徵關稅')
-        self.assertIn('突發重大消息', news['body'])
-        rest = self.payload(kind='rest:15', headline='黃金例行休市', when=when,
-                            body='15 分鐘後例行休市 · 6:00 AM · 黃金例行休市')
-        self.assertEqual((rest['title'], rest['body']), ('15 分鐘後例行休市', '6:00 AM'))
+        values = {'forecast': '0.3%', 'previous': '0.4%'}
+        # ②③ before: lead + name / time · 預期 · 前值 (· 目前有持倉 at 15 min)
+        before = self.payload(kind='before:60', headline='美國 CPI', when=when, values=values,
+                              body='1 小時後公布 · 9:30 PM · 美國 CPI')
+        self.assertEqual((before['title'], before['body']),
+                         ('1 小時後公布 · 美國 CPI', '9:30 PM 公布 · 預期 0.3% · 前值 0.4%'))
+        soon = self.payload(kind='before', headline='美國 CPI', when=when, values=values, has_position=True,
+                            body='5 分鐘後公布 · 9:30 PM · 美國 CPI')
+        self.assertEqual(soon['title'], '5 分鐘後公布 · 美國 CPI')
+        self.assertTrue(soon['body'].endswith('目前有持倉'))
+        # ④ release: 公布值 only when the source has it
+        done = self.payload(kind='release', headline='美國 CPI', when=when,
+                            values=dict(values, actual='0.5%'), body='公布時間已到 · 9:30 PM · 美國 CPI')
+        self.assertEqual((done['title'], done['body']),
+                         ('美國 CPI 已公布', '公布值 0.5% · 預期 0.3% · 前值 0.4%'))
+        # ⑤ breaking: headline / 分類 · time · 來源
+        news = self.payload(kind='breaking', headline='川普宣布加徵關稅', when=when, body='川普宣布加徵關稅',
+                            category='政策事件', source='香港電台')
+        self.assertEqual((news['title'], news['body']), ('川普宣布加徵關稅', '政策事件 · 9:30 PM · 香港電台'))
+        # ① rest: minutes + time / 休市時段 · 休市平倉
+        rest = self.payload(kind='rest:60', headline='黃金例行休市', when=when,
+                            rest_window='休市時段 9:30 PM–10:30 PM（台北）', rest_close='休市平倉：未開啟',
+                            body='60 分鐘後例行休市 · 9:30 PM · 黃金例行休市')
+        self.assertEqual((rest['title'], rest['body']),
+                         ('60 分鐘後例行休市（9:30 PM）', '休市時段 9:30 PM–10:30 PM（台北） · 休市平倉：未開啟'))
         test = self.payload(kind='test', body='手機通知已接通。')
         self.assertEqual((test['title'], test['body']), ('手機通知已接通。', ''))
+
+
+class PhoneFormatExtrasTests(unittest.TestCase):
+    def test_rest_close_names_the_schemes_that_run_before_this_rest(self):
+        from datetime import datetime, timedelta, timezone
+        from trading_helper.calendar_events import CalendarEvent
+        from trading_helper.remote_notifications import MobileNotifications
+        service = MobileNotifications.__new__(MobileNotifications)
+        rest = datetime(2026, 11, 25, 22, 0, tzinfo=timezone.utc)  # 6:00 AM Taipei
+        item = CalendarEvent(rest, '本機', '黃金例行休市', '休市提醒', '')
+        service.context = lambda: {"rest_close": [(rest - timedelta(minutes=15), "方案A", 15)]}
+        extras = service._extras('rest:60', item)
+        self.assertEqual(extras['rest_window'], '休市時段 6:00 AM–7:00 AM（台北）')
+        self.assertEqual(extras['rest_close'], '休市平倉：方案A 5:45 AM 執行')
+        service.context = lambda: {"rest_close": []}
+        self.assertEqual(service._extras('rest:60', item)['rest_close'], '休市平倉：未開啟')

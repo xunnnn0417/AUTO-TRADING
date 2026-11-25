@@ -106,6 +106,12 @@ class SideQuickPanel(QWidget):
         self._hold_timer.setSingleShot(True)
         self._hold_timer.setInterval(180)
         self._hold_timer.timeout.connect(self._begin_handle_drag)
+        # One click on the ball opens the side panel; a quick second click
+        # instead opens / closes 目前持倉 on its own (ball stays parked).
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(min(300, QGuiApplication.styleHints().mouseDoubleClickInterval()))
+        self._click_timer.timeout.connect(lambda: self.set_collapsed(False))
         self._screen = app.screen() or QGuiApplication.primaryScreen()
         self._dock_timer = QTimer(self)
         self._dock_timer.setSingleShot(True)
@@ -176,6 +182,11 @@ class SideQuickPanel(QWidget):
         row.addWidget(self.profile_selector, 0, Qt.AlignBottom)
         row.addWidget(self.stage_selector, 0, Qt.AlignBottom)
         row.addStretch()
+        self.live_button = self._icon_button('chart', '目前持倉')
+        self.live_button.setObjectName('sideLivePnlButton')
+        self.live_button.setCheckable(True)
+        self.live_button.toggled.connect(self._toggle_live)
+        row.addWidget(self.live_button)
         self.update_button = self._icon_button('refresh', '更新數值')
         self.update_button.clicked.connect(self.update_values)
         row.addWidget(self.update_button)
@@ -230,12 +241,14 @@ class SideQuickPanel(QWidget):
             entry.textEdited.connect(app.parameter_inputs[key].setText)
             entry.returnPressed.connect(app.parameter_inputs[key].returnPressed.emit)
             self.inputs[key] = entry
-            if key in ('expected_sl_combined', 'internal_balance'):
+            if key in ('expected_sl_combined', 'internal_balance', 'daily_pnl'):
                 entry.setTextMargins(0, 0, 16, 0)
                 badge = type(app.expected_sl_warning_badge)(entry)
                 badge.setCursor(Qt.PointingHandCursor)
                 badge.setToolTip('請先確認保證金比例相關規則。' if key == 'expected_sl_combined'
+                                 else '每日獲利/虧損數值可能有誤，請確認後修改並更新。' if key == 'daily_pnl'
                                  else '請確認並修改場內餘額，更新成功後再操作。')
+                badge.hide()
                 badge.installEventFilter(self)
                 entry.installEventFilter(self)
                 self.warnings[key] = badge
@@ -249,10 +262,10 @@ class SideQuickPanel(QWidget):
                 self.read_balance_button.setFixedSize(28, 28)
                 self.read_balance_button.setToolTip('讀取場內餘額')
                 self.read_balance_button.setStyleSheet(
-                    'QToolButton#sideReadBalance { background: transparent; border: 0; border-radius: 0;'
-                    ' border-top-right-radius: 6px; border-bottom-right-radius: 6px; padding: 0; }'
+                    'QToolButton#sideReadBalance { background: transparent; border: 0; border-radius: 5px;'
+                    ' padding: 0; }'
                     'QToolButton#sideReadBalance:hover { background: #26232f; }')
-                self.read_balance_button.clicked.connect(lambda: app.read_internal_balance('side'))
+                self.read_balance_button.clicked.connect(lambda: app.balance_button_clicked('side'))
                 entry.setTextMargins(0, 0, 44, 0)
                 self._balance_inline = _InlineFieldControls(entry, (), self.read_balance_button)
             controls.append((caption, entry))
@@ -350,6 +363,42 @@ class SideQuickPanel(QWidget):
         for name in ('event_tabs', 'event_rows', 'news_rows', 'event_status', 'source_details'):
             setattr(self, name, getattr(self.event_view, name))
         self.event_flyout.hide()
+        self.live_flyout = EventFlyout(self, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.live_flyout.setObjectName('liveFlyout')
+        self.live_flyout.setWindowTitle('目前持倉')
+        self.live_flyout.setAttribute(Qt.WA_TranslucentBackground)
+        live_layout = QVBoxLayout(self.live_flyout)
+        live_layout.setContentsMargins(14, 8, 10, 10)
+        live_head = QHBoxLayout()
+        live_title = QLabel('目前持倉', self.live_flyout)
+        live_title.setStyleSheet('font-size: 13px; font-weight: 600;')
+        live_head.addWidget(live_title)
+        # Which 方案's position is shown (same look as the panel's subtitle).
+        from .compact_controls import LiveProfileCombo
+        self.live_profile = LiveProfileCombo(self.live_flyout)
+        self.live_profile.setObjectName('liveProfileSelector')
+        self.live_profile.setAccessibleName('目前持倉方案')
+        self.live_profile.textActivated.connect(self.app.set_live_preference)
+        live_head.addWidget(self.live_profile, 0, Qt.AlignBottom)
+        live_head.addStretch(1)
+        # 「›」 at the header's top-right closes the panel.
+        self.live_collapse = QToolButton(self.live_flyout)
+        self.live_collapse.setObjectName('liveFlyoutCollapse')
+        self.live_collapse.setText('›')
+        self.live_collapse.setToolTip('收起目前持倉')
+        self.live_collapse.setFixedSize(22, 22)
+        self.live_collapse.setStyleSheet(
+            'QToolButton{background:transparent;border:none;border-radius:5px;'
+            'color:#c9b8ff;padding:0;font-size:16px;}QToolButton:hover{background:#2c2540;}')
+        self.live_collapse.clicked.connect(lambda: self.live_button.setChecked(False))
+        live_head.addWidget(self.live_collapse)
+        live_layout.addLayout(live_head)
+        from .live_pnl_view import LivePnlBar
+        self.live_bar = LivePnlBar(self.live_flyout, compact=True)
+        live_layout.addWidget(self.live_bar)
+        self.live_flyout.hide()
+        self.live_flyout.installEventFilter(self)
+        app.signals.live_pnl.connect(self._show_live)
         self._warning_key = None
         self._warning_context = None
         self.warning_flyout = WarningFlyout(self, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -477,9 +526,14 @@ class SideQuickPanel(QWidget):
         self.fill_button.setEnabled(not busy and app.action_buttons['填入兩邊'].isEnabled())
         self.close_both_button.setEnabled(not busy)
         self.update_button.setEnabled(not busy)
+        # Same rule as the main window: a 每日獲利/虧損 reason (e.g. 「已達到
+        # 獲利目標」) puts the "!" on that field instead of 場內餘額.
+        balance_active = app._balance_warning_active()
+        on_pnl = balance_active and app._pnl_warning(app._balance_range_warning_detail())
         for key, visible in (
             ('expected_sl_combined', app._expected_sl_warning_values() is not None),
-            ('internal_balance', app._balance_warning_active()),
+            ('internal_balance', balance_active and not on_pnl),
+            ('daily_pnl', on_pnl),
         ):
             badge = self.warnings[key]
             badge.setVisible(visible)
@@ -538,6 +592,14 @@ class SideQuickPanel(QWidget):
             title = '預期 SL 提醒'
             numbers = f'原始 SL：{original} 點\n預期 SL：{adjusted} 點'
             message = '手數可能增加，請先確認保證金比例相關規則。'
+        elif key == 'daily_pnl':
+            reason = self.app._balance_range_warning_detail()
+            if not self.app._balance_warning_active() or not self.app._pnl_warning(reason):
+                return False
+            title = '每日獲利／虧損提醒'
+            value = self.inputs['daily_pnl'].text().strip() or self.inputs['daily_pnl'].placeholderText()
+            numbers = '每日獲利／虧損：' + value if value else ''
+            message = reason.rstrip('。') + '。\n請確認平台實際數值後修改並更新，再操作。'
         else:
             if not self.app._balance_warning_active():
                 return False
@@ -557,12 +619,14 @@ class SideQuickPanel(QWidget):
             return
         area = self._screen.availableGeometry()
         popup = self.warning_flyout
-        popup.setFixedWidth(min(268, max(160, self.x()-area.left()-8), area.width()))
+        left = min(self.x(), self.live_flyout.x() if self.live_flyout.isVisible() else self.x())
+        popup.setFixedWidth(min(268, max(160, left-area.left()-8), area.width()))
         popup.adjustSize()
         anchor = self.warnings[self._warning_key].mapToGlobal(
             self.warnings[self._warning_key].rect().center())
         y = max(area.top(), min(anchor.y()-popup.height()//2, area.bottom()-popup.height()+1))
-        popup.move(max(area.left(), self.x()-popup.width()-8), y)
+        left = min(self.x(), self.live_flyout.x() if self.live_flyout.isVisible() else self.x())
+        popup.move(max(area.left(), left-popup.width()-8), y)
         popup.tip_y = max(16, min(popup.height()-16, anchor.y()-y))
         popup.update()
 
@@ -578,16 +642,97 @@ class SideQuickPanel(QWidget):
             self._hide_warning()
             self.event_status.setChecked(False)
             self._position_event_flyout()
+            self._position_live_flyout()
             self.event_flyout.raise_()
             self.event_flyout.activateWindow()
             self.calendar.refresh()
+
+    def _toggle_live(self, opened):
+        self._show_live(getattr(self.app, 'live_pnl_payload', None))
+        self.live_flyout.setVisible(opened)
+        # 重大事件 gets shorter / back to full height so both fit one column.
+        self._position_event_flyout()
+        if opened:
+            self._position_live_flyout()
+            self.live_flyout.raise_()
+
+    def _show_live(self, value):
+        """value: {"profile", "choices", "state"}; no position anywhere -> the
+        active 方案's name, plain."""
+        value = value or {}
+        self.live_bar.set_state(value.get('state'))
+        name = value.get('profile') or self.app.profiles.active_name
+        choices = list(value.get('choices') or []) or [name]
+        if name not in choices:
+            choices.insert(0, name)
+        combo = self.live_profile
+        with QSignalBlocker(combo):
+            if [combo.itemText(i) for i in range(combo.count())] != choices:
+                combo.clear()
+                combo.addItems(choices)
+            combo.setCurrentText(name)
+        combo.set_locked(len(value.get('choices') or []) < 2)
+
+    LIVE_FLYOUT_HEIGHT = 176
+
+    def _live_drag(self, event) -> bool:
+        kind = event.type()
+        if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._live_drag_offset = event.globalPosition().toPoint().y() - self.y()
+            return True
+        offset = getattr(self, '_live_drag_offset', None)
+        if offset is None:
+            return False
+        if kind == QEvent.MouseMove:
+            self._y = event.globalPosition().toPoint().y() - offset
+            self.dock()
+            return True
+        if kind == QEvent.MouseButtonRelease:
+            self._live_drag_offset = None
+            self._y = self.y()
+            self.app.store.data['ui']['side_panel_y'] = self._y
+            self.app.save_ui_state()
+            return True
+        return False
+    FLYOUT_WIDTH = 360
+
+    def popup_left_edge(self) -> int:
+        """Left edge of the panel plus its open 目前持倉 / 重大事件 panels:
+        notifications go to the left of all of them, never on top."""
+        edges = [self.frameGeometry().left()]
+        for flyout in (self.live_flyout, self.event_flyout):
+            if flyout.isVisible():
+                edges.append(flyout.frameGeometry().left())
+        return min(edges)
+
+    def _position_live_flyout(self):
+        if not self.live_flyout.isVisible() or self._valid_screen() is None:
+            return
+        area = self._screen.availableGeometry()
+        width, height = self.FLYOUT_WIDTH, self.LIVE_FLYOUT_HEIGHT
+        right = self.x() - 8
+        top = max(area.top(), min(self.y(), area.bottom() - height + 1))
+        # 重大事件 open too: side by side only when they would overlap;
+        # otherwise both sit right next to the side panel (one above the other).
+        if self.event_flyout.isVisible():
+            other = self.event_flyout.geometry()
+            if top < other.bottom() + 8 and top + height > other.top() - 8:
+                right = other.x() - 8
+        self.live_flyout.setFixedSize(width, height)
+        self.live_flyout.move(max(area.left(), right - width), top)
 
     def _position_event_flyout(self):
         if not self.event_flyout.isVisible() or self._valid_screen() is None:
             return
         area = self._screen.availableGeometry()
-        width = min(320, max(160, self.x() - area.left() - 8))
+        width = min(self.FLYOUT_WIDTH, max(160, self.x() - area.left() - 8))
         height = min(420, area.height() - 16)
+        if self.live_flyout.isVisible():
+            # 目前持倉 sits at the top: 重大事件 takes the space below it
+            # (bottom still level with the side panel), so they stack
+            # instead of standing side by side.
+            room = self.height() - self.LIVE_FLYOUT_HEIGHT - 8
+            height = max(240, min(height, room))
         self.event_flyout.setFixedSize(width, height)
         self.event_flyout.move(max(area.left(), self.x() - width - 8),
             max(area.top(), min(self.y()+self.height()-height, area.bottom()-height+1)))
@@ -638,6 +783,7 @@ class SideQuickPanel(QWidget):
         if collapsed:
             self._hide_warning()
             self.events_button.setChecked(False)
+            # 目前持倉 stays open on its own next to the small ball.
         self.collapsed = collapsed
         self.clearMask()
         self.body.setVisible(not collapsed)
@@ -645,6 +791,8 @@ class SideQuickPanel(QWidget):
         self.layout().setContentsMargins(*((0, 0, 0, 0) if collapsed else (14, 10, 14, 10)))
         self._fit_contents()
         self.dock()
+        self.live_flyout.setVisible(self.live_button.isChecked())
+        self._position_live_flyout()
 
     def _fit_contents(self):
         if self.collapsed:
@@ -693,6 +841,7 @@ class SideQuickPanel(QWidget):
                 self.app.store.path.parent/'diagnostics'/'side-panel-geometry.json')
         self._position_event_flyout()
         self._position_warning_flyout()
+        self._position_live_flyout()
 
     def _schedule_dock(self):
         # Windows can deliver the native resize/move after set_collapsed has
@@ -712,10 +861,15 @@ class SideQuickPanel(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._schedule_dock()
+        if hasattr(self, 'live_button') and self.live_button.isChecked():
+            self.live_flyout.show()
+            self._position_live_flyout()
 
     def _begin_handle_drag(self):
         if self._handle_pointer is None or not self.collapsed:
             return
+        if self.live_flyout.isVisible():
+            return  # 目前持倉 open: the ball only slides along the edge
         self._handle_dragging = True
         self.handle.setCursor(Qt.ClosedHandCursor)
         self.handle.setFixedSize(self.HANDLE_HEIGHT, self.HANDLE_HEIGHT)
@@ -830,10 +984,34 @@ class SideQuickPanel(QWidget):
                     self.set_collapsed(True)
                 return True
         if watched is self.handle:
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            # Windows delivers a quick second press as a double-click event.
+            if (event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick)
+                    and event.button() == Qt.LeftButton):
                 self._handle_press = self._handle_pointer = event.globalPosition().toPoint()
+                self._edge_start_y, self._edge_moved = self.y(), False
                 self._hold_timer.start()
                 self.handle.grabMouse()
+                return True
+            if (event.type() == QEvent.MouseMove and self._handle_press is not None
+                    and self.live_flyout.isVisible()):
+                # 目前持倉 open: slide ball + panel together, up / down only.
+                delta = event.globalPosition().toPoint() - self._handle_press
+                if delta.manhattanLength() >= QGuiApplication.styleHints().startDragDistance():
+                    self._hold_timer.stop()
+                    self._edge_moved = True
+                if self._edge_moved:
+                    self._y = self._edge_start_y + delta.y()
+                    self.dock()
+                return True
+            if (event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton
+                    and self._handle_press is not None and getattr(self, '_edge_moved', False)):
+                self._hold_timer.stop()
+                self._handle_press = self._handle_pointer = None
+                self._edge_moved = False
+                self.handle.releaseMouse()
+                self._y = self.y()
+                self.app.store.data['ui']['side_panel_y'] = self._y
+                self.app.save_ui_state()
                 return True
             if event.type() == QEvent.MouseMove and self._handle_press is not None:
                 self._handle_pointer = event.globalPosition().toPoint()
@@ -844,7 +1022,17 @@ class SideQuickPanel(QWidget):
                     self._move_handle_drag(self._handle_pointer)
                 return True
             if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self._handle_press is not None:
-                self._release_handle(event.globalPosition().toPoint())
+                if self._handle_dragging:
+                    self._release_handle(event.globalPosition().toPoint())
+                    return True
+                self._hold_timer.stop()
+                self._handle_press = self._handle_pointer = None
+                self.handle.releaseMouse()
+                if self._click_timer.isActive():
+                    self._click_timer.stop()
+                    self.live_button.setChecked(not self.live_button.isChecked())
+                else:
+                    self._click_timer.start()
                 return True
         for key, badge in getattr(self, 'warnings', {}).items():
             if watched is badge and event.type() == QEvent.MouseButtonRelease:
@@ -854,6 +1042,8 @@ class SideQuickPanel(QWidget):
             if watched is self.inputs[key] and event.type() == QEvent.Resize:
                 badge.move(max(0, watched.width() - 14), 1)
                 badge.raise_()
+        if watched is getattr(self, 'live_flyout', None) and self._live_drag(event):
+            return True
         if watched not in self._drag_widgets:
             return super().eventFilter(watched, event)
         if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -913,4 +1103,7 @@ class SideQuickPanel(QWidget):
         self._cancel_collapse_drag()
         if hasattr(self, 'events_button'):
             self.events_button.setChecked(False)
+        if hasattr(self, 'live_flyout'):
+            # Hidden for an operation: never leave it over the broker windows.
+            self.live_flyout.hide()
         super().hideEvent(event)

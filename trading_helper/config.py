@@ -581,8 +581,11 @@ class ProfileStore:
                     and isinstance(active, str)
                     and active in profiles
                 ):
+                    shared = loaded.get("shared")
                     return {
                         "active": active,
+                        # Settings that apply to every 方案 (e.g. 自動調 SL).
+                        "shared": dict(shared) if isinstance(shared, dict) else {},
                         "profiles": {
                             str(name): _merge(
                                 DEFAULT_CONFIG,

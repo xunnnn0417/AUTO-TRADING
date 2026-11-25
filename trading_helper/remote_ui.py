@@ -19,7 +19,7 @@ from .remote_tunnel import QuickTunnel, FixedTunnel
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
            "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news",
-           "close_both", "read_balance"}
+           "close_both", "read_balance", "rest_settings", "live_profile"}
 
 
 class DeviceList(QListWidget):
@@ -84,6 +84,10 @@ class RemoteController(QObject):
         app.signals.error.connect(self._error)
         app.signals.auto_entry_result.connect(self._report)
         app.signals.remote_task_result.connect(self._task_result)
+        # Phone progress card for 「填入兩邊」 (display only).
+        self._fill_steps = None
+        from . import fill_progress
+        fill_progress.add_listener(self._fill_step)
         QApplication.instance().aboutToQuit.connect(self.stop)
         self.settings_dialog = None
 
@@ -182,6 +186,23 @@ class RemoteController(QObject):
     def _status(self, text):
         self.phase = text
 
+    def _fill_step(self, step):
+        # Called from the worker thread: only records a finished step.
+        steps = self._fill_steps
+        if steps is not None:
+            self._fill_steps = dict(steps, done=steps["done"] | {step})
+
+    def _fill_progress(self):
+        steps = self._fill_steps
+        if not (self.active and self.active.get("action") == "fill_both" and steps):
+            return None
+        order = [("form_internal", "場內填寫"), ("form_external", "場外填寫")]
+        if steps["entry"]:
+            order += [("entered_internal", "場內進場"), ("entered_external", "場外進場")]
+            if steps["sync"]:
+                order.append(("synced", "同步場外 SL／TP"))
+        return [{"label": label, "done": key in steps["done"]} for key, label in order]
+
     def _error(self, text):
         if self.active:
             self.active["errors"].append(str(text))
@@ -243,6 +264,12 @@ class RemoteController(QObject):
             key = str(id(widget))
             self.dialog_widgets[key] = widget
             item = dict(id=key, text=widget.text().replace("&", ""), enabled=widget.isEnabled())
+            if isinstance(widget, QPushButton):
+                item["default"] = bool(widget.isDefault())
+                # The computer colours the action (accept) button; the phone
+                # highlights that same button instead of the focused default.
+                item["accept"] = widget.property("messageRole") == "accept"
+                item["danger"] = widget.property("danger") is True
             if isinstance(widget, QCheckBox):
                 item["checked"] = widget.isChecked()
                 checks.append(item)
@@ -265,8 +292,17 @@ class RemoteController(QObject):
         options = {key: dict(checked=widget.isChecked(), enabled=available and widget.isEnabled())
                    for key, widget in self._options().items()}
         calendar = getattr(app, "_event_calendar", None)
-        news = []
+        # The news list is the costly part and this runs every 0.15 s on the
+        # GUI thread (it made the spinner and dragging stutter). Rebuild it
+        # only when the calendar changed, or every 5 s for the time window.
+        news_key = None
         if calendar is not None:
+            items = getattr(calendar, "news", None) or []
+            news_key = (id(calendar), len(items), id(items[0]) if items else None,
+                        len(getattr(calendar, "events", None) or ()), int(time.monotonic() // 5))
+        cached = getattr(self, "_news_cache", None)
+        news = cached[1] if cached is not None and cached[0] == news_key else []
+        if calendar is not None and (cached is None or cached[0] != news_key):
             from datetime import datetime, timedelta, timezone
             from .calendar_events import publication_values, events_for_display
             from .news_relevance import assess_headline, KEYWORDS
@@ -294,6 +330,9 @@ class RemoteController(QObject):
                 if not recent <= event.when <= datetime.now(timezone.utc) or not relevant_announcement(event.title):
                     continue
                 news.append(news_item(event, False))
+            self._news_cache = (news_key, news)
+        # 「已達到獲利目標」 etc.: the "!" sits on 每日獲利/虧損 (same as desktop).
+        pnl_warning = app._balance_warning_active() and app._pnl_warning(app._balance_range_warning_detail())
         ruler = app.account_ruler.state
         if ruler != getattr(self, '_ruler_state', None):
             from .progress_ruler import render_mobile_ruler
@@ -313,7 +352,8 @@ class RemoteController(QObject):
             values={key: value.text() for key, value in app.data_labels.items()},
             ruler=json.loads(json.dumps(asdict(ruler), default=str)) if ruler is not None else None,
             ruler_revision=getattr(self, '_ruler_revision', ''),
-            warnings={"internal_balance": app._balance_warning_active(),
+            warnings={"internal_balance": app._balance_warning_active() and not pnl_warning,
+                      "daily_pnl": pnl_warning,
                       "expected_sl_combined": app._expected_sl_warning_values() is not None},
             actions={"fill_both": available and app.action_buttons["填入兩邊"].isEnabled(),
                      "fill_internal": available and app.action_buttons["填入場內"].isEnabled(),
@@ -322,21 +362,117 @@ class RemoteController(QObject):
                      "close_both": available,
                      "read_balance": available and app.internal_platform.currentText() in ("cTrader", "MT5")
                      and not getattr(app, "_balance_read_running", False)},
+            balance_ready=getattr(app, "_balance_button_state", "") == "ready",
+            rest_settings=self._rest_settings(),
             available=available, busy=busy or bool(self.active),
             health="無法操作" if not self._desktop_ok else "執行中" if busy or self.active else
                    f"請先處理電腦上的「{modal.windowTitle() or '確認'}」視窗" if modal and modal is not self.dialog else
                    "請確認下方提示" if modal else "請調整場內餘額" if app._balance_warning_active()
                    else "等待交易資料" if app.instruction is None else "正常",
             phase=self.phase, dialog=self._dialog_snapshot(), news=news,
+            fill_progress=self._fill_progress(),
+            # Same as the side panel's 目前持倉: may be another 方案 with a position.
+            live_pnl=(getattr(app, "live_pnl_payload", None) or {}).get("state"),
+            live_profile=(getattr(app, "live_pnl_payload", None) or {}).get("profile") or app.profiles.active_name,
+            live_choices=list((getattr(app, "live_pnl_payload", None) or {}).get("choices") or []),
             news_error=calendar.error if calendar else "消息尚未載入",
         )
+
+    def _rest_settings(self):
+        from .gui import rest_close_minutes
+        from .rest_reminders import normalize_settings
+        ui = self.app.store.data.get("ui", {})
+        try:
+            reminder = normalize_settings(ui.get("rest_reminder", {}))
+        except ValueError:
+            reminder = {"enabled": False, "minutes": [60, 30], "custom": False}
+        scope = ui.get("rest_close_all", {})
+        from datetime import datetime, timedelta, timezone
+        from .calendar_events import format_event_time
+        from .gui import next_rest_close_time
+        from .rest_reminders import rest_occurrences
+        now = datetime.now(timezone.utc)
+        taipei = timezone(timedelta(hours=8))
+        rest = next((t for t in rest_occurrences({"enabled": True}, now) if t > now), None)
+        next_rest = (f"下次黃金例行休市：{rest.astimezone(taipei):%m/%d} {format_event_time(rest)}（台北）"
+                     if rest else "")
+        # Same wording as the computer's 休市平倉設定.
+        when = next_rest_close_time(self.app.store.data, now)
+        if ui.get("rest_close_enabled") is not True:
+            next_close = "這個方案沒有開休市平倉（主畫面勾選後才會執行）"
+        else:
+            next_close = ("這個方案下次約 " + when.astimezone(taipei).strftime("%m/%d %H:%M") + " 執行（台北時間）"
+                          if when else "下次執行時間：無")
+        schedule_rows = getattr(self.app, "rest_close_schedule", lambda: [])()
+        schedule = ("有開休市平倉的方案（依執行順序）：\n" + "\n".join(
+            f"{i}. {name}：{at.astimezone(taipei):%m/%d %H:%M}（休市前 {minutes} 分鐘）"
+            for i, (at, name, minutes) in enumerate(schedule_rows, 1))
+            + "\n不管目前開哪個方案，以上都會執行。") if schedule_rows else "目前沒有方案開啟休市平倉。"
+        return {"reminder": {"enabled": reminder["enabled"], "minutes": reminder["minutes"],
+                             "custom": reminder["custom"], "next": next_rest},
+                "close": {"minutes": rest_close_minutes(self.app.store.data),
+                          "internal": scope.get("internal") is True,
+                          "external": scope.get("external") is True,
+                          "next": next_close, "schedule": schedule}}
+
+    @staticmethod
+    def _clean_rest_settings(args):
+        """Phone 休市提醒 (消息 page) and/or 休市平倉 (gear): either part alone."""
+        from .gui import REST_CLOSE_CUSTOM_RANGE
+        from .rest_reminders import normalize_settings
+        if (not args or not set(args) <= {"reminder", "close"}
+                or not all(isinstance(args[k], dict) for k in args)):
+            raise ValueError("休市設定格式不正確。")
+        reminder = close = None
+        if "reminder" in args:
+            if not set(args["reminder"]) <= {"enabled", "minutes", "custom"}:
+                raise ValueError("休市提醒格式不正確。")
+            reminder = normalize_settings(args["reminder"])
+        if "close" in args:
+            close = args["close"]
+            low, high = REST_CLOSE_CUSTOM_RANGE
+            if (set(close) != {"minutes", "internal", "external"} or type(close["minutes"]) is not int
+                    or not low <= close["minutes"] <= high
+                    or type(close["internal"]) is not bool or type(close["external"]) is not bool):
+                raise ValueError(f"休市平倉時間請填 {low}–{high} 分鐘。")
+        return reminder, close
+
+    def _apply_rest_settings(self, args):
+        reminder, close = self._clean_rest_settings(args)
+        app = self.app
+        ui = app.store.data.setdefault("ui", {})
+        previous = {key: ui.get(key) for key in ("rest_reminder", "rest_close_minutes", "rest_close_all")}
+        if reminder is not None:
+            ui["rest_reminder"] = reminder
+        if close is not None:
+            ui["rest_close_minutes"] = close["minutes"]
+            ui["rest_close_all"] = {"internal": close["internal"], "external": close["external"]}
+        try:
+            app.save_config()
+        except OSError:
+            for key, value in previous.items():
+                if value is None:
+                    ui.pop(key, None)
+                else:
+                    ui[key] = value
+            raise ValueError("休市設定未儲存，請重試。")
+        calendar = app._get_event_calendar()
+        calendar.changed.emit()
+        calendar._check_reminders()
+        if reminder is not None:
+            # Show the phone's change in the computer's 休市提醒 panel too.
+            from .rest_reminder_settings import RestReminderSettings
+            for editor in QApplication.allWidgets():
+                if isinstance(editor, RestReminderSettings):
+                    editor.load()
 
     def _options(self):
         app = self.app
         return {"auto_entry": app.auto_entry_on_fill_both,
                 "auto_sync": app.auto_sync_sl_tp_after_entry,
                 "auto_sl": app.auto_adjust_repeat_sl,
-                **{"rule:"+key: value for key, value in app.trade_rule_checkboxes.items()}}
+                **{"rule:"+key: value for key, value in app.trade_rule_checkboxes.items()},
+                "rest_close": app.rest_close_checkbox}
 
     def tick(self):
         if time.monotonic()-self._desktop_checked > 2:
@@ -368,6 +504,12 @@ class RemoteController(QObject):
                 status, message = "needs_review", "流程已結束，但尚未取得完整成交確認，請核對兩側。"
         elif item["action"] in {"warning", "view_sl_tp"}:
             status, message = "completed", "已顯示電腦核對資料。"
+        elif item["action"] == "rest_settings":
+            status, message = "completed", "休市設定已儲存。"
+        elif item["action"] == "live_profile":
+            status, message = "completed", "已切換顯示的持倉方案。"
+        elif item["action"] == "read_balance":
+            status, message = "completed", "已讀取場內餘額。"
         elif item["action"] == "refresh_news":
             status, message = "completed", "已要求背景更新消息，來源完成後會同步顯示。"
         elif item["action"] in {"option", "rule"}:
@@ -432,6 +574,13 @@ class RemoteController(QObject):
                 self.server.reply(device, dict(type="ack", id=identifier, status="applied"))
                 return
             self.store.begin(device, identifier, action, digest)
+            if action == "fill_both":
+                sync = getattr(self.app, "auto_sync_sl_tp_after_entry", None)
+                entry = self.app.auto_entry_on_fill_both.isChecked()
+                self._fill_steps = {"done": frozenset(), "entry": entry,
+                                    "sync": entry and (sync is None or sync.isChecked())}
+            else:
+                self._fill_steps = None
             self.active = dict(device=device, id=identifier, action=action, args=args,
                                errors=[], tasks=[], report=None, context=self._decision_context())
             self.dialog_owner = device
@@ -475,8 +624,14 @@ class RemoteController(QObject):
                     or args["key"] not in self._options()
                     or not self._options()[args["key"]].isEnabled()):
                 raise ValueError("此交易選項目前無法調整。")
+        elif action == "rest_settings":
+            self._clean_rest_settings(args)
+        elif action == "live_profile":
+            choices = (getattr(self.app, "live_pnl_payload", None) or {}).get("choices") or []
+            if set(args) != {"name"} or args["name"] not in choices:
+                raise ValueError("這個方案目前沒有持倉。")
         elif action == "warning":
-            if set(args) != {"key"} or args["key"] not in {"internal_balance", "expected_sl_combined"}:
+            if set(args) != {"key"} or args["key"] not in {"internal_balance", "daily_pnl", "expected_sl_combined"}:
                 raise ValueError("提醒項目不正確。")
         elif args:
             raise ValueError("操作資料不正確。")
@@ -504,15 +659,21 @@ class RemoteController(QObject):
             elif action in {"option", "rule"}:
                 self._options()[args["key"]].setChecked(args["checked"])
             elif action == "update":
+                if getattr(app, "_balance_button_state", "") == "ready":
+                    app._set_balance_button_state("idle")
                 if any(entry.text().strip() for entry in app.parameter_inputs.values()):
                     app.parameter_update_button.click()
                 else:
                     app.read_sheet()
             elif action == "warning":
-                (app._show_balance_warning if args["key"] == "internal_balance"
+                (app._show_balance_warning if args["key"] in ("internal_balance", "daily_pnl")
                  else app._show_expected_sl_warning)()
             elif action == "refresh_news":
                 app._get_event_calendar().refresh()
+            elif action == "rest_settings":
+                self._apply_rest_settings(args)
+            elif action == "live_profile":
+                app.set_live_preference(args["name"])
             else:
                 {"fill_both": app.fill_both, "fill_internal": lambda: app.fill_role("internal"),
                  "fill_external": lambda: app.fill_role("external"), "sync": app.sync_external_sl_tp,

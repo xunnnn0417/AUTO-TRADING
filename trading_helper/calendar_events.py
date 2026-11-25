@@ -85,9 +85,33 @@ def format_event_time(when):
     return f'{local.hour % 12 or 12}:{local.minute:02} {"AM" if local.hour < 12 else "PM"}'
 
 
+# Only US releases that move gold within the first minutes get reminders:
+# CPI, PPI, jobs report, FOMC (decision, statement, press conference, minutes),
+# core PCE, GDP, retail sales and the Fed chair. The rest is still listed.
+REMINDER_EVENTS = re.compile(
+    r'\bCPI\b|\bPPI\b|Non-Farm Employment Change|Unemployment Rate|Average Hourly Earnings|'
+    r'Federal Funds Rate|FOMC|Core PCE|PCE Price|GDP q/q|Retail Sales|Fed Chair|'
+    r'美國 GDP|個人所得與支出', re.I)
+NO_REMINDER_EVENTS = re.compile(r'ADP|GDP Price Index|Claims|FOMC Member', re.I)
+
+
+def reminder_wanted(item) -> bool:
+    return (item.currency == 'USD' and bool(REMINDER_EVENTS.search(item.title))
+            and not NO_REMINDER_EVENTS.search(item.title))
+
+
+def _waits_for_actual(item) -> bool:
+    """US BLS releases: the 公布值 arrives a few seconds after release time."""
+    from .bls_actuals import series_for
+    return (item.source == 'Forex Factory' and item.currency == 'USD'
+            and series_for(item.title) is not None and '公布值' not in item.details)
+
+
 def scheduled_reminders(calendar, now):
     """Same fresh schedule and timing policy for desktop and phone alerts."""
     for item in calendar.events:
+        if not reminder_wanted(item):
+            continue
         key = next((key for key, name in SOURCE_NAMES.items() if name == item.source), None)
         fetched = calendar.source_times.get(key)
         if (not fetched or key in calendar.source_errors
@@ -95,12 +119,23 @@ def scheduled_reminders(calendar, now):
             continue
         delta = (item.when-now).total_seconds()
         text = f'{format_event_time(item.when)} · {calendar.title(item.title)}'
-        if 0 < delta <= 600:
+        # 1 hour before (decide whether to open at all), 15 minutes before
+        # (time to close), then when it is released.
+        if 900 < delta <= 3600:
+            minutes = max(1, ceil(delta/60))
+            lead = '1 小時' if minutes >= 60 else f'{minutes} 分鐘'
+            yield ('before:60', item, '重大事件即將公布',
+                   f'{lead}後公布 · {text}', item.when.timestamp())
+        elif 0 < delta <= 900:
             yield ('before', item, '重大事件即將公布',
                    f'{max(1, ceil(delta/60))} 分鐘後公布 · {text}', item.when.timestamp())
-        elif -60 <= delta <= 0:
+        elif -60 <= delta <= 0 and not _waits_for_actual(item):
             yield ('release', item, '重大事件公布時間已到',
                    f'公布時間已到 · {text}', item.when.timestamp()+180)
+        elif -240 <= delta <= 0 and ('公布值' in item.details or delta <= -150):
+            # BLS figure: sent once the value is in (or after 2.5 min without).
+            yield ('release', item, '重大事件公布時間已到',
+                   f'公布時間已到 · {text}', item.when.timestamp()+300)
     from .rest_reminders import normalize_settings, rest_occurrences
     settings = getattr(calendar, 'rest_settings', lambda: {})()
     for when in rest_occurrences(settings, now):
@@ -278,6 +313,7 @@ class EconomicCalendar(QObject):
     received = Signal(object)
     translated = Signal(object)
     announcements = Signal(object)
+    actuals_ready = Signal(object)
 
     def __init__(self, path: Path, parent=None, *, rest_settings=None):
         super().__init__(parent)
@@ -319,6 +355,11 @@ class EconomicCalendar(QObject):
 
         self.received.connect(self._apply)
         self.translated.connect(self._apply_translations)
+        # 公布值 from BLS, keyed by (release time, Forex Factory title).
+        self._actuals: dict[tuple[str, str], str] = {}
+        self._actual_tries: dict[tuple[str, str], int] = {}
+        self._actual_busy = False
+        self.actuals_ready.connect(self._apply_actuals)
         try:
             if path.stat().st_size <= MAX_BYTES:
                 payload = json.loads(path.read_text(encoding='utf-8'))
@@ -385,6 +426,7 @@ class EconomicCalendar(QObject):
         if self._closed:
             return
         now = datetime.now(UTC) if now is None else now
+        self._check_actuals(now)
         alerts = []
         for kind, item, _title, body, _expires in scheduled_reminders(self, now):
             identity = hashlib.sha256(f'{kind}\n{item.source}\n{item.when.isoformat()}\n{item.title}'.encode()).hexdigest()
@@ -617,8 +659,65 @@ class EconomicCalendar(QObject):
         self.changed.emit()
         self._translate_missing()
 
+    def _check_actuals(self, now):
+        """A few BLS reads right after a matching US release (never more)."""
+        from .bls_actuals import ATTEMPTS, WINDOW, series_for
+        if self._actual_busy or not self._polling_enabled:
+            return  # only the running app reads BLS (never offline tests)
+        due = []
+        for item in self.events:
+            key = (item.when.isoformat(), item.title)
+            if (item.source != 'Forex Factory' or item.currency != 'USD' or series_for(item.title) is None
+                    or key in self._actuals or '公布值' in item.details):
+                continue
+            age = (now - item.when).total_seconds()
+            tries = self._actual_tries.get(key, 0)
+            if 0 <= age <= WINDOW.total_seconds() and tries < len(ATTEMPTS) and age >= ATTEMPTS[tries]:
+                due.append(item)
+        if not due:
+            return
+        for item in due:
+            key = (item.when.isoformat(), item.title)
+            self._actual_tries[key] = self._actual_tries.get(key, 0) + 1
+        self._actual_busy = True
+
+        def work():
+            from .bls_actuals import fetch
+            try:
+                result = fetch([series_for(item.title)[0] for item in due], now)
+            except Exception as exc:  # offline / limit: try again at the next step
+                result = exc
+            if not self._closed:
+                self.actuals_ready.emit((due, result))
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(object)
+    def _apply_actuals(self, payload):
+        from .bls_actuals import headline_value, series_for
+        self._actual_busy = False
+        due, result = payload
+        if isinstance(result, Exception) or self._closed:
+            return
+        added = False
+        for item in due:
+            series, kind = series_for(item.title)
+            value = headline_value(kind, result.get(series, []), item.when)
+            if value:
+                self._actuals[(item.when.isoformat(), item.title)] = value
+                added = True
+        if added:
+            self._combine()
+            self.changed.emit()
+
+    def _with_actual(self, item):
+        value = getattr(self, '_actuals', {}).get((item.when.isoformat(), item.title))
+        if not value or '公布值' in item.details:
+            return item
+        from dataclasses import replace
+        return replace(item, details=('公布值：' + value + ' ' + item.details).strip())
+
     def _combine(self):
-        self.events = sorted(set(e for rows in self._events_by_source.values() for e in rows))
+        self.events = sorted(set(self._with_actual(e) for rows in self._events_by_source.values() for e in rows))
         self.news = sorted(set(e for rows in self._news_by_source.values() for e in rows)
                            | set(self._preview_news), reverse=True)
         self.fetched_at = max(self.source_times.values(), default=None)

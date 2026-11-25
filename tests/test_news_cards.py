@@ -78,7 +78,9 @@ class NewsCardTests(unittest.TestCase):
         self.assertIn('公布值\n2.4%', view.text())
         self.assertIn('預期\n2.5%', view.text())
         view.anchorClicked.emit(QUrl('detail:1'))
-        self.assertIn('來源尚未提供公布結果', view.text())
+        # No actual value from the source: nothing is listed for it.
+        self.assertNotIn('公布結果', view.text())
+        self.assertNotIn('公布值', view.text().split('GDP', 1)[1])
         self.assertEqual(view.toolTip(), '')
     @classmethod
     def setUpClass(cls):

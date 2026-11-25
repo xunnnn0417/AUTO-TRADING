@@ -8,11 +8,31 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 
+_NEW_YORK = None
+_NEW_YORK_TRIED = False
+
+
+def _new_york():
+    """Look the zone up ONCE. Without tz data every lookup fails slowly
+    (an import attempt each time) - that ran several times per 0.15 s on the
+    GUI thread and made the spinner / dragging stutter."""
+    global _NEW_YORK, _NEW_YORK_TRIED
+    if not _NEW_YORK_TRIED:
+        _NEW_YORK_TRIED = True
+        if ZoneInfo is not None:
+            try:
+                _NEW_YORK = ZoneInfo("America/New_York")
+            except Exception:
+                _NEW_YORK = None
+    return _NEW_YORK
+
+
 def is_us_dst(moment: datetime) -> bool:
     """Return whether New York is in daylight saving time for this moment."""
-    if ZoneInfo is not None:
+    zone = _new_york()
+    if zone is not None:
         try:
-            ny_time = moment.astimezone(ZoneInfo("America/New_York"))
+            ny_time = moment.astimezone(zone)
             return bool(ny_time.dst() and ny_time.dst().total_seconds())
         except Exception:
             pass

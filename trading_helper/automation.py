@@ -162,6 +162,9 @@ class PlatformAutomation:
         if _is_ctrader(platform):
             with timed_phase("核對cTrader帳號", platform=platform, role=role):
                 self._verify_ctrader_account(platform, profile, role, window)
+            with timed_phase("切換cTrader持倉分頁", platform=platform, role=role):
+                from .demo_broker_port import DemoUiBrokerPort
+                DemoUiBrokerPort(self, self.log).refresh_ctrader_positions_tab(window)
 
         mt5_order_window = None
         should_open_panel = _is_mt5(platform) or profile.get(
@@ -1173,16 +1176,21 @@ class PlatformAutomation:
             if isinstance(self.windows, WindowController):
                 account = profile.get("account_number", {}).get("external", "")
                 account_options = {"expected_account": account} if account else {}
+                # timed_call keeps platform/role for its own report, so the
+                # platform must be passed to the finder explicitly (it used
+                # to fall back to "cTrader" and never found an MT5 window).
                 bound_window = timed_call(
-                    "定位場外主視窗", self.windows.find_calibrated_main,
-                    profile["window_title"]["external"],
-                    points["position_order_row"], platform=external_platform,
-                    role="external", **account_options,
+                    "定位場外主視窗",
+                    lambda: self.windows.find_calibrated_main(
+                        profile["window_title"]["external"],
+                        points["position_order_row"], platform=external_platform,
+                        **account_options),
+                    platform=external_platform, role="external",
                 )
             else:
                 bound_window = timed_call(
-                    "定位場外主視窗", self.windows.find,
-                    profile["window_title"]["external"],
+                    "定位場外主視窗",
+                    lambda: self.windows.find(profile["window_title"]["external"]),
                     platform=external_platform, role="external",
                 )
             self.log(f"已找到場外 {external_platform} 視窗：{bound_window.title}")

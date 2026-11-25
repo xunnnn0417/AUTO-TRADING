@@ -33,6 +33,16 @@ _SUBSTANCE = (r'經濟|市場|美元|黃金|金價|油價|貿易|關稅|利率|�
               r'會晤|會談|峰會|協議|談判|制裁|戰|軍|伊朗|俄|烏克蘭|中東|'
               r'econom|market|dollar|gold|oil|trade|tariff|rate|inflation|stock|chip|demand|deal|talks|summit|war')
 _ACTOR = r'特朗普|川普|聯儲|聯準|鮑威爾|央行|總統|首相|總理|財長|財政部長|財務大臣|白宮|Trump|Powell|Fed\b|central bank|president|prime minister|treasury secretary'
+# Who can actually move gold: named key people / institutions, or a head of
+# government / finance chief of a major economy or conflict party. A generic
+# 「總統」 alone made e.g. 「李家超晤秘魯總統，稱兩地貿易增長」 a push alert.
+_MAJOR = (r'(?:美國?|中國|日本?|英國|歐盟|德國|法國|俄羅斯?|烏克蘭|伊朗|以色列|沙特|印度|'
+          r'加拿大|澳洲|澳大利亞|紐西蘭|瑞士|南韓|韓國)'
+          r'(?:總統|副總統|首相|總理|財長|財政部長|財務大臣|央行|國防部長|外長)|'
+          r'(?:US|U\.S\.|American|Chinese|Japanese|British|EU|German|French|Russian|Ukrainian|Iranian|Israeli|Saudi)'
+          r' (?:president|prime minister|treasury secretary|finance minister|central bank)')
+_KEY_ACTOR = (r'特朗普|川普|聯儲|聯準|鮑威爾|白宮|歐洲央行|日本央行|日央行|人民銀行|人行|'
+              r'Trump|Powell|Fed\b|White House|ECB|BOJ|PBOC|' + _MAJOR)
 _POLICY = r'關稅|制裁|利率|減息|加息|降息|升息|貨幣政策|資本管制|量化寬鬆|tariff|sanction|interest rate|rate cut|rate hike|monetary policy'
 _ACTION = r'宣布|決定|實施|生效|加徵|提高|上調|下調|取消|暫停|撤銷|announc|impos|rais|cut|hike|approv|suspend|enact'
 _PERSONNEL = r'辭職|請辭|卸任|撤職|解職|遭免職|病逝|身亡|遇刺|resign|step down|dismiss|fired|dies|assassinat'
@@ -61,7 +71,7 @@ def assess_headline(title: str, *, scheduled=False) -> NewsAssessment:
         return NewsAssessment('經濟排程', '#9ab6d8')
     if matches(r'tentative schedule|banking data|digital euro|supervis|regulat', title):
         return NewsAssessment('一般公告', '#aaa5b7')
-    if matches(_ACTOR, title) and matches(_PERSONNEL, title):
+    if matches(_KEY_ACTOR, title) and matches(_PERSONNEL, title):
         if matches(r'否認|傳聞|傳出|據報|消息指|rumou?r|reportedly|denies', title):
             return NewsAssessment('待確認', '#edc779', True)
         planned = (matches(r'明年|下年|下月|將於|next year|next month', title)
@@ -76,7 +86,7 @@ def assess_headline(title: str, *, scheduled=False) -> NewsAssessment:
     if ((matches(_POLICY, title) and matches(_ACTION, title))
             or matches(r'FOMC statement|interest rate decision|利率決議|央行會議紀錄|聯準會會議紀錄', title)):
         return NewsAssessment('政策事件', '#bc9aea', True)
-    if (matches(_ACTOR, title) and matches(r'稱|表示|警告|呼籲|承諾|揚言|暗示|重申|強調|發言|講話|談話|記者會|says|warns|speech|testimony', title)
+    if (matches(_KEY_ACTOR, title) and matches(r'稱|表示|警告|呼籲|承諾|揚言|暗示|重申|強調|發言|講話|談話|記者會|says|warns|speech|testimony', title)
             and matches(_POLICY+r'|通脹|通膨|經濟|美元|黃金|貿易|inflation|economy|dollar|gold|trade', title)):
         return NewsAssessment('重要發言', '#bc9aea', True)
     if (matches(r'CPI|PPI|PCE|GDP|通脹|通膨|非農|失業率|就業數據', title)
@@ -87,7 +97,7 @@ def assess_headline(title: str, *, scheduled=False) -> NewsAssessment:
     if (matches(IMPORTANT_PEOPLE, title) and matches(_SUBSTANCE, title)
             and not matches(r'突然|緊急|重大聲明|unexpected|breaking|emergency', title)):
         return NewsAssessment('重要人物', '#bc9aea', True, alert=False)
-    if ((matches(_ACTOR, title) and matches(r'突然|緊急|重大聲明|unexpected|breaking|emergency', title))
+    if ((matches(_KEY_ACTOR, title) and matches(r'突然|緊急|重大聲明|unexpected|breaking|emergency', title))
             or matches(r'\b(inflation|employment)\b', title)):
         return NewsAssessment('待確認', '#edc779', True)
     return NewsAssessment('相關動態', '#aaa5b7')

@@ -16,9 +16,14 @@ EDIT_BUTTONS=(
 )
 TRADE_BUTTONS=(
     "重新讀取","填入場內","填入場外","填入兩邊",
-    "更新","查看止盈/損","手動同步場外 SL/TP",
+    "更新","查看止盈/損","同步 SL/TP",
     "手動繪製 TV",
 )
+# TradingView controls are hidden while gui.TRADINGVIEW_ENABLED is False.
+_TV = ("校準 TradingView", "手動繪製 TV")
+if not gui.TRADINGVIEW_ENABLED:
+    EDIT_BUTTONS = tuple(b for b in EDIT_BUTTONS if b not in _TV)
+    TRADE_BUTTONS = tuple(b for b in TRADE_BUTTONS if b not in _TV)
 
 
 class ThreeWorkspaceTests(unittest.TestCase):
@@ -187,13 +192,14 @@ class ThreeWorkspaceTests(unittest.TestCase):
         ix,iy,iw,ih=in_trade(info)
         px,py,pw,ph=in_trade(params)
         ax,ay,aw,ah=in_trade(actions)
-        mx,my,mw,mh=in_trade(manual)
+        self.assertTrue(manual.isHidden())  # its button moved into the automation row
+        sync=w.findChild(QPushButton,"manualSyncSlTp")
+        options=w.trade_page.findChild(gui.QWidget,"automationOptionRow")
+        self.assertTrue(options.isAncestorOf(sync))
         self.assertGreater(px,ix+iw)
         self.assertLessEqual(abs(py-iy),24)
         self.assertGreaterEqual(ax,px)
         self.assertGreater(ay,py+ph-2)
-        self.assertGreaterEqual(mx,px)
-        self.assertGreater(my,ay+ah-2)
         self.assertLessEqual(ax+aw,w.trade_page.width())
         self.assertLessEqual(py+ph,w.trade_page.height())
         self.assertEqual(len(w.data_labels),11)
@@ -313,11 +319,12 @@ class ThreeWorkspaceTests(unittest.TestCase):
                 self.assertLessEqual(abs(pos(fill_internal).y()-pos(fill_external).y()), 3)
                 self.assertLess(pos(fill_internal).y()+fill_internal.height(), pos(fill_both).y())
                 self.assertLess(pos(fill_both).y()+fill_both.height(), pos(options).y())
-                self.assertLess(pos(options).y()+options.height(), pos(manual).y())
-                self.assertLessEqual(pos(manual).y()+manual.height(), w.trade_page.height())
+                sync = w.findChild(QPushButton, "manualSyncSlTp")
+                self.assertTrue(sync.isVisible())
+                self.assertTrue(options.isAncestorOf(sync))
+                self.assertLessEqual(pos(sync).x()+sync.width(), w.trade_page.width())
                 for button in (fill_internal, fill_external, fill_both,
-                               w.findChild(QPushButton, "manualSyncSlTp"),
-                               w.findChild(QPushButton, "manualDrawTv")):
+                               *((w.findChild(QPushButton, "manualDrawTv"),) if gui.TRADINGVIEW_ENABLED else ())):
                     self.assertTrue(button.isVisible())
                     self.assertGreater(button.width(), 90)
                     self.assertLessEqual(pos(button).x()+button.width(), w.trade_page.width())
