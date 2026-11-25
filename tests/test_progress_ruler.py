@@ -57,6 +57,37 @@ def instruction():
 
 
 class RulerMath(unittest.TestCase):
+    def test_shrunk_trade_near_limit_counts_with_the_sheets_normal_trade(self):
+        # Real sheet near the daily limit: E2 shrank to -235.71, so E2 alone
+        # always reads as "1 單". The normal trade is B15 − E17 = 560.34.
+        values = sheet_values()
+        values["運算區"].update(F6="2434.75", C20="3050.04", B9="51750")
+        values["主要計算區"].update(E2="-235.71", F2="875")
+        state, _ = calculate_ruler_from_sheet(values, balance=D("48694.96"), daily_pnl=D("-2175.04"))
+        self.assertEqual(state.loss_hint, "接近 1 單")
+        # C20 already adds back today's loss: target = balance + C20.
+        self.assertEqual(dict(state.markers)["今天獲利目標"], D("51745.00"))
+        values["運算區"].update(B15="584.34", E17="-24", B8="1750", E12="2")
+        values["主要計算區"].update(I2="否", J8="-715")
+        state, _ = calculate_ruler_from_sheet(values, balance=D("48694.96"), daily_pnl=D("-2175.04"))
+        self.assertEqual(state.sl_cash, D("560.34"))
+        self.assertEqual(state.tp_cash, D("875"))
+        self.assertEqual(state.loss_hint, "接近 0 單")  # 259.71 / 560.34 = 0.46
+        self.assertEqual(state.win_hint, "接近 4 單")  # 3055.04 / 875 = 3.49
+        # 最小交易日目標 on: one day's target is 0.5% × 50000 + 24 = 274.
+        values["運算區"].update(B24="0.50%", E16="24")
+        values["主要計算區"]["B6"] = "是"
+        state, _ = calculate_ruler_from_sheet(values, balance=D("48694.96"), daily_pnl=D("-2175.04"))
+        self.assertEqual(state.tp_cash, D("875"))  # the sheet's own F2 is larger here
+        values["主要計算區"]["F2"] = "100"
+        state, _ = calculate_ruler_from_sheet(values, balance=D("48694.96"), daily_pnl=D("-2175.04"))
+        self.assertEqual(state.tp_cash, D("274.0000"))
+        values["主要計算區"].update(B6="否", F2="875")
+        values["主要計算區"]["I2"] = "是"  # random SL on: the normal trade is J8
+        state, _ = calculate_ruler_from_sheet(values, balance=D("48694.96"), daily_pnl=D("-2175.04"))
+        self.assertEqual(state.sl_cash, D("715"))
+        self.assertEqual(state.loss_hint, "不足 1 單")  # 259.71 / 715 = 0.36
+
     def test_exact_sheet_cells_and_absolute_balance_thresholds(self):
         self.assertEqual(SHEET_RULER_REFERENCES["運算區"], ("B2","F7","F6","B9","C20"))
         self.assertEqual(SHEET_RULER_REFERENCES["主要計算區"], ("E2","F2"))
@@ -125,11 +156,15 @@ class RulerMath(unittest.TestCase):
         self.assertIn("今天獲利目標", dict(state.markers))
 
     def test_reset_from_current_balance_minus_daily_pnl(self):
+        # The sheet's C20 is what is still to make from the current balance
+        # (day goal 584 − today's +500 = 84), so today's target = 52000 + 84,
+        # i.e. the day's start 51500 + 584 - not 51500 + 84.
+        values = sheet_values()
+        values["運算區"]["C20"] = "84"
         state, _ = calculate_ruler_from_sheet(
-            sheet_values(), balance=D("52000"), daily_pnl=D("500"))
+            values, balance=D("52000"), daily_pnl=D("500"))
         self.assertEqual(dict(state.markers)["每日最大虧損"], D("49000"))
-        self.assertEqual(dict(state.markers)["今天獲利目標"], D("51984"))
-        self.assertEqual(state.win_hint, "已達目標")
+        self.assertEqual(dict(state.markers)["今天獲利目標"], D("52084"))
 
     def test_sheet_amount_not_lot_multiplier(self):
         state, _ = calculate_ruler_from_sheet(
@@ -218,9 +253,11 @@ class RulerGui(unittest.TestCase):
             observed.append((config["worksheet"], tuple(refs)))
             if refs == ["A12", "A20", "E12"]:
                 return {key: "" for key in refs}
-            return {key:sheet_values()[config["worksheet"]][key] for key in refs}
+            return {key:sheet_values()[config["worksheet"]].get(key, "") for key in refs}
         w.reader.read_a1_values = stub
         w._read_sheet_task()
+        # The optional normal-trade cells are read in the same request.
+        self.assertIn(("運算區", ("B2", "F7", "F6", "B9", "C20", "B15", "E17", "B8", "E12", "B3", "B7", "B24", "E16")), observed)
         self.assertEqual(
             [v[0] for v in observed if v[1]!=("A12", "A20", "E12")],
             ["運算區", "主要計算區"]
@@ -228,6 +265,16 @@ class RulerGui(unittest.TestCase):
         self.assertEqual(w.store.data["sheet"]["worksheet"],"主要計算區")
         self.assertIsNotNone(w.account_ruler.state)
         self.assertEqual(len(w.data_labels),11)
+
+    def test_typed_balance_before_reread_keeps_todays_target_steady(self):
+        # Sheet read at 51000 / P/L 0: C20 = 774 -> today's target 51774.
+        values = sheet_values()
+        values["運算區"].update(C20="774", B3="51000", B7="0")
+        state, _ = calculate_ruler_from_sheet(values, balance=D("51000"), daily_pnl=D("0"))
+        self.assertEqual(dict(state.markers)["今天獲利目標"], D("51774"))
+        # A higher balance typed before the sheet recomputes C20: no jump.
+        state, _ = calculate_ruler_from_sheet(values, balance=D("51200"), daily_pnl=D("0"))
+        self.assertEqual(dict(state.markers)["今天獲利目標"], D("51774"))
 
     def test_last_trade_data_row_stays_clear_of_ruler_heading(self):
         w = self.win
@@ -429,13 +476,16 @@ class RulerGui(unittest.TestCase):
         with patch.object(w, "_write_trade_parameter_values"):
             pnl.returnPressed.emit()
         self.app.processEvents()
+        # Today's target follows the sheet's own result (balance + C20); it
+        # moves once the sheet recomputes, never jumps on an unsaved number.
+        self.assertEqual(w._ruler_confirmed_parameters["daily_pnl"], "=+250")
         self.assertEqual(
-            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53234")
+            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53484")
         )
         pnl.setText("=+750")
         self.app.processEvents()
         self.assertEqual(
-            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53234")
+            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53484")
         )
 
     def test_update_button_confirms_both_cash_fields_and_reset_clears(self):
@@ -454,7 +504,7 @@ class RulerGui(unittest.TestCase):
         write.assert_called_once()
         self.assertEqual(w.account_ruler.state.balance, D("53000"))
         self.assertEqual(
-            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53584")
+            dict(w.account_ruler.state.markers)["今天獲利目標"], D("53484")
         )
         w._clear_parameter_inputs(["internal_balance", "daily_pnl"])
         self.app.processEvents()

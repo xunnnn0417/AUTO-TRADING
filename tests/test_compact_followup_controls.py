@@ -48,6 +48,9 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         ):
             checkbox=getattr(self.w,name)
             self.assertIsInstance(checkbox,QCheckBox)
+            if name=="auto_draw_tv_after_entry" and not gui.TRADINGVIEW_ENABLED:
+                self.assertFalse(checkbox.isVisible())  # TradingView hidden for now
+                continue
             self.assertTrue(checkbox.isVisible())
             self.assertTrue(checkbox.toolTip())
             self.assertIn(checkbox,self.w._hover_help._details)
@@ -526,6 +529,9 @@ class CompactFollowUpControlsTests(unittest.TestCase):
         dots=self.w._calibration_badge_labels
         tv=dots[self.w.action_buttons["校準 TradingView"]]
         edit=dots[self.w.page_nav["編輯"]]
+        if not gui.TRADINGVIEW_ENABLED:
+            self.assertTrue(self.w.action_buttons["校準 TradingView"].isHidden())
+            return
         self.assertTrue(tv.isVisible())
         self.assertTrue(edit.isVisible())
         self.assertFalse(dots[self.w.action_buttons["校準 cTrader"]].isVisible())
@@ -610,12 +616,15 @@ class CompactFollowUpControlsTests(unittest.TestCase):
 
     def test_manual_buttons_remain_independent_of_auto_preferences(self):
         self.w.switch_workspace("交易")
-        names={"manualSyncSlTp":"手動同步場外 SL/TP",
+        names={"manualSyncSlTp":"同步 SL/TP",
                "manualDrawTv":"手動繪製 TV"}
         for object_name,text in names.items():
             btn=self.w.findChild(QPushButton,object_name)
             self.assertIsNotNone(btn)
             self.assertEqual(btn.text(),text)
+            if object_name=="manualDrawTv" and not gui.TRADINGVIEW_ENABLED:
+                self.assertFalse(btn.isVisible())  # TradingView hidden for now
+                continue
             self.assertTrue(btn.isVisible())
             self.assertTrue(btn.isEnabled())
             self.assertIn(btn,self.w._hover_help._details)
@@ -670,11 +679,12 @@ class CompactFollowUpControlsTests(unittest.TestCase):
                          self.w.profile_combo.currentText())
         group=self.w.trade_page.findChild(QGroupBox,"afterEntryCard")
         self.assertIsNotNone(group)
-        self.assertLessEqual(group.maximumHeight(),90)
-        for control_name in ("manualSyncSlTp","manualDrawTv"):
-            button=self.w.findChild(QPushButton,control_name)
-            self.assertTrue(button.isVisible())
-            self.assertTrue(group.isAncestorOf(button))
+        self.assertTrue(group.isHidden())
+        # The manual sync is a small button at the end of the automation row.
+        sync=self.w.findChild(QPushButton,"manualSyncSlTp")
+        self.assertTrue(sync.isVisible())
+        self.assertTrue(self.w.trade_page.findChild(gui.QWidget,"automationOptionRow").isAncestorOf(sync))
+        self.assertIn("同步場外止盈止損",sync.toolTip())
 
 if __name__=="__main__":
     unittest.main()

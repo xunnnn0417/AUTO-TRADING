@@ -59,7 +59,7 @@ def combined_payload(rows):
             payload.update(title=parts[0], body=' · '.join(parts[1:2]))
         elif headline and kind == 'breaking':
             payload.update(title=headline, body=' · '.join(p for p in ('突發重大消息', clock) if p))
-        elif headline and kind in ('before', 'release'):
+        elif headline and (kind == 'release' or kind.startswith('before')):
             parts = [part for part in body.split(' · ') if part != headline]
             payload.update(title=headline, body=' · '.join(parts))
         else:
@@ -237,6 +237,23 @@ class MobileNotifications(QObject):
         self.origin = origin
         self._dispatch(now)
         return dict(queued=True, cooldown=10)
+
+    def notify_all(self, title, body, kind='trade', ttl=600):
+        """One message to every subscribed phone (e.g. a position ended)."""
+        if not self.enabled or not self.origin.startswith('https://'):
+            return False
+        now = time.time()
+        identity = kind+'-'+uuid4().hex
+        payload = json.dumps(dict(title=NOTIFICATION_TITLE, body=(title+'\n'+body)[:300], tag=identity,
+                                  kind=kind, expires=now+ttl), ensure_ascii=False)
+        with self.store.db:
+            self.store.db.execute('''INSERT OR IGNORE INTO push_deliveries
+                (device,event,origin,payload,expires,created)
+                SELECT p.device,?,p.origin,?,?,? FROM push_subscriptions p
+                JOIN devices d ON d.id=p.device WHERE p.origin=? AND d.revoked=0 AND d.expires>?''',
+                (identity, payload, now+ttl, now, self.origin, now))
+        self._dispatch(now)
+        return True
 
     def _receive_news(self, items):
         if self.enabled:

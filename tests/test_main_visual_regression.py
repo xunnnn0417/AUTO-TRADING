@@ -24,10 +24,14 @@ MAIN_BUTTONS = (
     "綁定場內視窗", "綁定場外視窗",
     "校準 cTrader", "校準 MT5", "校準 TradingView",
     "填入場內", "填入場外", "填入兩邊",
-    "手動同步場外 SL/TP", "手動繪製 TV",
+    "同步 SL/TP", "手動繪製 TV",
     "更新", "盈虧紀錄", "查看止盈/損",
     "Help", "打開試算表",
 )
+# TradingView controls are hidden while gui.TRADINGVIEW_ENABLED is False.
+_TV = ("校準 TradingView", "手動繪製 TV")
+if not gui.TRADINGVIEW_ENABLED:
+    MAIN_BUTTONS = tuple(b for b in MAIN_BUTTONS if b not in _TV)
 DATA_KEYS = {
     "symbol", "sheet_direction", "internal_direction", "external_direction",
     "internal_lot", "external_lot", "internal_tp", "external_tp",

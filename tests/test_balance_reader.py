@@ -94,14 +94,11 @@ class ApplyBalanceTests(unittest.TestCase):
             return 0
         return patch.object(gui.ThemedMessageBox, "exec", exec_)
 
-    def test_button_exists_and_fills_only_after_confirm(self):
+    def test_button_exists_and_fills_straight_away_without_a_question(self):
         self.assertEqual(self.w.read_balance_button.objectName(), "readInternalBalance")
         field = self.w.parameter_inputs["internal_balance"]
         field.setText("")
-        with self.click("取消"):
-            self.w._apply_internal_balance_read({"platform": "cTrader", "value": "5002318.58"})
-        self.assertEqual(field.text(), "")
-        with self.click("填入"):
+        with patch.object(gui.ThemedMessageBox, "exec", side_effect=AssertionError("asked")):
             self.w._apply_internal_balance_read({"platform": "cTrader", "value": "5002318.58"})
         self.assertEqual(field.text(), "5002318.58")
 
@@ -112,6 +109,62 @@ class ApplyBalanceTests(unittest.TestCase):
             self.w._apply_internal_balance_read({"platform": "MT5", "error": "讀不到"})
         warning.assert_called_once()
         self.assertEqual(field.text(), "100")
+
+
+class AfterCloseTests(ApplyBalanceTests):
+    def test_tp_sl_hit_reads_with_tilde_updates_then_tells_the_phone(self):
+        field = self.w.parameter_inputs["internal_balance"]
+        self.w.internal_platform.setCurrentText("cTrader")
+        with patch.object(self.w, "read_internal_balance") as read, \
+             patch.object(self.w, "can_update", return_value=True):
+            self.w._live_pnl_closed({"ticket": 1})
+        read.assert_called_once_with("auto")
+        self.assertEqual(field.text(), "~")
+        updates = []
+        field.returnPressed.connect(lambda: updates.append(1))
+        self.w._balance_read_origin = "auto"  # what read_internal_balance("auto") records
+        from test_progress_ruler import instruction
+        self.w.instruction = instruction()  # a sheet already read, as after a trade
+        with patch.object(gui.ThemedMessageBox, "exec", side_effect=AssertionError("asked")), \
+             patch.object(self.w, "_start"):
+            self.w._apply_internal_balance_read({"platform": "cTrader", "value": "51234.5"})
+        self.assertEqual(field.text(), "~51234.50")  # 「~」: daily P/L follows
+        self.assertEqual(updates, [1])                # 「更新」 pressed
+        with patch.object(self.w, "_push_trade_message") as push:
+            self.w._send_after_close_summary()
+        title, body = push.call_args.args
+        self.assertIn("餘額已更新", title)
+
+    def test_other_scheme_open_means_no_automatic_update(self):
+        with patch.object(self.w, "read_internal_balance") as read, \
+             patch.object(self.w, "_push_trade_message") as push:
+            self.w._live_pnl_closed({"ticket": 1, "profile": "另一個方案"})
+        read.assert_not_called()
+        self.assertIn("沒有自動更新", push.call_args.args[1])
+
+    def test_other_scheme_open_switches_back_then_updates(self):
+        active = {"name": "測試"}
+        self.w.internal_platform.setCurrentText("cTrader")
+        with patch.object(type(self.w.profiles), "active_name",
+                          new_callable=lambda: property(lambda _s: active["name"])), \
+             patch.object(self.w.profiles, "names", return_value=["測試", "開單方案"]), \
+             patch.object(self.w, "switch_profile", side_effect=lambda n: active.update(name=n)) as switch, \
+             patch.object(self.w, "can_update", return_value=True), \
+             patch.object(gui.QTimer, "singleShot") as later, \
+             patch.object(self.w, "read_internal_balance") as read:
+            self.w._live_pnl_closed({"ticket": 1, "profile": "開單方案"})
+            switch.assert_called_once_with("開單方案")
+            read.assert_not_called()               # waits for the switched sheet first
+            later.call_args.args[1]()              # sheet read finished
+            read.assert_called_once_with("auto")
+        self.assertIn("開單方案", self.w._after_close_switched)
+
+    def test_failed_auto_read_notifies_without_a_popup(self):
+        with patch.object(gui.ThemedMessageBox, "warning", side_effect=AssertionError("popup")), \
+             patch.object(self.w, "_push_trade_message") as push:
+            self.w._balance_read_origin = "auto"
+            self.w._apply_internal_balance_read({"platform": "cTrader", "error": "讀不到"})
+        self.assertIn("讀取餘額失敗", push.call_args.args[1])
 
 
 class BalanceFieldButtonsTests(ApplyBalanceTests):
@@ -152,7 +205,7 @@ class ReadButtonFeedbackTests(ApplyBalanceTests):
         self.assertTrue(self.w._balance_spin_timer.isActive())
         self.w._spin_balance_button()
         self.assertFalse(button.icon().isNull())
-        self.w._set_balance_button_state("done")
+        self.w._set_balance_button_state("ready")
         self.assertTrue(button.isEnabled())
         self.assertFalse(self.w._balance_spin_timer.isActive())
         self.w._set_balance_button_state("idle")
@@ -178,7 +231,8 @@ class BalanceFieldLayoutTests(ApplyBalanceTests):
         self.assertLessEqual(gap, 1)                     # keys touch the box
         self.assertEqual(tilde.width(), tilde.height())  # square keys
         reader = self.w.read_balance_button
-        self.assertEqual(reader.geometry().right(), balance.width() - 2)  # flush with the right border
+        self.assertEqual(reader.geometry().right(), balance.width() - 3)  # at the right edge, inside the border
+        self.assertGreaterEqual(reader.geometry().top(), 2)               # hover never covers the border
 
 
 class SideAndPhoneBalanceTests(ApplyBalanceTests):
@@ -220,9 +274,9 @@ class SideAndPhoneBalanceTests(ApplyBalanceTests):
 class CalmSpinnerAndComboTests(ApplyBalanceTests):
     def test_spinner_turns_in_small_even_steps(self):
         self.w._set_balance_button_state("loading")
-        self.assertEqual(self.w._balance_spin_timer.interval(), 40)
+        self.assertEqual(self.w._balance_spin_timer.interval(), 20)
         self.w._spin_balance_button()
-        self.assertEqual(len(self.w._balance_spin_frames), 36)  # 10 degrees per frame
+        self.assertEqual(len(self.w._balance_spin_frames), 72)  # 5 degrees per frame
         self.w._set_balance_button_state("idle")
 
     def test_combo_is_not_highlighted_just_because_it_has_focus(self):
@@ -236,3 +290,109 @@ class CalmSpinnerAndComboTests(ApplyBalanceTests):
         with patch.object(QCursor, "pos", return_value=combo.mapToGlobal(combo.rect().bottomRight()) + gui.QPoint(50, 50)):
             image = combo.grab().toImage()
         self.assertNotEqual(image.pixelColor(2, combo.height() // 2).name(), "#262030")
+
+
+class CheckThenUpdateTests(ApplyBalanceTests):
+    def fill(self, value="777.00"):
+        self.w._balance_autofill_session = True
+        self.w._apply_internal_balance_read({"platform": "cTrader", "value": value})
+
+    def test_fill_does_not_update_by_itself_and_check_stays(self):
+        with patch.object(self.w, "update_all_trade_parameters") as update:
+            self.fill()
+        update.assert_not_called()
+        self.assertEqual(self.w._balance_button_state, "ready")
+
+    def test_prefix_keys_keep_the_check_but_editing_digits_drops_it(self):
+        self.fill()
+        self.w.balance_prefix_buttons["~"].click()
+        self.assertEqual(self.w.parameter_inputs["internal_balance"].text(), "~777.00")
+        self.assertEqual(self.w._balance_button_state, "ready")
+        self.w.parameter_inputs["internal_balance"].setText("~778.00")
+        self.assertEqual(self.w._balance_button_state, "idle")
+
+    def test_pressing_the_check_runs_update_then_shows_read_icon(self):
+        self.fill()
+        emitted = []
+        self.w.parameter_inputs["internal_balance"].returnPressed.connect(lambda: emitted.append(1))
+        # The real 「更新」 worker is not part of this check (no sheet here).
+        with patch.object(self.w, "read_internal_balance") as read, patch.object(self.w, "_start"):
+            self.w.read_balance_button.click()
+        read.assert_not_called()
+        self.assertEqual(emitted, [1])
+        self.assertEqual(self.w._balance_button_state, "idle")
+        with patch.object(self.w, "read_internal_balance") as read:
+            self.w.read_balance_button.click()
+        read.assert_called_once_with("main")
+
+
+class PhoneBalanceStateTests(unittest.TestCase):
+    def test_phone_page_reenables_prefix_keys_and_swaps_read_for_check(self):
+        from trading_helper import remote_mobile
+        js = remote_mobile.ASSETS["/app.js"][1]
+        js = js if isinstance(js, str) else js.decode()
+        self.assertIn('b.disabled=balanceInput.disabled', js)
+        self.assertIn('rb.dataset.action=ready?"update":"read_balance"', js)
+
+    def test_phone_read_is_reported_as_completed_without_popup(self):
+        import inspect
+        from trading_helper import remote_ui
+        source = inspect.getsource(remote_ui.RemoteController._finish)
+        self.assertIn('"read_balance"', source)
+        self.assertIn("balance_ready", inspect.getsource(remote_ui.RemoteController.snapshot))
+
+
+class PhoneOptionsTests(unittest.TestCase):
+    def test_phone_lists_rest_close_with_settings_and_groups_them(self):
+        import inspect
+        from trading_helper import remote_mobile, remote_ui
+        source = inspect.getsource(remote_ui.RemoteController._options)
+        self.assertNotIn('"auto_tv"', source)  # TradingView hidden for now
+        self.assertIn('"rest_close"', source)
+        js = remote_mobile.ASSETS["/app.js"][1]
+        js = js if isinstance(js, str) else js.decode()
+        self.assertIn('rest_close:"休市平倉"', js)
+        self.assertIn("option-group", js)
+        self.assertIn("openRestSettings", js)
+        self.assertNotIn('data-action="fill_internal"', remote_mobile.ASSETS["/"][1] if isinstance(remote_mobile.ASSETS["/"][1], str) else remote_mobile.ASSETS["/"][1].decode())
+
+
+
+class TradingViewHiddenAndPhoneRestTests(ApplyBalanceTests):
+    def test_tradingview_controls_hidden_and_never_drawn(self):
+        self.assertFalse(gui.TRADINGVIEW_ENABLED)
+        self.assertTrue(self.w.auto_draw_tv_after_entry.isHidden())
+        self.assertTrue(self.w.action_buttons["校準 TradingView"].isHidden())
+
+    def test_phone_rest_settings_validate_and_save(self):
+        from trading_helper.remote_ui import RemoteController
+        good = {"reminder": {"enabled": True, "minutes": [60, 30]},
+                "close": {"minutes": 45, "internal": True, "external": False}}
+        reminder, close = RemoteController._clean_rest_settings(good)
+        self.assertEqual(close["minutes"], 45)
+        with self.assertRaises(ValueError):
+            RemoteController._clean_rest_settings(dict(good, close={"minutes": 999, "internal": True, "external": False}))
+        fake = type("C", (), {"app": self.w, "_clean_rest_settings": staticmethod(RemoteController._clean_rest_settings)})()
+        with patch.object(self.w, "save_config"):
+            RemoteController._apply_rest_settings(fake, good)
+        ui = self.w.store.data["ui"]
+        self.assertEqual(ui["rest_close_minutes"], 45)
+        self.assertEqual(ui["rest_close_all"], {"internal": True, "external": False})
+        self.assertTrue(ui["rest_reminder"]["enabled"])
+        # 消息 page saves the reminder alone; the gear saves 休市平倉 alone.
+        with patch.object(self.w, "save_config"):
+            RemoteController._apply_rest_settings(fake, {"reminder": {"enabled": False, "minutes": [45, 15], "custom": True}})
+        self.assertEqual(ui["rest_reminder"], {"enabled": False, "minutes": [45, 15], "custom": True})
+        self.assertEqual(ui["rest_close_minutes"], 45)
+        with self.assertRaises(ValueError):
+            RemoteController._clean_rest_settings({})
+        with self.assertRaises(ValueError):
+            RemoteController._clean_rest_settings({"reminder": {"enabled": True, "minutes": [30], "x": 1}})
+
+    def test_switching_scheme_shows_that_schemes_rest_close_setting(self):
+        self.w.rest_close_checkbox.blockSignals(True)
+        self.w.rest_close_checkbox.setChecked(True)
+        self.w.rest_close_checkbox.blockSignals(False)
+        self.w.store.data["ui"]["rest_close_enabled"] = False
+        self.w._apply_profile_ui()
+        self.assertFalse(self.w.rest_close_checkbox.isChecked())

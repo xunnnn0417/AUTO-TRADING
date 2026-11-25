@@ -116,6 +116,41 @@ class StageBalanceWarningTests(unittest.TestCase):
         self.w._apply_profile_ui()
         self.assertFalse(self.w._balance_warning_active())
 
+    def test_sheet_note_about_daily_pnl_puts_the_mark_on_that_field_and_blocks(self):
+        self.load()
+        self.load_limits()
+        context = self.w._trade_settings_context()
+        self.w._show_sheet_validation((context, "今日目標超過帳號獲利目標，請確認每日獲利/虧損"))
+        self.assertTrue(self.w._balance_warning_active())
+        self.assertTrue(self.w.pnl_warning_badge.isVisible())
+        self.assertFalse(self.w.balance_warning_badge.isVisible())
+        with patch.object(gui.QMessageBox, 'warning') as warn:
+            self.w._show_balance_warning()
+        self.assertIn("請確認平台實際數值", warn.call_args.args[2])
+        with patch.object(gui.QMessageBox, 'warning'), patch.object(self.w, '_start_fill_worker') as fill:
+            self.w.fill_both()
+            fill.assert_not_called()
+        self.w._show_sheet_validation((context, ""))
+        self.assertFalse(self.w.pnl_warning_badge.isVisible())
+
+    def test_take_profit_below_zero_names_the_sheets_reason_not_always_the_balance(self):
+        self.load()
+        self.w.reader.values['A4'] = '真金階段'  # this fake then returns TP 0
+        note = '每日獲利/虧損數值設定有誤,或已達到今日獲利上限'
+        self.w.reader.read_a1_values = lambda config, cells: {c: note if c == 'A20' else '' for c in cells}
+        with self.assertRaises(InvalidInternalTakeProfit) as raised:
+            self.w._read_sheet_task()
+        self.qtapp.processEvents()
+        self.assertEqual(raised.exception.sheet_reason, note)
+        self.assertTrue(self.w.pnl_warning_badge.isVisible())
+        self.assertFalse(self.w.balance_warning_badge.isVisible())
+        # The automatic pop-up and the "!" click say the same thing.
+        with patch.object(gui.QMessageBox, 'warning') as popup:
+            self.w._show_error('交易數值需調整：' + note)
+            self.w._show_balance_warning()
+        self.assertEqual(popup.call_args_list[0].args[1:], popup.call_args_list[1].args[1:])
+        self.assertEqual(popup.call_args.args[1], '請確認每日獲利/虧損')
+
     def test_editing_range_back_to_normal_requires_verified_update_even_for_old_value(self):
         self.load()
         self.load_limits()

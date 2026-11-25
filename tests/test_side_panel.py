@@ -46,6 +46,58 @@ class SidePanelTests(unittest.TestCase):
             self.assertLessEqual(panel.frameGeometry().right(), area.right())
             self.assertGreaterEqual(panel.frameGeometry().left(), area.left())
 
+    def test_live_pnl_button_opens_a_panel_on_the_left_until_closed(self):
+        panel = self.open_panel()
+        self.assertTrue(panel.live_button.isVisible())
+        panel.live_button.setChecked(True)
+        self.qtapp.processEvents()
+        self.assertTrue(panel.live_flyout.isVisible())
+        self.assertLess(panel.live_flyout.x(), panel.x())
+        self.assertIsNone(panel.live_bar.state)  # says 「目前沒有持倉」
+        # Clicking elsewhere does not close it; its collapse tab does.
+        panel.update_button.setFocus()
+        self.qtapp.processEvents()
+        self.assertTrue(panel.live_flyout.isVisible())
+        panel.live_collapse.click()
+        self.qtapp.processEvents()
+        self.assertFalse(panel.live_flyout.isVisible())
+        self.assertFalse(panel.live_button.isChecked())
+
+    def test_live_panel_stays_alone_beside_the_ball_when_collapsed(self):
+        panel = self.open_panel()
+        panel.live_button.setChecked(True)
+        panel.events_button.setChecked(True)
+        panel.set_collapsed(True)
+        self.qtapp.processEvents()
+        self.assertTrue(panel.live_flyout.isVisible())      # only 目前持倉 stays
+        self.assertFalse(panel.event_flyout.isVisible())
+        self.assertLess(panel.live_flyout.x(), panel.x())   # left of the ball
+        # The ball cannot be picked up while 目前持倉 is open beside it.
+        panel._handle_pointer = panel.handle.mapToGlobal(panel.handle.rect().center())
+        panel._begin_handle_drag()
+        self.assertFalse(panel._handle_dragging)
+        panel._handle_pointer = None
+        panel.hide()                                         # hidden for an operation
+        self.assertFalse(panel.live_flyout.isVisible())
+        panel.show()
+        self.qtapp.processEvents()
+        self.assertTrue(panel.live_flyout.isVisible())
+
+    def test_live_and_events_stack_in_one_column_beside_the_panel(self):
+        panel = self.open_panel()
+        panel.live_button.setChecked(True)
+        panel._expand_events(True)
+        self.qtapp.processEvents()
+        live, events = panel.live_flyout.geometry(), panel.event_flyout.geometry()
+        self.assertEqual(live.right(), events.right())       # same column
+        self.assertLessEqual(live.bottom(), events.top())    # stacked, no overlap
+        self.assertEqual(live.width(), events.width())       # same width
+        # Notifications go left of both panels, never on top of them.
+        self.assertLessEqual(panel.popup_left_edge(), min(live.left(), events.left()))
+        panel.live_button.setChecked(False)
+        self.qtapp.processEvents()
+        self.assertGreater(panel.event_flyout.height(), events.height())  # full height again
+
     def test_periodic_sync_repairs_native_drift_even_without_qt_move_events(self):
         panel = self.open_panel()
         with patch('trading_helper.side_panel.ensure_native_sidebar') as repair:

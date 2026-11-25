@@ -15,9 +15,10 @@ class TradeSettingsUiTests(unittest.TestCase):
     setUp=ui_fixture.CompactFollowUpControlsTests.setUp
     tearDown=ui_fixture.CompactFollowUpControlsTests.tearDown
 
-    def load_settings(self):
+    def load_settings(self,**values):
         w=self.w
         w.reader=FakePreferencesReader()
+        w.reader.values.update(values)
         settings=read_trade_settings(w.reader,w.store.data['sheet'])
         with patch.object(gui.QMessageBox,'question') as confirm:
             w._show_trade_sheet_settings((w._trade_settings_context(),settings,''))
@@ -61,7 +62,7 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertEqual(self.w.reader.writes,[])
 
     def test_each_rule_asks_before_writing_and_cancel_keeps_original(self):
-        self.load_settings()
+        self.load_settings(E14='否')
         for cell,checkbox in self.w.trade_rule_checkboxes.items():
             with self.subTest(cell=cell),patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.No) as confirm,\
                  patch.object(self.w,'_start') as start:
@@ -73,7 +74,7 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertEqual(self.w.reader.writes,[])
 
     def test_confirmed_rule_writes_only_after_consent_and_refreshes(self):
-        self.load_settings()
+        self.load_settings(E14='否')
         with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes),\
              patch.object(self.w,'_start') as start,\
              patch.object(self.w,'_read_sheet_task') as refresh:
@@ -87,6 +88,34 @@ class TradeSettingsUiTests(unittest.TestCase):
         refresh.assert_called_once_with(retries=2)
         self.assertTrue(self.w.trade_rule_checkboxes['C2'].isChecked())
         self.assertFalse(self.w._trade_settings_busy)
+
+    def test_back_and_forth_never_stays_on_with_a_higher_rule(self):
+        # 固定場內止盈 on: turning 來回打 on asks to switch it off first.
+        self.load_settings()
+        with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.No) as confirm,\
+             patch.object(self.w,'_start') as start:
+            self.w.trade_rule_checkboxes['C2'].click()
+        self.assertEqual(confirm.call_args.kwargs['yes_text'],'關掉並開啟來回打')
+        start.assert_not_called()
+        self.assertFalse(self.w.trade_rule_checkboxes['C2'].isChecked())
+        self.assertEqual(self.w.reader.writes,[])
+        with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes),\
+             patch.object(self.w,'_start') as start,patch.object(self.w,'_read_sheet_task'):
+            self.w.trade_rule_checkboxes['C2'].click()
+            start.call_args.args[1]();self.qtapp.processEvents()
+        self.assertEqual(self.w.reader.writes,[{'E14':'否'},{'C2':'是'}])
+        self.assertTrue(self.w.trade_rule_checkboxes['C2'].isChecked())
+        self.assertFalse(self.w.trade_rule_checkboxes['E14'].isChecked())
+        # 來回打 on, then 最小交易日目標 turned on: 來回打 is switched off too.
+        self.load_settings(C2='是',E14='否')
+        with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes) as confirm,\
+             patch.object(self.w,'_start') as start,patch.object(self.w,'_read_sheet_task'):
+            self.w.trade_rule_checkboxes['B6'].click()
+            self.assertIn('同時關閉',confirm.call_args.args[2])
+            start.call_args.args[1]();self.qtapp.processEvents()
+        self.assertEqual(self.w.reader.writes,[{'B6':'是'},{'C2':'否'}])
+        self.assertFalse(self.w.trade_rule_checkboxes['C2'].isChecked())
+        self.assertTrue(self.w.trade_rule_checkboxes['B6'].isChecked())
 
     def test_stage_choice_updates_same_a4_without_confirmation(self):
         self.load_settings()
@@ -104,7 +133,7 @@ class TradeSettingsUiTests(unittest.TestCase):
         self.assertTrue(self.w.stage_selector.isEnabled())
 
     def test_all_three_rules_require_confirmation_in_both_directions(self):
-        self.load_settings()
+        self.load_settings(E14='否')
         for cell,checkbox in self.w.trade_rule_checkboxes.items():
             for _ in range(2):
                 with self.subTest(cell=cell),patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes) as confirm,\
@@ -118,7 +147,7 @@ class TradeSettingsUiTests(unittest.TestCase):
 
     def test_failed_write_disables_controls_and_invalidates_old_instruction(self):
         from trading_helper.models import ValidationError
-        self.load_settings();self.w.reader.bad_readback=True
+        self.load_settings(E14='否');self.w.reader.bad_readback=True
         self.w.instruction=object()
         with patch.object(gui.QMessageBox,'question',return_value=gui.QMessageBox.Yes),patch.object(self.w,'_start') as start:
             self.w.trade_rule_checkboxes['C2'].click()
@@ -170,16 +199,16 @@ class TradeSettingsUiTests(unittest.TestCase):
         for width,height in ((1438,825),(1150,630),(1020,580)):
             with self.subTest(width=width):
                 self.w.resize(width,height);self.w.switch_workspace('交易');self.qtapp.processEvents()
-                parent=self.w.auto_draw_tv_after_entry.parentWidget()
+                parent=self.w.auto_sync_sl_tp_after_entry.parentWidget()
                 separator=parent.findChild(QFrame,'tradeRuleSeparator')
                 self.assertEqual(separator.frameShape(),QFrame.VLine)
-                self.assertLess(self.w.auto_draw_tv_after_entry.x(),separator.x())
+                self.assertLess(self.w.auto_sync_sl_tp_after_entry.x(),separator.x())
                 previous=separator.x()
                 for checkbox in self.w.trade_rule_checkboxes.values():
                     self.assertIs(checkbox.parentWidget(),parent)
                     self.assertGreater(checkbox.x(),previous)
                     self.assertLessEqual(checkbox.x()+checkbox.width(),parent.width())
-                    self.assertLessEqual(abs(checkbox.y()-self.w.auto_draw_tv_after_entry.y()),2)
+                    self.assertLessEqual(abs(checkbox.y()-self.w.auto_sync_sl_tp_after_entry.y()),2)
                     previous=checkbox.x()
 
     def test_single_side_fill_only_requires_its_selected_platform(self):

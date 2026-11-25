@@ -91,16 +91,16 @@ class NewsCards(QTextBrowser):
             identity = (when, source, original)
             opened = identity in self._open_details
             details = (f'<p style="margin:6px 0 0;color:#aaa5b7">原文：{escape(original)}'
-                       + (f'<br>內容：{escape(content)}' if content else
-                          '<br>來源尚未提供公布結果。' if scheduled and state == '已公布' else '')
+                       + (f'<br>內容：{escape(content)}' if content else '')
                        + '</p>') if opened else ''
             values = publication_values(content) if scheduled else {}
             cells = [f'<td><span style="color:#aaa5b7;font-size:11px">{label}</span><br>'
                      f'<span style="color:#eeedf3;font-size:12px">{escape(values[key])}</span></td>'
                      for key,label in (('actual','公布值'),('forecast','預期'),('previous','前值'))
                      if key in values]
-            result = ('<table width="100%" cellpadding="3" cellspacing="0"><tr>'
-                      + ''.join(cells)+'</tr></table>') if cells else (
+            # Values sit side by side, close together (not spread over the width).
+            result = ('<table cellpadding="3" cellspacing="0"><tr>'
+                      + '<td width="14"></td>'.join(cells)+'</tr></table>') if cells else (
                       f'<p style="margin:4px 0;color:#edc779;font-size:11px">{escape(content)}</p>'
                       if content and scheduled and state == '已公布' else '')
             # Full source title is retained; no invented AI summary or direction.

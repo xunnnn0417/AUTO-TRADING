@@ -144,7 +144,7 @@ class MobileNotificationTests(unittest.TestCase):
     def test_simultaneous_release_members_share_one_delivery_and_all_keep_receipts(self):
         from test_mobile_remote import wait_for
         when = datetime.fromtimestamp(self.now+590,timezone.utc)
-        names = [f'指標{i:02}' for i in range(13)]
+        names = [f'CPI 指標{i:02}' for i in range(13)]
         self.calendar.events = [CalendarEvent(when,'USD',name) for name in names]
         self.service.poll(self.calendar,self.origin,self.now)
         self.assertEqual(len(self.rows()),13)
@@ -154,7 +154,7 @@ class MobileNotificationTests(unittest.TestCase):
             self.assertEqual(send.call_count,1)
             payload = send.call_args.args[1]
             self.assertIn('13 則',payload['title'])
-            self.assertTrue(payload['title'].startswith('指標00'))  # the point first
+            self.assertTrue(payload['title'].startswith('CPI 指標00'))  # the point first
             for name in names:self.assertIn(name,payload['title']+payload['body'])
             self.assertTrue(all(row[2]=='sent' for row in self.rows()))
             MobileNotifications._dispatch(self.service,self.now+61)
@@ -332,7 +332,7 @@ class MobileNotificationTests(unittest.TestCase):
         actual = EconomicCalendar(Path(self.temp.name)/'calendar.json')
         self.addCleanup(actual.close)
         actual.events = [CalendarEvent(datetime.fromtimestamp(self.now+590, timezone.utc),
-                                      'USD', 'Interest Rate Decision')]
+                                      'USD', 'Federal Funds Rate')]
         actual.source_times = self.calendar.source_times
         actual.fetched_at = self.calendar.source_times['ff']
         self.service.poll(actual, self.origin, self.now)

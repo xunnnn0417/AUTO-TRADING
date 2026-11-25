@@ -9,12 +9,18 @@ from decimal import Decimal,InvalidOperation
 from pathlib import Path
 from ctypes import wintypes
 import importlib,sys
+import threading
 import time
 from .auto_entry import DemoAccount,Position
 from .windows import AutomationError
 
 _VENDOR=Path(__file__).resolve().parents[1]/"vendor"/"mt5_readonly"
 _TERMINAL=Path(r"C:\Program Files\RL Crates MT5 Terminal\terminal64.exe")
+
+
+# The MetaTrader5 package is one connection per process: every reader takes
+# this lock so one caller's initialize/shutdown never cuts another's read.
+MT5_LOCK=threading.RLock()
 
 
 class MarketOrderInProgress(AutomationError):
@@ -148,6 +154,17 @@ def snapshot_mt5_demo(
 
 
 def snapshot_mt5_account(
+    expected: DemoAccount, *, terminal_path: Path, sdk=None,
+    allow_pending_orders: bool = False,
+) -> tuple[Position, ...]:
+    with MT5_LOCK:
+        return _snapshot_mt5_account(
+            expected, terminal_path=terminal_path, sdk=sdk,
+            allow_pending_orders=allow_pending_orders,
+        )
+
+
+def _snapshot_mt5_account(
     expected: DemoAccount, *, terminal_path: Path, sdk=None,
     allow_pending_orders: bool = False,
 ) -> tuple[Position, ...]:

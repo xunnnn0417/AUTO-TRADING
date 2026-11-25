@@ -85,9 +85,26 @@ def format_event_time(when):
     return f'{local.hour % 12 or 12}:{local.minute:02} {"AM" if local.hour < 12 else "PM"}'
 
 
+# Only US releases that move gold within the first minutes get reminders:
+# CPI, PPI, jobs report, FOMC (decision, statement, press conference, minutes),
+# core PCE, GDP, retail sales and the Fed chair. The rest is still listed.
+REMINDER_EVENTS = re.compile(
+    r'\bCPI\b|\bPPI\b|Non-Farm Employment Change|Unemployment Rate|Average Hourly Earnings|'
+    r'Federal Funds Rate|FOMC|Core PCE|PCE Price|GDP q/q|Retail Sales|Fed Chair|'
+    r'美國 GDP|個人所得與支出', re.I)
+NO_REMINDER_EVENTS = re.compile(r'ADP|GDP Price Index|Claims|FOMC Member', re.I)
+
+
+def reminder_wanted(item) -> bool:
+    return (item.currency == 'USD' and bool(REMINDER_EVENTS.search(item.title))
+            and not NO_REMINDER_EVENTS.search(item.title))
+
+
 def scheduled_reminders(calendar, now):
     """Same fresh schedule and timing policy for desktop and phone alerts."""
     for item in calendar.events:
+        if not reminder_wanted(item):
+            continue
         key = next((key for key, name in SOURCE_NAMES.items() if name == item.source), None)
         fetched = calendar.source_times.get(key)
         if (not fetched or key in calendar.source_errors
@@ -95,7 +112,14 @@ def scheduled_reminders(calendar, now):
             continue
         delta = (item.when-now).total_seconds()
         text = f'{format_event_time(item.when)} · {calendar.title(item.title)}'
-        if 0 < delta <= 600:
+        # 1 hour before (decide whether to open at all), 15 minutes before
+        # (time to close), then when it is released.
+        if 900 < delta <= 3600:
+            minutes = max(1, ceil(delta/60))
+            lead = '1 小時' if minutes >= 60 else f'{minutes} 分鐘'
+            yield ('before:60', item, '重大事件即將公布',
+                   f'{lead}後公布 · {text}', item.when.timestamp())
+        elif 0 < delta <= 900:
             yield ('before', item, '重大事件即將公布',
                    f'{max(1, ceil(delta/60))} 分鐘後公布 · {text}', item.when.timestamp())
         elif -60 <= delta <= 0:
