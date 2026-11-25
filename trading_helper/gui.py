@@ -1093,6 +1093,12 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         from .remote_ui import RemoteController
         if getattr(self, "remote_controller", None) is None:
             self.remote_controller = RemoteController(self)
+            notifications = getattr(getattr(self.remote_controller, "server", None), "notifications", None)
+            if notifications is not None:
+                # What the phone formats need from the desktop (read only).
+                notifications.context = lambda: {
+                    "rest_close": self.rest_close_schedule(),
+                    "has_position": getattr(self, "live_pnl_state", None) is not None}
         return self.remote_controller
 
     def _resume_mobile_remote(self):
@@ -1276,6 +1282,24 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         # to its normal foreground behavior.
         self._side_fill_active = False
         super().showEvent(event)
+        self._allow_taskbar_minimize()
+
+    def _allow_taskbar_minimize(self) -> None:
+        """Frameless windows lack the minimize style, so a click on the
+        taskbar button only ever showed the window. With it, the second
+        click hides it again like any other program."""
+        if sys.platform != "win32" or QApplication.platformName() == "offscreen":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            style = user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+            wanted = style | 0x00020000 | 0x00080000  # WS_MINIMIZEBOX | WS_SYSMENU
+            if wanted != style:
+                user32.SetWindowLongW(hwnd, -16, wanted)
+        except Exception:
+            pass
 
     def _minimize_after_operation(self) -> None:
         # Completed operations must return the helper to the foreground.
@@ -2358,6 +2382,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
         self.live_pnl_state = None
         self._start_live_pnl()
+        QTimer.singleShot(3000, self._prefetch_ctrader_tabs)
         # Controls need slightly more width than read-only reference values.
         body_layout.addWidget(left_zone, 47)
         body_layout.addWidget(divider)
@@ -2916,8 +2941,28 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self._live_ctx_timer.start()
         self._live_pnl_monitor = LivePnlMonitor(
             lambda: self._live_ctx, self.signals.live_pnl.emit,
-            closed=self.signals.live_pnl_closed.emit)
+            closed=self.signals.live_pnl_closed.emit,
+            store_path=str(APP_DIR / "live-targets.json"))
         self._live_pnl_monitor.start()
+
+    def _prefetch_ctrader_tabs(self) -> None:
+        """Background, read only: find the bound cTrader windows' Orders /
+        Positions tabs now, so 填入場內 does not spend ~2 s on it."""
+        roles = [role for role, combo in (("internal", getattr(self, "internal_platform", None)),
+                                          ("external", getattr(self, "external_platform", None)))
+                 if combo is not None and combo.currentText() == "cTrader"]
+        if not roles or QApplication.platformName() == "offscreen":
+            return
+
+        def work():
+            from .demo_broker_port import DemoUiBrokerPort
+            for role in roles:
+                try:
+                    window = _bound_broker_main(self, "cTrader", role, display_only=True)
+                    DemoUiBrokerPort.find_ctrader_tabs(window.handle)
+                except Exception:
+                    pass
+        threading.Thread(target=work, name="ctrader-tabs", daemon=True).start()
 
     def _grow_for_live_pnl(self) -> None:
         """A bit taller, so 帳號進度 can sit level with 目前持倉 (only when
@@ -2938,46 +2983,94 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         QTimer.singleShot(50, self._align_live_pnl)
 
     def _refresh_live_context(self) -> None:
-        """GUI thread: what the read loop may use (it never touches widgets)."""
-        roles = [role for role, combo in (("internal", getattr(self, "internal_platform", None)),
-                                          ("external", getattr(self, "external_platform", None)))
-                 if combo is not None and combo.currentText() == "MT5"]
-        if len(roles) != 1:
-            self._live_ctx = None  # needs exactly one MT5 side
-            return
-        role = roles[0]
-        binding = self.store.data["platforms"].get("MT5", {}).get("window_title", {}).get(role, "")
-        key = (self.profiles.active_name, role, binding)
+        """GUI thread: what the read loop may use (it never touches widgets).
+        Every 方案 with exactly one MT5 side takes part: the loop shows the
+        active one, or another 方案 that holds a position."""
         busy = bool(self._active_tasks or self._update_in_progress)
-        resolved = self._live_resolved.get(key)
-        if resolved is None:
-            self._live_ctx = None
-            retry_after = self._live_resolving
-            if not busy and binding and (retry_after is None or time.monotonic() > retry_after):
-                self._live_resolving = time.monotonic() + 30  # one try per 30 s
+        active = self.profiles.active_name
+        now = time.monotonic()
+        if (now - getattr(self, "_live_configs_at", -1e9) > 30
+                or getattr(self, "_live_configs_active", None) != active):
+            configs = {}
+            for name in self.profiles.names():
+                try:
+                    configs[name] = self.profiles.load_profile(name) if name != active else None
+                except Exception:
+                    continue
+            self._live_configs, self._live_configs_at, self._live_configs_active = configs, now, active
+        entries, unresolved = [], []
+        for name, config in self._live_configs.items():
+            if name == active:
+                config = self.store.data
+                kinds = {role: getattr(self, role + "_platform").currentText()
+                         for role in ("internal", "external")}
+            else:
+                ui = config.get("ui", {})
+                kinds = {role: ui.get(role + "_platform", "") for role in ("internal", "external")}
+            roles = [role for role, kind in kinds.items() if kind == "MT5"]
+            if len(roles) != 1:
+                continue  # needs exactly one MT5 side
+            role = roles[0]
+            mt5 = config.get("platforms", {}).get("MT5", {})
+            pattern = str(mt5.get("window_title", {}).get(role, "") or "")
+            account_no = str(mt5.get("account_number", {}).get(role, "") or "")
+            if not pattern.strip():
+                continue
+            key = (name, role, pattern, account_no)
+            resolved = self._live_resolved.get(key)
+            if resolved is not None:
+                from .live_pnl import _window_alive
+                if not _window_alive(resolved[2]):
+                    # Terminal closed (or reopened with a new window): look again.
+                    self._live_resolved.pop(key, None)
+                    resolved = None
+            if resolved is None:
+                unresolved.append((key, pattern, account_no))
+                continue
+            terminal, account, handle = resolved
+            entries.append({"profile": name, "mt5_role": role, "terminal": terminal, "account": account,
+                            "hwnd": handle,
+                            "instruction": self.instruction if name == active else None})
+        if unresolved and not busy and (self._live_resolving is None or now > self._live_resolving):
+            self._live_resolving = now + 30  # one try per 30 s
 
-                def resolve(key=key, role=role):
+            def resolve(items=unresolved):
+                from .auto_entry import DemoAccount
+                from .mt5_native_readonly import terminal_path_for_window
+                for key, pattern, account_no in items:
                     try:
-                        from .mt5_native_readonly import terminal_path_for_window
-                        main = _bound_broker_main(self, "MT5", role, display_only=True)
-                        account = DemoUiBrokerPort(self.automation, lambda _t: None).inspect_account("MT5", role)
-                        self._live_resolved[key] = (terminal_path_for_window(main), account)
+                        if isinstance(self.windows, WindowController):
+                            options = {"expected_account": account_no} if account_no else {}
+                            main = self.windows.find_broker_main_for_display(pattern, platform="MT5", **options)
+                        else:
+                            main = self.windows.find(pattern)
+                        found = re.search(r"\b(\d{5,})\s*-\s*([^\s:]+)(?::|\s|$)", str(main.title or ""))
+                        if not found:
+                            continue
+                        account = DemoAccount("MT5", found.group(1), found.group(2).strip(), None, True)
+                        self._live_resolved[key] = (terminal_path_for_window(main), account, int(main.handle))
                     except Exception:
-                        pass  # not bound / not readable: the card stays hidden
-                threading.Thread(target=resolve, daemon=True).start()
-            return
-        terminal, account = resolved
-        self._live_ctx = {"mt5_role": role, "terminal": terminal, "account": account,
-                          "instruction": self.instruction, "busy": busy,
-                          "profile": self.profiles.active_name}
+                        pass  # not open / not readable: that 方案 just takes no part
+            threading.Thread(target=resolve, daemon=True).start()
+        self._live_ctx = ({"busy": busy, "active": active, "prefer": getattr(self, "_live_prefer", None),
+                           "profiles": entries} if entries else None)
+
+    def set_live_preference(self, name) -> None:
+        """Side panel / phone chose which 方案's position to show."""
+        self._live_prefer = name or None
 
     def _show_live_pnl(self, value) -> None:
-        self.live_pnl_state = value
+        """value: {"profile", "choices", "state"} from the read loop. The main
+        screen (and phone) show the ACTIVE 方案 only; the side panel any."""
+        self.live_pnl_payload = value
+        active = self.profiles.active_name
+        state = value.get("state") if value and value.get("profile") == active else None
+        self.live_pnl_state = state
         section = getattr(self, "live_pnl_section", None)
         if section is None:
             return
         # Always shown; without a position it just says so.
-        self.live_pnl_bar.set_state(value)
+        self.live_pnl_bar.set_state(state)
 
     def _align_live_pnl(self) -> None:
         """目前持倉's top line level with 帳號進度's (idempotent: once they
@@ -3058,6 +3151,19 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         if self.internal_platform.currentText() not in ("cTrader", "MT5") or not self.can_update():
             self._push_trade_message("目前持倉已結束", getattr(self, "_after_close_switched", "") + "可以準備下一單。")
             return
+        if self.profiles.active_name == TEST_PROFILE_NAME:
+            # 「測試」: ask before the automatic balance read every time.
+            answer = QMessageBox.question(
+                self, "目前持倉已結束",
+                "要自動讀取場內餘額（加上「~」）並按更新嗎？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+                yes_text="讀取並更新", no_text="先不要",
+            )
+            if answer != QMessageBox.Yes:
+                # Nothing is loaded: no 「~」, no number left in the field.
+                self.parameter_inputs["internal_balance"].clear()
+                self.log("測試方案：未自動讀取場內餘額。")
+                return
         entry = self.parameter_inputs["internal_balance"]
         entry.setText("~")
         self.read_internal_balance("auto")
@@ -4257,7 +4363,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
 
     @staticmethod
     def _pnl_warning(detail: str) -> bool:
-        return "每日獲利/虧損" in str(detail or "")
+        # 「已達到獲利目標」 means today's profit already reached the day's
+        # target (the 每日獲利/虧損 cell), so the "!" belongs on that field.
+        text = str(detail or "")
+        return "每日獲利/虧損" in text or "已達到獲利目標" in text
 
     @classmethod
     def _trade_value_message(cls, reason: str) -> tuple[str, str]:
@@ -6668,7 +6777,10 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             self._set_profile_combo(name)
             self._apply_profile_ui()
             self.log(f"已切換方案：{name}")
+            # 目前持倉 follows the 方案 you switch to (a drop-down choice is reset).
+            self._live_prefer = None
             self.read_sheet()
+            QTimer.singleShot(1500, self._prefetch_ctrader_tabs)
         except Exception as exc:
             if switched:
                 # Never leave the screen showing one profile while the data

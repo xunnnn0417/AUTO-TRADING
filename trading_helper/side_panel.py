@@ -106,6 +106,12 @@ class SideQuickPanel(QWidget):
         self._hold_timer.setSingleShot(True)
         self._hold_timer.setInterval(180)
         self._hold_timer.timeout.connect(self._begin_handle_drag)
+        # One click on the ball opens the side panel; a quick second click
+        # instead opens / closes 目前持倉 on its own (ball stays parked).
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(min(300, QGuiApplication.styleHints().mouseDoubleClickInterval()))
+        self._click_timer.timeout.connect(lambda: self.set_collapsed(False))
         self._screen = app.screen() or QGuiApplication.primaryScreen()
         self._dock_timer = QTimer(self)
         self._dock_timer.setSingleShot(True)
@@ -235,12 +241,14 @@ class SideQuickPanel(QWidget):
             entry.textEdited.connect(app.parameter_inputs[key].setText)
             entry.returnPressed.connect(app.parameter_inputs[key].returnPressed.emit)
             self.inputs[key] = entry
-            if key in ('expected_sl_combined', 'internal_balance'):
+            if key in ('expected_sl_combined', 'internal_balance', 'daily_pnl'):
                 entry.setTextMargins(0, 0, 16, 0)
                 badge = type(app.expected_sl_warning_badge)(entry)
                 badge.setCursor(Qt.PointingHandCursor)
                 badge.setToolTip('請先確認保證金比例相關規則。' if key == 'expected_sl_combined'
+                                 else '每日獲利/虧損數值可能有誤，請確認後修改並更新。' if key == 'daily_pnl'
                                  else '請確認並修改場內餘額，更新成功後再操作。')
+                badge.hide()
                 badge.installEventFilter(self)
                 entry.installEventFilter(self)
                 self.warnings[key] = badge
@@ -365,6 +373,13 @@ class SideQuickPanel(QWidget):
         live_title = QLabel('目前持倉', self.live_flyout)
         live_title.setStyleSheet('font-size: 13px; font-weight: 600;')
         live_head.addWidget(live_title)
+        # Which 方案's position is shown (same look as the panel's subtitle).
+        from .compact_controls import LiveProfileCombo
+        self.live_profile = LiveProfileCombo(self.live_flyout)
+        self.live_profile.setObjectName('liveProfileSelector')
+        self.live_profile.setAccessibleName('目前持倉方案')
+        self.live_profile.textActivated.connect(self.app.set_live_preference)
+        live_head.addWidget(self.live_profile, 0, Qt.AlignBottom)
         live_head.addStretch(1)
         # 「›」 at the header's top-right closes the panel.
         self.live_collapse = QToolButton(self.live_flyout)
@@ -511,9 +526,14 @@ class SideQuickPanel(QWidget):
         self.fill_button.setEnabled(not busy and app.action_buttons['填入兩邊'].isEnabled())
         self.close_both_button.setEnabled(not busy)
         self.update_button.setEnabled(not busy)
+        # Same rule as the main window: a 每日獲利/虧損 reason (e.g. 「已達到
+        # 獲利目標」) puts the "!" on that field instead of 場內餘額.
+        balance_active = app._balance_warning_active()
+        on_pnl = balance_active and app._pnl_warning(app._balance_range_warning_detail())
         for key, visible in (
             ('expected_sl_combined', app._expected_sl_warning_values() is not None),
-            ('internal_balance', app._balance_warning_active()),
+            ('internal_balance', balance_active and not on_pnl),
+            ('daily_pnl', on_pnl),
         ):
             badge = self.warnings[key]
             badge.setVisible(visible)
@@ -572,6 +592,14 @@ class SideQuickPanel(QWidget):
             title = '預期 SL 提醒'
             numbers = f'原始 SL：{original} 點\n預期 SL：{adjusted} 點'
             message = '手數可能增加，請先確認保證金比例相關規則。'
+        elif key == 'daily_pnl':
+            reason = self.app._balance_range_warning_detail()
+            if not self.app._balance_warning_active() or not self.app._pnl_warning(reason):
+                return False
+            title = '每日獲利／虧損提醒'
+            value = self.inputs['daily_pnl'].text().strip() or self.inputs['daily_pnl'].placeholderText()
+            numbers = '每日獲利／虧損：' + value if value else ''
+            message = reason.rstrip('。') + '。\n請確認平台實際數值後修改並更新，再操作。'
         else:
             if not self.app._balance_warning_active():
                 return False
@@ -620,7 +648,7 @@ class SideQuickPanel(QWidget):
             self.calendar.refresh()
 
     def _toggle_live(self, opened):
-        self.live_bar.set_state(getattr(self.app, 'live_pnl_state', None))
+        self._show_live(getattr(self.app, 'live_pnl_payload', None))
         self.live_flyout.setVisible(opened)
         # 重大事件 gets shorter / back to full height so both fit one column.
         self._position_event_flyout()
@@ -629,7 +657,21 @@ class SideQuickPanel(QWidget):
             self.live_flyout.raise_()
 
     def _show_live(self, value):
-        self.live_bar.set_state(value)
+        """value: {"profile", "choices", "state"}; no position anywhere -> the
+        active 方案's name, plain."""
+        value = value or {}
+        self.live_bar.set_state(value.get('state'))
+        name = value.get('profile') or self.app.profiles.active_name
+        choices = list(value.get('choices') or []) or [name]
+        if name not in choices:
+            choices.insert(0, name)
+        combo = self.live_profile
+        with QSignalBlocker(combo):
+            if [combo.itemText(i) for i in range(combo.count())] != choices:
+                combo.clear()
+                combo.addItems(choices)
+            combo.setCurrentText(name)
+        combo.set_locked(len(value.get('choices') or []) < 2)
 
     LIVE_FLYOUT_HEIGHT = 176
 
@@ -942,7 +984,9 @@ class SideQuickPanel(QWidget):
                     self.set_collapsed(True)
                 return True
         if watched is self.handle:
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            # Windows delivers a quick second press as a double-click event.
+            if (event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick)
+                    and event.button() == Qt.LeftButton):
                 self._handle_press = self._handle_pointer = event.globalPosition().toPoint()
                 self._edge_start_y, self._edge_moved = self.y(), False
                 self._hold_timer.start()
@@ -978,7 +1022,17 @@ class SideQuickPanel(QWidget):
                     self._move_handle_drag(self._handle_pointer)
                 return True
             if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton and self._handle_press is not None:
-                self._release_handle(event.globalPosition().toPoint())
+                if self._handle_dragging:
+                    self._release_handle(event.globalPosition().toPoint())
+                    return True
+                self._hold_timer.stop()
+                self._handle_press = self._handle_pointer = None
+                self.handle.releaseMouse()
+                if self._click_timer.isActive():
+                    self._click_timer.stop()
+                    self.live_button.setChecked(not self.live_button.isChecked())
+                else:
+                    self._click_timer.start()
                 return True
         for key, badge in getattr(self, 'warnings', {}).items():
             if watched is badge and event.type() == QEvent.MouseButtonRelease:

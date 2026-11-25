@@ -76,22 +76,63 @@ def model(*, mt5_role: str, mt5_pnl: float, mt5: SideTargets, other: SideTargets
     }
 
 
-class LivePnlMonitor:
-    """Background read loop. `context()` (GUI-provided, thread-safe snapshot)
-    returns None when there is nothing to show, or a dict with mt5_role,
-    terminal path, expected account, instruction and a busy flag."""
+def _window_alive(hwnd) -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.IsWindow(int(hwnd)))
+    except Exception:
+        return True
 
-    def __init__(self, context, publish, log=None, closed=None):
+
+SCAN_INTERVAL = 3.0  # seconds between looks at the OTHER 方案's accounts
+
+
+class LivePnlMonitor:
+    """Background read loop over every 方案 that has exactly one MT5 side.
+
+    `context()` (GUI-provided, thread-safe snapshot) returns None, or
+    {"busy", "active", "prefer", "profiles": [{"profile", "mt5_role",
+    "terminal", "account", "instruction"}]} - instruction only for the active
+    方案 (the sheet that is loaded). The shown 方案 is read every 0.1 s; the
+    others every few seconds, only to know whether they hold a position.
+
+    Each position's money at TP/SL is remembered from the moment it is first
+    seen until it is closed (saved to disk, so a restart keeps it)."""
+
+    def __init__(self, context, publish, log=None, closed=None, store_path=None):
         self.context, self.publish, self.log = context, publish, log or (lambda _t: None)
         self.closed = closed or (lambda _info: None)
+        self.store_path = store_path
         self._stop = threading.Event()
         self._thread = None
-        self._targets = {}  # ticket -> other side's targets frozen at first sight
-        self._last_ticket = None
-        self._last_key = None  # (terminal, account, server) that held _last_ticket
-        self._ticket_profile = {}  # ticket -> 方案 open when it was first seen
+        self._targets = self._load_targets()   # ticket -> remembered targets
+        self._ticket_profile = {t: v.get("profile", "") for t, v in self._targets.items()}
+        self._open = {}          # account key -> {ticket: 方案}
+        self._has_position = {}  # 方案 -> bool (from the latest read of its account)
+        self._last_scan = -1e9
         self._connected = None
 
+    # -- remembered targets ---------------------------------------------------
+    def _load_targets(self):
+        import json
+        try:
+            with open(self.store_path, encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except Exception:
+            return {}
+        return {int(k): v for k, v in raw.items() if isinstance(v, dict)}
+
+    def _save_targets(self):
+        import json
+        if not self.store_path:
+            return
+        try:
+            with open(self.store_path, "w", encoding="utf-8") as handle:
+                json.dump({str(k): v for k, v in self._targets.items()}, handle, ensure_ascii=False)
+        except Exception:
+            pass
+
+    # -- loop -----------------------------------------------------------------
     def start(self):
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="live-pnl", daemon=True)
@@ -117,7 +158,7 @@ class LivePnlMonitor:
                 continue  # never read while a trade operation runs
             try:
                 with MT5_LOCK:
-                    result = self._read(mt, ctx)
+                    result = self._tick(mt, ctx, time.monotonic())
             except Exception:
                 result = None
                 self._connected = None
@@ -128,56 +169,107 @@ class LivePnlMonitor:
         except Exception:
             pass
 
-    def _read(self, mt, ctx):
-        path = str(ctx["terminal"])
+    def _tick(self, mt, ctx, now):
+        entries = [e for e in ctx.get("profiles", ()) if e]
+        if not entries:
+            return None
+        active = ctx.get("active", "")
+        if now - self._last_scan >= SCAN_INTERVAL:
+            self._last_scan = now
+            # Active first: a ticket seen there belongs to the active 方案.
+            for entry in sorted(entries, key=lambda e: e["profile"] != active):
+                self._read_account(mt, entry)
+        choices = [e["profile"] for e in entries if self._has_position.get(e["profile"])]
+        prefer = ctx.get("prefer")
+        shown = (prefer if prefer in choices else active if active in choices
+                 else choices[0] if choices else active)
+        entry = next((e for e in entries if e["profile"] == shown), None)
+        state = self._state(mt, entry) if entry is not None and shown in choices else None
+        return {"profile": shown, "choices": choices, "state": state}
+
+    def _connect(self, mt, entry):
+        path = str(entry["terminal"])
+        hwnd = entry.get("hwnd")
+        if hwnd and not _window_alive(hwnd):
+            return None  # terminal closed: never let initialize() start it again
         if self._connected != path or mt.account_info() is None:
             if not mt.initialize(path=path, timeout=3000):
                 self._connected = None
                 return None
             self._connected = path
         account = mt.account_info()
-        expected = ctx["account"]
+        expected = entry["account"]
         if (account is None or str(account.login) != expected.account_id
                 or str(account.server).casefold() != expected.server.casefold()):
             return None
-        key = (path, expected.account_id, expected.server.casefold())
+        return (path, expected.account_id, expected.server.casefold())
+
+    def _read_account(self, mt, entry):
+        """This 方案's positions in its account; notices closes. None = unknown."""
+        key = self._connect(mt, entry)
+        if key is None:
+            return None
         positions = mt.positions_get()
         if positions is None:
             self._connected = None
             return None
+        before = self._open.get(key, {})
+        now_open = {}
+        for position in positions:
+            ticket = int(position.ticket)
+            self._ticket_profile.setdefault(ticket, before.get(ticket) or entry["profile"])
+            now_open[ticket] = self._ticket_profile[ticket]
+        for ticket, profile in before.items():
+            if ticket not in now_open:
+                # Only a real close counts: same account, and MT5's own
+                # history shows the closing deal.
+                if self._has_closing_deal(mt, ticket):
+                    self.closed({"ticket": ticket, "profile": profile})
+                if self._targets.pop(ticket, None) is not None:
+                    self._save_targets()
+        if key not in self._open:
+            # First look at this account since start-up: amounts remembered
+            # for this 方案's positions that were closed while the helper was
+            # not running are dropped (no update is triggered for them).
+            stale = [t for t, v in self._targets.items()
+                     if v.get("profile") == entry["profile"] and t not in now_open]
+            for ticket in stale:
+                self._targets.pop(ticket, None)
+            if stale:
+                self._save_targets()
+        self._open[key] = now_open
+        for name in {entry["profile"], *before.values(), *now_open.values()}:
+            self._has_position[name] = any(
+                p == name for tickets in self._open.values() for p in tickets.values())
+        return [p for p in positions if self._ticket_profile.get(int(p.ticket)) == entry["profile"]]
+
+    def _state(self, mt, entry):
+        positions = self._read_account(mt, entry)
         if not positions:
-            if self._last_ticket is not None:
-                # Only a real close counts: the SAME account that held the
-                # ticket, and MT5's own history shows the closing deal.
-                # Another 方案 / account simply having no position is not
-                # a close (that used to switch 方案 back and re-update).
-                if key == self._last_key and self._has_closing_deal(mt, self._last_ticket):
-                    self.closed({"ticket": self._last_ticket,
-                                 "profile": self._ticket_profile.get(self._last_ticket, "")})
-                self._last_ticket = None
-                self._last_key = None
             return None
         position = max(positions, key=lambda p: getattr(p, "time_msc", 0))
         info = mt.symbol_info(position.symbol)
         contract = float(getattr(info, "trade_contract_size", 0) or 100)
-        item = ctx["instruction"]
-        mt5_role = ctx["mt5_role"]
-        other_role = "internal" if mt5_role == "external" else "external"
         ticket = int(position.ticket)
-        self._ticket_profile.setdefault(ticket, ctx.get("profile", ""))
-        if ticket not in self._targets and item is not None:
+        mt5_role = entry["mt5_role"]
+        if ticket not in self._targets and entry.get("instruction") is not None:
+            item = entry["instruction"]
+            other_role = "internal" if mt5_role == "external" else "external"
             mine, theirs = getattr(item, mt5_role), getattr(item, other_role)
-            self._targets[ticket] = (
-                side_targets(mine.sl_points, mine.tp_points, mine.lot, contract),
-                side_targets(theirs.sl_points, theirs.tp_points, theirs.lot, contract))
-        if ticket not in self._targets:
-            return None
-        self._last_ticket = ticket
-        self._last_key = key
-        sheet_mine, other = self._targets[ticket]
+            a = side_targets(mine.sl_points, mine.tp_points, mine.lot, contract)
+            b = side_targets(theirs.sl_points, theirs.tp_points, theirs.lot, contract)
+            self._targets[ticket] = {"profile": entry["profile"], "mt5_role": mt5_role,
+                                     "mine": [a.tp, a.sl], "other": [b.tp, b.sl]}
+            self._save_targets()
+        saved = self._targets.get(ticket)
+        if saved is None:
+            return None  # an older position of another 方案: amounts unknown
+        sheet_mine = SideTargets(*saved["mine"])
+        other = SideTargets(*saved["other"])
         mine, sl_price, tp_price = mt5_targets(position, contract, sheet_mine)
-        return model(mt5_role=mt5_role, mt5_pnl=float(position.profit), mt5=mine, other=other,
-                     price=float(position.price_current), mt5_sl_price=sl_price, mt5_tp_price=tp_price,
+        return model(mt5_role=saved.get("mt5_role", mt5_role), mt5_pnl=float(position.profit),
+                     mt5=mine, other=other, price=float(position.price_current),
+                     mt5_sl_price=sl_price, mt5_tp_price=tp_price,
                      entry_price=float(position.price_open))
 
     @staticmethod

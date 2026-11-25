@@ -142,6 +142,21 @@ class AfterCloseTests(ApplyBalanceTests):
         read.assert_not_called()
         self.assertIn("沒有自動更新", push.call_args.args[1])
 
+    def test_test_profile_asks_before_the_automatic_read(self):
+        self.w.internal_platform.setCurrentText("cTrader")
+        with patch.object(type(self.w.profiles), "active_name",
+                          new_callable=lambda: property(lambda _s: gui.TEST_PROFILE_NAME)), \
+             patch.object(self.w, "can_update", return_value=True), \
+             patch.object(self.w, "read_internal_balance") as read:
+            with patch.object(gui.QMessageBox, "question", return_value=gui.QMessageBox.No) as ask:
+                self.w._after_close_update()
+            ask.assert_called_once()
+            read.assert_not_called()
+            self.assertEqual(self.w.parameter_inputs["internal_balance"].text(), "")  # no ~, no number
+            with patch.object(gui.QMessageBox, "question", return_value=gui.QMessageBox.Yes):
+                self.w._after_close_update()
+            read.assert_called_once_with("auto")
+
     def test_other_scheme_open_switches_back_then_updates(self):
         active = {"name": "測試"}
         self.w.internal_platform.setCurrentText("cTrader")

@@ -76,7 +76,8 @@ class LivePublishTests(unittest.TestCase):
         fake.lease_until = time.monotonic() + 30
         MobileServer.publish(fake, {"phase": "就緒", "live_pnl": {"x": 0.2}})
         self.assertEqual((fake.revision, fake.lease), (revision, lease))
-        self.assertEqual(sent[-1], {"type": "live", "live_pnl": {"x": 0.2}})
+        self.assertEqual(sent[-1]["live_pnl"], {"x": 0.2})
+        self.assertEqual(sent[-1]["type"], "live")
         self.assertEqual(fake.state["live_pnl"], {"x": 0.2})
 
 
@@ -88,41 +89,108 @@ class ClosedDetectionTests(unittest.TestCase):
     """Only a real close (same account + MT5 exit deal) may start the
     after-close update; another 方案's empty account must not."""
 
-    def _monitor(self, deals):
+    def setUp(self):
         from trading_helper.live_pnl import LivePnlMonitor
         NS = SimpleNamespace
-        closed = []
-        mon = LivePnlMonitor(lambda: None, lambda _v: None, closed=closed.append)
-        mon._connected = "T1"
-        mt = NS(positions=[], account=NS(login=1, server="S"),
-                history_deals_get=lambda position: deals)
-        mt.account_info = lambda: mt.account
-        mt.positions_get = lambda: mt.positions
-        mt.initialize = lambda **_k: True
-        mon._last_ticket, mon._last_key = 7, ("T1", "1", "s")
-        mon._ticket_profile[7] = "測試"
-        return mon, mt, closed
-
-    def ctx(self, NS, terminal="T1", account="1"):
-        return {"terminal": terminal, "account": NS(account_id=account, server="S")}
+        self.closed = []
+        self.mon = LivePnlMonitor(lambda: None, lambda _v: None, closed=self.closed.append)
+        self.deals = []
+        self.mt = NS(positions=[NS(ticket=7)], account=NS(login=1, server="S"),
+                     history_deals_get=lambda position: self.deals)
+        self.mt.account_info = lambda: self.mt.account
+        self.mt.positions_get = lambda: self.mt.positions
+        self.mt.initialize = lambda **_k: True
+        self.entry = {"profile": "測試", "terminal": "T1", "mt5_role": "external",
+                      "account": NS(account_id="1", server="S")}
+        self.mon._read_account(self.mt, self.entry)   # ticket 7 seen open
+        self.mt.positions = []
 
     def test_exit_deal_on_the_same_account_is_a_close(self):
-        NS = SimpleNamespace
-        mon, mt, closed = self._monitor([NS(entry=0), NS(entry=1)])
-        mon._read(mt, self.ctx(NS))
-        self.assertEqual(closed, [{"ticket": 7, "profile": "測試"}])
+        self.deals = [SimpleNamespace(entry=0), SimpleNamespace(entry=1)]
+        self.mon._read_account(self.mt, self.entry)
+        self.assertEqual(self.closed, [{"ticket": 7, "profile": "測試"}])
 
     def test_other_account_without_positions_is_not_a_close(self):
-        NS = SimpleNamespace
-        mon, mt, closed = self._monitor([NS(entry=1)])
-        mt.account = NS(login=2, server="S")
-        mon._connected = "T2"
-        mon._read(mt, self.ctx(NS, terminal="T2", account="2"))
-        self.assertEqual(closed, [])
-        self.assertIsNone(mon._last_ticket)
+        self.deals = [SimpleNamespace(entry=1)]
+        self.mt.account = SimpleNamespace(login=2, server="S")
+        other = dict(self.entry, profile="別的", terminal="T2",
+                     account=SimpleNamespace(account_id="2", server="S"))
+        self.mon._read_account(self.mt, other)
+        self.assertEqual(self.closed, [])
+        self.assertTrue(self.mon._has_position["測試"])   # still open in its own account
 
     def test_no_exit_deal_is_not_a_close(self):
+        self.deals = [SimpleNamespace(entry=0)]
+        self.mon._read_account(self.mt, self.entry)
+        self.assertEqual(self.closed, [])
+
+
+class MultiProfileTests(unittest.TestCase):
+    """目前持倉 shows the active 方案, or another one that holds a position;
+    each position's amounts are remembered from opening until closing."""
+
+    def make(self, tmp):
+        from trading_helper.live_pnl import LivePnlMonitor
         NS = SimpleNamespace
-        mon, mt, closed = self._monitor([NS(entry=0)])
-        mon._read(mt, self.ctx(NS))
-        self.assertEqual(closed, [])
+        mon = LivePnlMonitor(lambda: None, lambda _v: None, store_path=tmp + "/t.json")
+        accounts = {"T1": NS(login=1, server="S", positions=[]),
+                    "T2": NS(login=2, server="S", positions=[
+                        NS(ticket=9, time_msc=1, symbol="XAUUSD", type=0, volume=0.2, price_open=4000.0,
+                           sl=0.0, tp=0.0, profit=10.0, price_current=4005.0)])}
+        mt = NS(current="T1", history_deals_get=lambda position: [])
+        def initialize(path, timeout):
+            mt.current = path
+            return True
+        mt.initialize = initialize
+        mt.account_info = lambda: accounts[mt.current]
+        mt.positions_get = lambda: accounts[mt.current].positions
+        mt.symbol_info = lambda _s: NS(trade_contract_size=100)
+        entries = [{"profile": "A", "terminal": "T1", "mt5_role": "external",
+                    "account": NS(account_id="1", server="S"), "instruction": None},
+                   {"profile": "B", "terminal": "T2", "mt5_role": "external",
+                    "account": NS(account_id="2", server="S"), "instruction": None}]
+        return mon, mt, entries
+
+    def test_shows_the_other_profile_with_a_position(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            mon, mt, entries = self.make(tmp)
+            mon._targets[9] = {"profile": "B", "mt5_role": "external",
+                               "mine": [117.0, -450.0], "other": [875.0, -576.0]}
+            out = mon._tick(mt, {"active": "A", "profiles": entries}, 100.0)
+            self.assertEqual((out["profile"], out["choices"]), ("B", ["B"]))
+            self.assertIsNotNone(out["state"])
+
+    def test_amounts_are_saved_until_the_position_closes(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            mon, mt, entries = self.make(tmp)
+            side = SimpleNamespace(sl_points=10, tp_points=5, lot=0.2)
+            entries[1]["instruction"] = SimpleNamespace(external=side, internal=side)
+            mon._tick(mt, {"active": "B", "profiles": entries}, 100.0)
+            saved = json.load(open(tmp + "/t.json", encoding="utf-8"))
+            self.assertIn("9", saved)
+            mt.current = "T2"
+            mt.account_info().positions = []
+            mon._tick(mt, {"active": "B", "profiles": entries}, 200.0)
+            self.assertEqual(json.load(open(tmp + "/t.json", encoding="utf-8")), {})
+
+
+class StaleTargetTests(unittest.TestCase):
+    def test_positions_closed_while_not_running_are_forgotten(self):
+        import tempfile
+        from trading_helper.live_pnl import LivePnlMonitor
+        NS = SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            mon = LivePnlMonitor(lambda: None, lambda _v: None, store_path=tmp + "/t.json")
+            mon._targets = {5: {"profile": "A", "mine": [1, -1], "other": [1, -1]},
+                            6: {"profile": "B", "mine": [1, -1], "other": [1, -1]}}
+            closed = []
+            mon.closed = closed.append
+            mt = NS(account=NS(login=1, server="S"), history_deals_get=lambda position: [NS(entry=1)])
+            mt.account_info = lambda: mt.account
+            mt.positions_get = lambda: []
+            mt.initialize = lambda **_k: True
+            mon._read_account(mt, {"profile": "A", "terminal": "T", "account": NS(account_id="1", server="S")})
+            self.assertEqual(list(mon._targets), [6])   # A's old ticket dropped, B untouched
+            self.assertEqual(closed, [])                # no after-close update for it

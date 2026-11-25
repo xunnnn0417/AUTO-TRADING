@@ -19,7 +19,7 @@ from .remote_tunnel import QuickTunnel, FixedTunnel
 FIELDS = ("internal_balance", "daily_pnl", "expected_sl_combined", "internal_entry_price")
 ACTIONS = {"direction", "stage", "profile", "update", "fill_both", "fill_internal",
            "fill_external", "sync", "view_sl_tp", "rule", "option", "warning", "refresh_news",
-           "close_both", "read_balance", "rest_settings"}
+           "close_both", "read_balance", "rest_settings", "live_profile"}
 
 
 class DeviceList(QListWidget):
@@ -331,6 +331,8 @@ class RemoteController(QObject):
                     continue
                 news.append(news_item(event, False))
             self._news_cache = (news_key, news)
+        # 「已達到獲利目標」 etc.: the "!" sits on 每日獲利/虧損 (same as desktop).
+        pnl_warning = app._balance_warning_active() and app._pnl_warning(app._balance_range_warning_detail())
         ruler = app.account_ruler.state
         if ruler != getattr(self, '_ruler_state', None):
             from .progress_ruler import render_mobile_ruler
@@ -350,7 +352,8 @@ class RemoteController(QObject):
             values={key: value.text() for key, value in app.data_labels.items()},
             ruler=json.loads(json.dumps(asdict(ruler), default=str)) if ruler is not None else None,
             ruler_revision=getattr(self, '_ruler_revision', ''),
-            warnings={"internal_balance": app._balance_warning_active(),
+            warnings={"internal_balance": app._balance_warning_active() and not pnl_warning,
+                      "daily_pnl": pnl_warning,
                       "expected_sl_combined": app._expected_sl_warning_values() is not None},
             actions={"fill_both": available and app.action_buttons["填入兩邊"].isEnabled(),
                      "fill_internal": available and app.action_buttons["填入場內"].isEnabled(),
@@ -368,7 +371,10 @@ class RemoteController(QObject):
                    else "等待交易資料" if app.instruction is None else "正常",
             phase=self.phase, dialog=self._dialog_snapshot(), news=news,
             fill_progress=self._fill_progress(),
-            live_pnl=getattr(app, "live_pnl_state", None),
+            # Same as the side panel's 目前持倉: may be another 方案 with a position.
+            live_pnl=(getattr(app, "live_pnl_payload", None) or {}).get("state"),
+            live_profile=(getattr(app, "live_pnl_payload", None) or {}).get("profile") or app.profiles.active_name,
+            live_choices=list((getattr(app, "live_pnl_payload", None) or {}).get("choices") or []),
             news_error=calendar.error if calendar else "消息尚未載入",
         )
 
@@ -500,6 +506,8 @@ class RemoteController(QObject):
             status, message = "completed", "已顯示電腦核對資料。"
         elif item["action"] == "rest_settings":
             status, message = "completed", "休市設定已儲存。"
+        elif item["action"] == "live_profile":
+            status, message = "completed", "已切換顯示的持倉方案。"
         elif item["action"] == "read_balance":
             status, message = "completed", "已讀取場內餘額。"
         elif item["action"] == "refresh_news":
@@ -618,8 +626,12 @@ class RemoteController(QObject):
                 raise ValueError("此交易選項目前無法調整。")
         elif action == "rest_settings":
             self._clean_rest_settings(args)
+        elif action == "live_profile":
+            choices = (getattr(self.app, "live_pnl_payload", None) or {}).get("choices") or []
+            if set(args) != {"name"} or args["name"] not in choices:
+                raise ValueError("這個方案目前沒有持倉。")
         elif action == "warning":
-            if set(args) != {"key"} or args["key"] not in {"internal_balance", "expected_sl_combined"}:
+            if set(args) != {"key"} or args["key"] not in {"internal_balance", "daily_pnl", "expected_sl_combined"}:
                 raise ValueError("提醒項目不正確。")
         elif args:
             raise ValueError("操作資料不正確。")
@@ -654,12 +666,14 @@ class RemoteController(QObject):
                 else:
                     app.read_sheet()
             elif action == "warning":
-                (app._show_balance_warning if args["key"] == "internal_balance"
+                (app._show_balance_warning if args["key"] in ("internal_balance", "daily_pnl")
                  else app._show_expected_sl_warning)()
             elif action == "refresh_news":
                 app._get_event_calendar().refresh()
             elif action == "rest_settings":
                 self._apply_rest_settings(args)
+            elif action == "live_profile":
+                app.set_live_preference(args["name"])
             else:
                 {"fill_both": app.fill_both, "fill_internal": lambda: app.fill_role("internal"),
                  "fill_external": lambda: app.fill_role("external"), "sync": app.sync_external_sl_tp,

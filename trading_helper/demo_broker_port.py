@@ -386,41 +386,53 @@ class DemoUiBrokerPort:
         from pywinauto import Desktop
         _,win=self._bound(platform,role)
         root=Desktop(backend="uia").window(handle=win.handle)
-
-        def find():
-            return [g for g in root.descendants(control_type="DataGrid") if
-                    g.is_visible() and
-                    str(g.element_info.automation_id)=="PositionListDataGrid_AId"]
-
-        grids=find()
-        if not grids and self._ctrader_reselect_positions_tab(root):
-            # cTrader sometimes shows the Positions tab but does not expose
-            # its list to Windows; switching tabs (view only) rebuilds it.
-            self.log("cTrader Positions 清單未被系統讀到，已重新切換分頁再讀一次。")
-            grids=find()
+        grids=[g for g in root.descendants(control_type="DataGrid") if
+               g.is_visible() and
+               str(g.element_info.automation_id)=="PositionListDataGrid_AId"]
         if len(grids)!=1:
             raise AutomationError("cTrader Positions 清單不唯一或未顯示。")
         return grids[0]
 
-    @staticmethod
-    def _ctrader_reselect_positions_tab(root) -> bool:
-        """View-only: select Orders, then Positions again. No trading control
-        is touched. Returns True when Positions ended up selected."""
-        def tab(automation_id):
-            found=[t for t in root.descendants(control_type="TabItem")
-                   if str(t.element_info.automation_id)==automation_id]
-            return found[0] if len(found)==1 else None
-        positions,orders=tab("PositionsTab_AId"),tab("PendingOrdersTab_AId")
-        if positions is None or orders is None:
-            return False
+    _ctrader_tabs: dict = {}
+
+    @classmethod
+    def find_ctrader_tabs(cls, handle):
+        """Read-only lookup of the Orders / Positions tabs (about 2 s), kept
+        per window. Done in the background at start-up, so the switch while
+        filling only takes about 0.25 s."""
+        tabs=cls._ctrader_tabs.get(int(handle))
+        if tabs is not None:
+            return tabs
+        from pywinauto import Desktop
+        root=Desktop(backend="uia").window(handle=int(handle))
+        found={str(t.element_info.automation_id):t
+               for t in root.descendants(control_type="TabItem")}
+        tabs=(found.get("PendingOrdersTab_AId"),found.get("PositionsTab_AId"))
+        if None in tabs:
+            return None
+        cls._ctrader_tabs[int(handle)]=tabs
+        return tabs
+
+    def refresh_ctrader_positions_tab(self, window) -> None:
+        """While 填入場內 has cTrader in front: Orders -> Positions once
+        (view only), so Windows can read the Positions list later and the
+        read before sending never has to touch cTrader. Tabs are found once
+        per window and reused; never raises (the read before sending still
+        refuses to trade when the list is not readable)."""
         try:
-            orders.select()
-            time.sleep(0.25)
-            positions.select()
-            time.sleep(0.45)
-            return bool(positions.is_selected())
+            handle=int(window.handle)
+            tabs=self.find_ctrader_tabs(handle)
+            if tabs is None:
+                return
+            orders,positions=tabs
+            try:
+                orders.select()
+                time.sleep(0.12)
+                positions.select()
+            except Exception:
+                type(self)._ctrader_tabs.pop(handle,None)  # stale: find again next time
         except Exception:
-            return False
+            pass
 
     def _ctrader_positions(self, platform, role, account):
         grid=self._ctrader_grid(platform,role)

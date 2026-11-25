@@ -276,7 +276,7 @@ class MobileServer(QObject):
     # Display-only values that change many times a second. They never bump
     # the revision (a phone command must not be rejected because a P/L
     # number moved) and travel as a small separate message.
-    LIVE_KEYS = ("live_pnl",)
+    LIVE_KEYS = ("live_pnl", "live_profile", "live_choices")
 
     def publish(self, state: dict):
         live = {key: state.get(key) for key in self.LIVE_KEYS}

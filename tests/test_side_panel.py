@@ -83,6 +83,52 @@ class SidePanelTests(unittest.TestCase):
         self.qtapp.processEvents()
         self.assertTrue(panel.live_flyout.isVisible())
 
+    def test_live_profile_name_is_plain_with_one_and_a_dropdown_with_two(self):
+        panel = self.open_panel()
+        combo = panel.live_profile
+        panel._show_live({"profile": "方案B", "choices": ["方案B"], "state": None})
+        self.assertEqual(combo.currentText(), "方案B")
+        self.assertTrue(combo.locked)                     # no arrow, no hover, no click
+        QTest.mouseClick(combo, Qt.LeftButton)
+        self.assertFalse(combo.view().isVisible())
+        panel._show_live({"profile": "方案B", "choices": ["方案A", "方案B"], "state": None})
+        self.assertFalse(combo.locked)
+        with patch.object(self.w, "set_live_preference") as prefer:
+            combo.textActivated.emit("方案A")
+        prefer.assert_called_once_with("方案A")
+
+    def test_profit_target_note_puts_the_mark_on_daily_pnl(self):
+        panel = self.open_panel()
+        note = '已達到獲利目標,如有開啟來回打請確認當天起始階段是否在前一天的每日最大虧損附近'
+        with patch.object(self.w, '_balance_warning_active', return_value=True), \
+             patch.object(self.w, '_balance_range_warning_detail', return_value=note):
+            panel.sync_from_main()
+            self.assertFalse(panel.warnings['daily_pnl'].isHidden())
+            self.assertTrue(panel.warnings['internal_balance'].isHidden())
+            self.assertTrue(panel._update_warning_content('daily_pnl'))
+            self.assertIn('每日獲利', panel.warning_title.text())
+
+    def test_double_click_on_the_ball_opens_only_the_live_panel(self):
+        from PySide6.QtTest import QTest
+        panel = self.open_panel()
+        panel.set_collapsed(True)
+        self.qtapp.processEvents()
+        # As Windows sends it: press, release, DOUBLE-CLICK, release.
+        QTest.mouseClick(panel.handle, Qt.LeftButton)
+        centre = QPointF(panel.handle.rect().center())
+        glob = QPointF(panel.handle.mapToGlobal(panel.handle.rect().center()))
+        for kind, buttons in ((QEvent.MouseButtonDblClick, Qt.LeftButton), (QEvent.MouseButtonRelease, Qt.NoButton)):
+            QApplication.sendEvent(panel.handle, QMouseEvent(kind, centre, glob, Qt.LeftButton, buttons, Qt.NoModifier))
+        self.qtapp.processEvents()
+        self.assertTrue(panel.collapsed)                 # panel stays parked
+        self.assertTrue(panel.live_flyout.isVisible())   # 目前持倉 alone
+        QTest.qWait(panel._click_timer.interval() + 50)
+        self.assertTrue(panel.collapsed)
+        # A single click still opens the side panel (after the short wait).
+        QTest.mouseClick(panel.handle, Qt.LeftButton)
+        QTest.qWait(panel._click_timer.interval() + 50)
+        self.assertFalse(panel.collapsed)
+
     def test_live_and_events_stack_in_one_column_beside_the_panel(self):
         panel = self.open_panel()
         panel.live_button.setChecked(True)
@@ -595,6 +641,7 @@ class SidePanelTests(unittest.TestCase):
         self.assertEqual(panel.y(), destination.y() - panel.height() // 2)
         self.assertEqual(self.w.store.data['ui']['side_panel_y'], panel.y())
         QTest.mouseClick(panel.handle, Qt.LeftButton)
+        QTest.qWait(panel._click_timer.interval() + 50)  # single click: opens after the double-click wait
         self.assertFalse(panel.collapsed)
 
     def test_collapse_button_drags_only_vertically_and_short_click_collapses(self):
@@ -643,6 +690,7 @@ class SidePanelTests(unittest.TestCase):
             self.w.toggle_side_panel(True)
         self.assertTrue(panel.mask().isEmpty())
         QTest.mouseClick(panel.handle, Qt.LeftButton)
+        QTest.qWait(panel._click_timer.interval() + 50)  # single click: opens after the double-click wait
         self.assertFalse(panel.collapsed)
 
 

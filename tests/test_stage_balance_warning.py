@@ -495,3 +495,12 @@ class StageBalanceWarningTests(unittest.TestCase):
         self.assertIsNot(self.qtapp.focusWidget(), self.w.stage_selector)
         self.assertFalse(self.w._hover_help._timer.isActive())
         self.assertIsNone(self.w._hover_help._active)
+
+
+class ProfitTargetBadgeTests(unittest.TestCase):
+    def test_profit_target_reached_marks_the_daily_pnl_field(self):
+        from trading_helper.gui import TradingHelperApp
+        note = "已達到獲利目標,如有開啟來回打請確認當天起始階段是否在前一天的每日最大虧損附近"
+        self.assertTrue(TradingHelperApp._pnl_warning(note))
+        self.assertEqual(TradingHelperApp._trade_value_message(note)[0], "請確認每日獲利/虧損")
+        self.assertFalse(TradingHelperApp._pnl_warning("場內餘額高於帳號獲利目標 $51,750.00。"))

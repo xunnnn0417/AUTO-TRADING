@@ -71,6 +71,38 @@ class HoverStageCombo(QComboBox):
         super().enterEvent(event)
         self.update()
 
+
+class LiveProfileCombo(HoverStageCombo):
+    """目前持倉's 方案 name, styled like the side panel's subtitle. With one
+    方案 holding a position it is plain text: no arrow, no hover, no click.
+    With two or more it is a normal drop-down."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.locked = True
+        self.setFocusPolicy(Qt.NoFocus)
+
+    def set_locked(self, locked: bool) -> None:
+        self.locked = bool(locked)
+        self.setCursor(Qt.ArrowCursor if self.locked else Qt.PointingHandCursor)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if not self.locked:
+            super().mousePressEvent(event)
+
+    def wheelEvent(self, event):
+        if not self.locked:
+            super().wheelEvent(event)
+
+    def paintEvent(self, event):
+        if not self.locked:
+            return super().paintEvent(event)
+        painter = QPainter(self)
+        text = self.fontMetrics().elidedText(self.currentText(), Qt.ElideRight, self.width() - 8)
+        painter.setPen(QColor('#b8a8d5'))
+        painter.drawText(QRectF(4, 0, self.width() - 4, self.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
+
     def leaveEvent(self, event):
         super().leaveEvent(event)
         self.update()
