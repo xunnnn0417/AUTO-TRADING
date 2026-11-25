@@ -683,3 +683,15 @@ class PhoneQrTests(unittest.TestCase):
         rows = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(image.height(), image.bytesPerLine())
         value, _, _ = cv2.QRCodeDetector().detectAndDecode(rows[:, :image.width()])
         self.assertEqual(value, origin)
+
+
+class PipPageTests(unittest.TestCase):
+    def test_safari_pip_page_is_served_and_the_app_explains_it(self):
+        from trading_helper.remote_mobile import ASSETS
+        self.assertIn("/pip", ASSETS)
+        page = ASSETS["/pip"][1]
+        self.assertIn('id="pipPage"', page)
+        js0 = ASSETS["/app.js"][1]
+        self.assertIn('"x-safari-"+pipUrl()', js0)   # home-screen app: open the page in Safari
+        js = ASSETS["/app.js"][1]
+        self.assertIn('location.pathname==="/pip"', js)

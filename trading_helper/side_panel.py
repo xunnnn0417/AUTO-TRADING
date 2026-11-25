@@ -648,6 +648,8 @@ class SideQuickPanel(QWidget):
             self.calendar.refresh()
 
     def _toggle_live(self, opened):
+        if not opened:
+            self.live_bar.dismiss_closed()
         self._show_live(getattr(self.app, 'live_pnl_payload', None))
         self.live_flyout.setVisible(opened)
         # 重大事件 gets shorter / back to full height so both fit one column.
@@ -659,19 +661,10 @@ class SideQuickPanel(QWidget):
     def _show_live(self, value):
         """value: {"profile", "choices", "state"}; no position anywhere -> the
         active 方案's name, plain."""
-        value = value or {}
-        self.live_bar.set_state(value.get('state'))
-        name = value.get('profile') or self.app.profiles.active_name
-        choices = list(value.get('choices') or []) or [name]
-        if name not in choices:
-            choices.insert(0, name)
-        combo = self.live_profile
-        with QSignalBlocker(combo):
-            if [combo.itemText(i) for i in range(combo.count())] != choices:
-                combo.clear()
-                combo.addItems(choices)
-            combo.setCurrentText(name)
-        combo.set_locked(len(value.get('choices') or []) < 2)
+        self.live_bar.set_state((value or {}).get('state'))
+        self.live_bar.set_closed(self.app.shown_after_close_card(value or {})
+                                 if hasattr(self.app, 'shown_after_close_card') else None)
+        self.live_profile.show_payload(value, self.app.profiles.active_name)
 
     LIVE_FLYOUT_HEIGHT = 176
 

@@ -375,6 +375,7 @@ class RemoteController(QObject):
             live_pnl=(getattr(app, "live_pnl_payload", None) or {}).get("state"),
             live_profile=(getattr(app, "live_pnl_payload", None) or {}).get("profile") or app.profiles.active_name,
             live_choices=list((getattr(app, "live_pnl_payload", None) or {}).get("choices") or []),
+            live_closed=app.shown_after_close_card() if hasattr(app, "shown_after_close_card") else None,
             news_error=calendar.error if calendar else "消息尚未載入",
         )
 

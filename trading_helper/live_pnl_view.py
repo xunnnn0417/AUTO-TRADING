@@ -32,12 +32,58 @@ class LivePnlBar(QWidget):
         super().__init__(parent)
         self.compact = compact
         self.state = None
+        self.closed = None  # 「訂單已結束」 card (side panel only)
+        self.dismissed = None  # ticket whose card was closed by the user
         self.setMinimumHeight(128)
         self.setAccessibleName("目前持倉")
 
     def set_state(self, state) -> None:
         self.state = state
         self.update()
+
+    def dismiss_closed(self) -> None:
+        """The user closed 目前持倉: next time it says 目前沒有持倉."""
+        if self.closed:
+            self.dismissed = self.closed.get("ticket")
+            self.closed = None
+            self.update()
+
+    def set_closed(self, card) -> None:
+        if card and card.get("ticket") == self.dismissed:
+            card = None
+        if card != self.closed:
+            self.closed = dict(card) if card else None
+            self.update()
+
+    def _paint_closed(self, p, card) -> None:
+        """B: result tag, 場內目前餘額, a line, then 場外止盈 / 場外止損."""
+        w = self.width()
+        outcome = card.get("outcome")
+        top = max(0.0, (self.height() - 120) / 2)
+        text = {"tp": "場外止盈 · 已結束", "sl": "場外止損 · 已結束"}.get(outcome, "訂單已結束")
+        fg, bg = {"tp": (GAIN, "#173626"), "sl": (LOSS, "#3a1d24")}.get(outcome, ("#d8d2e6", TAG_BG))
+        font = QFont(FONT, 9, QFont.DemiBold)
+        tag_w = QFontMetrics(font).horizontalAdvance(text) + 16
+        rect = QRectF((w - tag_w) / 2, top, tag_w, 22)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(bg))
+        p.drawRoundedRect(rect, 5, 5)
+        self._text(p, rect, text, fg, size=9, bold=True, align=Qt.AlignCenter)
+        rows = [("場內目前餘額", card.get("balance") or "更新中…", "#c9c3d6", True), None,
+                ("場外止盈", card.get("tp") or "—", GAIN, False),
+                ("場外止損", card.get("sl") or "—", LOSS, False)]
+        y = top + 32
+        for row in rows:
+            if row is None:
+                p.setPen(QPen(QColor("#2c2c35"), 1))
+                p.drawLine(QPointF(0, y + 4), QPointF(w, y + 4))
+                y += 10
+                continue
+            label, value, color, big = row
+            self._text(p, QRectF(0, y, w / 2, 24), label, color, size=9)
+            self._text(p, QRectF(w / 2, y, w / 2, 24), value, PRICE, size=11 if big else 9,
+                       bold=big, align=Qt.AlignRight | Qt.AlignVCenter)
+            y += 26
 
     # -- small drawing helpers ------------------------------------------------
     def _tag(self, p, x, y, text, size=8):
@@ -70,6 +116,10 @@ class LivePnlBar(QWidget):
         s = self.state
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if not s and self.closed:
+            self._paint_closed(p, self.closed)
+            p.end()
+            return
         if not s:
             self._text(p, QRectF(self.rect()), "目前沒有持倉", MUTED, size=9, align=Qt.AlignCenter)
             p.end()

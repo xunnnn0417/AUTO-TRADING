@@ -134,6 +134,8 @@ class AfterCloseTests(ApplyBalanceTests):
             self.w._send_after_close_summary()
         title, body = push.call_args.args
         self.assertIn("餘額已更新", title)
+        if "場外止盈" in body and "場外止損" in body:
+            self.assertLess(body.index("場外止盈"), body.index("場外止損"))
 
     def test_other_scheme_open_means_no_automatic_update(self):
         with patch.object(self.w, "read_internal_balance") as read, \
@@ -346,7 +348,7 @@ class PhoneBalanceStateTests(unittest.TestCase):
         from trading_helper import remote_mobile
         js = remote_mobile.ASSETS["/app.js"][1]
         js = js if isinstance(js, str) else js.decode()
-        self.assertIn('b.disabled=balanceInput.disabled', js)
+        self.assertIn('b.disabled=prefixInput(b).disabled', js)
         self.assertIn('rb.dataset.action=ready?"update":"read_balance"', js)
 
     def test_phone_read_is_reported_as_completed_without_popup(self):
