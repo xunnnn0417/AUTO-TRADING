@@ -152,7 +152,9 @@ class MainVisualRegressionTests(unittest.TestCase):
         )
         self.assertLessEqual(self.window.expected_sl_warning_badge.y(), 2)
 
-        with patch.object(gui.QMessageBox, "warning") as warning:
+        with patch.object(
+            gui.QMessageBox, "question", return_value=gui.QMessageBox.No
+        ) as warning:
             QTest.mouseClick(self.window.expected_sl_warning_badge, Qt.LeftButton)
         warning.assert_called_once()
         message = warning.call_args.args[2]

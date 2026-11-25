@@ -85,7 +85,9 @@ from .demo_broker_port import DemoUiBrokerPort
 from .entry_status_report import (
     build_entry_status_report, summarize_interruption_reason,
 )
-from .expected_sl_adjustment import choose_repeat_adjustment, random_repeat_adjustment_range
+from .expected_sl_adjustment import (
+    choose_repeat_adjustment, choose_widened_sl, random_repeat_adjustment_range, widened_sl_range,
+)
 from .config import APP_DIR
 from . import crash_log
 from .field_detection import inspect_uia_window
@@ -2494,7 +2496,8 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             # Optional bulk-close fields remind like every other stage.
             keys = [key for key,_ in CALIBRATION_TARGETS[platform]]
             done,total = completion(points, keys)
-            incomplete[platform] = done < total
+            # Hidden TradingView never asks for calibration (no red dot).
+            incomplete[platform] = done < total and (platform != "TradingView" or TRADINGVIEW_ENABLED)
             self.action_buttons["校準 " + platform].setToolTip(
                 f"已儲存校準：{done}/{total}；"
                 "僅代表位置已儲存，不代表實際交易欄位驗收。"
@@ -4543,7 +4546,29 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
             f"止損距離縮短 {reduction:.1f}%，手數與保證金可能增加。\n"
             "程式無法確認即時保證金限額；請在平台核對手數、可用保證金及考試商規則。"
         )
-        QMessageBox.warning(self, "預期止損與保證金提醒", detail)
+        bounds = widened_sl_range(original)
+        proposed = choose_widened_sl(original)
+        if bounds is None or proposed is None:
+            QMessageBox.warning(self, "預期止損與保證金提醒", detail)
+            return
+        far = bounds[0]
+        answer = QMessageBox.question(
+            self, "預期止損與保證金提醒",
+            detail + f"\n\n建議改為 {proposed} 點（原始 {original} ～ {far} 之間隨機，小數兩位）。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            yes_text=f"改為 {proposed} 並更新", no_text="維持原值",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        entry = self.parameter_inputs["expected_sl_combined"]
+        self._fill_confirmed_text.pop("expected_sl_combined", None)
+        entry.setText(format(proposed, "f"))
+        self.log(f"預期止損提醒：改為 {proposed} 點並更新（原始 {original}）。")
+        button = getattr(self, "parameter_update_button", None)
+        if button is not None and button.isEnabled():
+            button.click()
+        else:
+            self.log("目前不能更新；已填入建議值，請稍後按「更新」。")
 
     def _confirm_fill_text_inputs(self) -> None:
         """An Enter confirms all visible parameter fields for fill previews.

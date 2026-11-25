@@ -151,3 +151,39 @@ class RepeatedExpectedSlPromptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WidenedSlWarningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt = QApplication.instance() or QApplication([])
+
+    def _ui(self):
+        from PySide6.QtWidgets import QLineEdit, QPushButton
+        field, button = QLineEdit(), QPushButton()
+        self.addCleanup(field.close)
+        self.addCleanup(button.close)
+        clicks = []
+        button.clicked.connect(lambda: clicks.append(1))
+        ui = SimpleNamespace(
+            _expected_sl_warning_values=lambda: (Decimal("-6.70"), Decimal("-6")),
+            expected_sl_warning_badge=MagicMock(), parameter_inputs={"expected_sl_combined": field},
+            _fill_confirmed_text={"expected_sl_combined": "-6"}, parameter_update_button=button,
+            log=lambda _t: None)
+        return ui, field, clicks
+
+    def test_accepting_the_suggestion_fills_it_and_presses_update(self):
+        ui, field, clicks = self._ui()
+        with patch("trading_helper.gui.choose_widened_sl", return_value=Decimal("-7.43")), \
+             patch("trading_helper.gui.QMessageBox.question", return_value=QMessageBox.Yes) as prompt:
+            TradingHelperApp._show_expected_sl_warning(ui)
+        self.assertIn("-8.20", prompt.call_args.args[2])
+        self.assertEqual(prompt.call_args.kwargs["yes_text"], "改為 -7.43 並更新")
+        self.assertEqual(field.text(), "-7.43")
+        self.assertEqual(clicks, [1])
+
+    def test_keeping_the_value_changes_nothing(self):
+        ui, field, clicks = self._ui()
+        with patch("trading_helper.gui.QMessageBox.question", return_value=QMessageBox.No):
+            TradingHelperApp._show_expected_sl_warning(ui)
+        self.assertEqual((field.text(), clicks), ("", []))

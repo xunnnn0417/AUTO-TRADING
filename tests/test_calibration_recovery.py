@@ -231,6 +231,13 @@ class MainScreenTests(unittest.TestCase):
         w._refresh_calibration_badges()
         self.assertFalse(dot.isVisibleTo(button))
 
+    def test_hidden_tradingview_never_lights_the_edit_dot(self):
+        w = self.w
+        w.store.data["platforms"].setdefault("TradingView", {})["points"] = {}
+        w._refresh_calibration_badges()
+        tv = w.action_buttons["校準 TradingView"]
+        self.assertFalse(w._calibration_badge_labels[tv].isVisibleTo(tv))
+
     def test_rest_close_checkbox_then_gear_after_a_divider(self):
         w = self.w
         checkbox = w.rest_close_checkbox
