@@ -75,3 +75,32 @@ def choose_repeat_adjustment(
     if excluded is not None and low_cent + slot >= excluded:
         slot += 1
     return Decimal(low_cent + slot) * CENT
+
+
+WIDEN = Decimal("1.5")
+
+
+def widened_sl_range(original: Decimal | None) -> tuple[Decimal, Decimal] | None:
+    """The 預期止損 warning's suggestion range: from the original stop to
+    1.5 points farther (e.g. -6.70 -> -8.20 ~ -6.70), cent-aligned."""
+    if original is None or not original.is_finite() or original == 0:
+        return None
+    far = original - WIDEN  # 「原始 SL 再 -1.5」, same direction as the repeat rule
+    if far == 0 or (far < 0) != (original < 0):
+        return None
+    low, high = sorted((original, far))
+    low_cent = int((low / CENT).to_integral_value(rounding=ROUND_CEILING))
+    high_cent = int((high / CENT).to_integral_value(rounding=ROUND_FLOOR))
+    if high_cent - low_cent < 1:
+        return None
+    return Decimal(low_cent) * CENT, Decimal(high_cent) * CENT
+
+
+def choose_widened_sl(original: Decimal | None, *, rng=None) -> Decimal | None:
+    """A uniform two-decimal value in widened_sl_range()."""
+    bounds = widened_sl_range(original)
+    if bounds is None:
+        return None
+    low_cent, high_cent = int(bounds[0] / CENT), int(bounds[1] / CENT)
+    chooser = rng or random.SystemRandom()
+    return Decimal(low_cent + chooser.randrange(high_cent - low_cent + 1)) * CENT

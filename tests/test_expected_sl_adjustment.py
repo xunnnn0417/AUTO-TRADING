@@ -2,8 +2,25 @@ from decimal import Decimal
 import unittest
 
 from trading_helper.expected_sl_adjustment import (
-    choose_repeat_adjustment, random_repeat_adjustment_range,
+    choose_repeat_adjustment, choose_widened_sl, random_repeat_adjustment_range, widened_sl_range,
 )
+
+
+class WidenedSlSuggestionTests(unittest.TestCase):
+    def test_range_is_original_to_one_and_a_half_points_farther(self):
+        self.assertEqual(widened_sl_range(Decimal("-6.70")), (Decimal("-8.20"), Decimal("-6.70")))
+        self.assertIsNone(widened_sl_range(Decimal("1.2")))   # would cross zero
+        self.assertIsNone(widened_sl_range(None))
+
+    def test_choice_is_two_decimals_inside_the_range(self):
+        class Last:
+            def randrange(self, n):
+                return n - 1
+        self.assertEqual(choose_widened_sl(Decimal("-6.70"), rng=Last()), Decimal("-6.70"))
+        for _ in range(50):
+            value = choose_widened_sl(Decimal("-6.70"))
+            self.assertTrue(Decimal("-8.20") <= value <= Decimal("-6.70"))
+            self.assertEqual(value, value.quantize(Decimal("0.01")))
 
 
 class ExpectedSlAdjustmentTests(unittest.TestCase):
