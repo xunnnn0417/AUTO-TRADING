@@ -8,6 +8,7 @@ ERROR_ALREADY_EXISTS = 183
 APP_ID = "Xun.HedgeAssistant.Test"
 APP_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_ICON = APP_BASE / "assets" / "app.ico"
+UI_SCALE = "0.9"
 
 
 def enable_dpi_awareness() -> None:
@@ -98,6 +99,9 @@ def main() -> None:
         subprocess.Popen([str(selected),str(APP_BASE/"main.py")],cwd=APP_BASE)
         return
     enable_dpi_awareness()
+    # Whole-app size (trial): 0.9 = everything at 90 %. Must be set before Qt starts;
+    # an explicit QT_SCALE_FACTOR in the environment still wins.
+    os.environ.setdefault("QT_SCALE_FACTOR", UI_SCALE)
     from trading_helper import crash_log
     crash_log.install()
     try:

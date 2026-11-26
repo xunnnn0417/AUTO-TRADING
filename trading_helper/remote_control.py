@@ -255,6 +255,7 @@ class MobileServer(QObject):
         self.passkey_challenges: dict[str, tuple[str, str, float]] = {}
         self.passkey_failures: deque = deque(maxlen=20)
         self._last_encoded = ""
+        self.pip_stream = None  # set by RemoteController (computer-rendered PiP video)
 
     @property
     def local_origin(self):
@@ -494,6 +495,17 @@ class MobileServer(QObject):
                 self._respond(sock, 200, b'{"paired":true}', "application/json", [f"Set-Cookie: {cookie}"])
                 self.changed.emit()
                 return
+            live = re.fullmatch(r"/pip/live/([a-f0-9]{32})/(live\.m3u8|seg\d{5}\.ts)", path)
+            if method == "GET" and live and not length:
+                # The random path token is only sent to paired phones over the
+                # authenticated WebSocket; iOS's player may not send the cookie.
+                body = self.pip_stream.read(*live.groups()) if self.pip_stream else None
+                if body is None:
+                    self._respond(sock, 404, b"Not found")
+                else:
+                    self._respond(sock, 200, body, "application/vnd.apple.mpegurl"
+                                  if live.group(2).endswith(".m3u8") else "video/mp2t")
+                return
             if method == "GET" and path in self.assets and not length:
                 content_type, content = self.assets[path]
                 self._respond(sock, 200, content.encode("utf-8") if isinstance(content, str) else content, content_type)
@@ -607,7 +619,7 @@ class MobileServer(QObject):
                    "X-Content-Type-Options: nosniff", "X-Frame-Options: DENY",
                    "Referrer-Policy: no-referrer", "Permissions-Policy: camera=(), microphone=(), geolocation=()",
                    "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; "
-                   f"connect-src 'self' {websocket_sources}; img-src 'self'; manifest-src 'self'; "
+                   f"connect-src 'self' {websocket_sources}; img-src 'self'; media-src 'self'; manifest-src 'self'; "
                    "worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"]
         if self.public_origin:
             headers.append("Strict-Transport-Security: max-age=31536000")

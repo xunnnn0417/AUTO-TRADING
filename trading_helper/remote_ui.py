@@ -90,6 +90,15 @@ class RemoteController(QObject):
         fill_progress.add_listener(self._fill_step)
         QApplication.instance().aboutToQuit.connect(self.stop)
         self.settings_dialog = None
+        # Computer-rendered PiP video (see pip_stream); idle unless a phone plays it.
+        from .pip_stream import PipStream, FPS
+        self.pip_stream = PipStream(self._render_pip_frame)
+        self.server.pip_stream = self.pip_stream
+        self._pip_bar = None
+        self.pip_timer = QTimer(self)
+        self.pip_timer.setInterval(1000 // FPS)
+        self.pip_timer.timeout.connect(self._pip_tick)
+        self.pip_timer.start()
 
     def start(self, origin: str = "", port: int = 8765):
         self.server.start(origin, port)
@@ -103,6 +112,7 @@ class RemoteController(QObject):
         self.temporary_connection = False
         self.timer.stop()
         self.heartbeat.stop()
+        self.pip_stream.stop()
         if self.active:
             self.store.finish(self.active["device"], self.active["id"], "unknown",
                               {"message": "手機連線已關閉，請在電腦核對本次結果；不會重送。"})
@@ -377,7 +387,57 @@ class RemoteController(QObject):
             live_choices=list((getattr(app, "live_pnl_payload", None) or {}).get("choices") or []),
             live_closed=app.shown_after_close_card() if hasattr(app, "shown_after_close_card") else None,
             news_error=calendar.error if calendar else "消息尚未載入",
+            pip_stream=self.pip_stream.path,
         )
+
+    def _pip_tick(self):
+        # Keep the stream warm while a phone page is open so PiP starts at once.
+        if self.server.sockets and self.pip_stream.available:
+            self.pip_stream.last_request = time.monotonic()
+            if not self.pip_stream.running:
+                self.pip_stream.start()
+        self.pip_stream.tick()
+
+    def _render_pip_frame(self) -> bytes:
+        """目前持倉 for the phone PiP: title, 方案, time, then the side panel's bar."""
+        from datetime import datetime
+        from PySide6.QtCore import QPoint, QRectF
+        from PySide6.QtGui import QColor, QFont, QImage, QPainter, QRegion
+        from PySide6.QtWidgets import QWidget
+        from .live_pnl_view import FONT, LivePnlBar, MUTED
+        from .pip_stream import HEIGHT, WIDTH
+        app = self.app
+        payload = getattr(app, "live_pnl_payload", None) or {}
+        if self._pip_bar is None:
+            self._pip_bar = LivePnlBar()
+            self._pip_bar.resize(332, 150)
+        bar = self._pip_bar
+        bar.set_state(payload.get("state"))
+        bar.set_closed(app.shown_after_close_card() if hasattr(app, "shown_after_close_card") else None)
+        image = QImage(WIDTH, HEIGHT, QImage.Format_ARGB32)
+        image.fill(QColor("#09090c"))
+        p = QPainter(image)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        k = WIDTH / 360
+        p.scale(k, k)
+
+        def text(rect, value, color, size, bold=False, align=Qt.AlignVCenter | Qt.AlignLeft):
+            font = QFont(FONT)
+            font.setPixelSize(size)
+            font.setBold(bold)
+            p.setFont(font)
+            p.setPen(QColor(color))
+            p.drawText(rect, align, value)
+
+        text(QRectF(14, 8, 120, 20), "更新 " + datetime.now().strftime("%H:%M:%S"), MUTED, 10)
+        text(QRectF(100, 8, 160, 20), "目前持倉", "#ece8f4", 13, True, Qt.AlignCenter)
+        text(QRectF(200, 8, 146, 20), payload.get("profile") or app.profiles.active_name or "", "#b8a8d5", 11,
+             align=Qt.AlignVCenter | Qt.AlignRight)
+        p.translate(14, 36)
+        bar.render(p, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
+        p.end()
+        return bytes(image.constBits())[:WIDTH * HEIGHT * 4]
 
     def _rest_settings(self):
         from .gui import rest_close_minutes
