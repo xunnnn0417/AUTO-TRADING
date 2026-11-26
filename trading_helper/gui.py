@@ -1373,7 +1373,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         self.profile_manage_button = ToolbarMenuButton()
         self.profile_manage_button.setObjectName("profile_manage_button")
         self.profile_manage_button.setText("管理")
-        self.profile_manage_button.setIcon(themed_icon("settings", "#b8afb9", 16))
+        self.profile_manage_button.setIcon(themed_icon("gear", "#b8afb9", 16))
         self.profile_manage_button.setIconSize(QSize(16, 16))
         self.profile_manage_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.profile_manage_button.setToolTip("建立、儲存、重新命名或刪除目前方案")
@@ -2109,7 +2109,7 @@ class TradingHelperApp(FramelessNativeMixin, QMainWindow):
         automation_layout.addWidget(self.rest_close_checkbox)
         self.rest_close_settings_button = QToolButton(automation_row)
         self.rest_close_settings_button.setObjectName("restCloseSettingsButton")
-        self.rest_close_settings_button.setIcon(themed_icon("settings", size=14))
+        self.rest_close_settings_button.setIcon(themed_icon("gear", size=14))
         self.rest_close_settings_button.setAutoRaise(True)
         self.rest_close_settings_button.setCursor(Qt.PointingHandCursor)
         # Icon only, flat and borderless so it blends in until hovered.

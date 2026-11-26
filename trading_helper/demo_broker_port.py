@@ -421,18 +421,49 @@ class DemoUiBrokerPort:
         refuses to trade when the list is not readable)."""
         try:
             handle=int(window.handle)
-            tabs=self.find_ctrader_tabs(handle)
-            if tabs is None:
-                return
-            orders,positions=tabs
+        except Exception:
+            return
+        # Toggle, then confirm the Positions list is really readable. If not,
+        # find the tabs again and toggle once more with longer waits (cTrader
+        # sometimes needs more than 0.12 s to rebuild the list).
+        for gap,settle in ((0.12,0.0),(0.5,1.0)):
             try:
+                tabs=self.find_ctrader_tabs(handle)
+                if tabs is None:
+                    break
+                orders,positions=tabs
                 orders.select()
-                time.sleep(0.12)
+                time.sleep(gap)
                 positions.select()
+                if settle:
+                    time.sleep(settle)
             except Exception:
-                type(self)._ctrader_tabs.pop(handle,None)  # stale: find again next time
+                type(self)._ctrader_tabs.pop(handle,None)  # stale: find again
+                continue
+            if self._ctrader_grid_readable(handle):
+                return
+            type(self)._ctrader_tabs.pop(handle,None)
+        try:
+            self.log(
+                "提醒：cTrader Positions 持倉表仍讀不到，進場前會停止。"
+                "請在 cTrader 手動點一次 Orders 再點回 Positions；"
+                "仍不行請重開該 cTrader。"
+            )
         except Exception:
             pass
+
+    @staticmethod
+    def _ctrader_grid_readable(handle) -> bool:
+        try:
+            from pywinauto import Desktop
+            root=Desktop(backend="uia").window(handle=int(handle))
+            return sum(
+                1 for g in root.descendants(control_type="DataGrid")
+                if g.is_visible() and
+                str(g.element_info.automation_id)=="PositionListDataGrid_AId"
+            )==1
+        except Exception:
+            return False
 
     def _ctrader_positions(self, platform, role, account):
         grid=self._ctrader_grid(platform,role)

@@ -13,6 +13,8 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from PySide6.QtWidgets import QWidget
 
 GAIN, LOSS = "#7fe0a8", "#ff8f8f"
+# 場外 (outside) numbers are brighter so they stand out from 場內.
+EXT_GAIN, EXT_LOSS = "#55e597", "#ff6b74"
 FILL_GAIN, FILL_LOSS = "#4fb37f", "#d4677a"
 TRACK_LOSS, TRACK_GAIN = "#3a2328", "#1f3a2c"
 TICK, PRICE, MUTED, TAG_BG = "#d8d2e6", "#e7e2f0", "#8d879b", "#2b2735"
@@ -61,7 +63,7 @@ class LivePnlBar(QWidget):
         outcome = card.get("outcome")
         top = max(0.0, (self.height() - 120) / 2)
         text = {"tp": "場外止盈 · 已結束", "sl": "場外止損 · 已結束"}.get(outcome, "訂單已結束")
-        fg, bg = {"tp": (GAIN, "#173626"), "sl": (LOSS, "#3a1d24")}.get(outcome, ("#d8d2e6", TAG_BG))
+        fg, bg = {"tp": (EXT_GAIN, "#173626"), "sl": (EXT_LOSS, "#3a1d24")}.get(outcome, ("#d8d2e6", TAG_BG))
         font = QFont(FONT, 9, QFont.DemiBold)
         tag_w = QFontMetrics(font).horizontalAdvance(text) + 16
         rect = QRectF((w - tag_w) / 2, top, tag_w, 22)
@@ -70,8 +72,8 @@ class LivePnlBar(QWidget):
         p.drawRoundedRect(rect, 5, 5)
         self._text(p, rect, text, fg, size=9, bold=True, align=Qt.AlignCenter)
         rows = [("場內目前餘額", card.get("balance") or "更新中…", "#c9c3d6", True), None,
-                ("場外止盈", card.get("tp") or "—", GAIN, False),
-                ("場外止損", card.get("sl") or "—", LOSS, False)]
+                ("場外止盈", card.get("tp") or "—", EXT_GAIN, False),
+                ("場外止損", card.get("sl") or "—", EXT_LOSS, False)]
         y = top + 32
         for row in rows:
             if row is None:
@@ -134,8 +136,8 @@ class LivePnlBar(QWidget):
         extra = max(0.0, (self.height() - 128) / 2)
         inset = extra * 0.85
         tag_w = self._tag(p, 0, inset, "場外")
-        self._text(p, QRectF(tag_w + 5, inset, w / 2, 16), f"SL {money(ext['sl'])}", LOSS, bold=True)
-        self._text(p, QRectF(w / 2, inset, w / 2, 16), f"TP {money(ext['tp'])}", GAIN, bold=True,
+        self._text(p, QRectF(tag_w + 5, inset, w / 2, 16), f"SL {money(ext['sl'])}", EXT_LOSS, bold=True)
+        self._text(p, QRectF(w / 2, inset, w / 2, 16), f"TP {money(ext['tp'])}", EXT_GAIN, bold=True,
                    align=Qt.AlignRight | Qt.AlignVCenter)
 
         # Middle: price boxes at both ends, the track between them. When the
@@ -178,7 +180,7 @@ class LivePnlBar(QWidget):
             return max(0.0, min(w - width, center - width / 2))
 
         self._text(p, QRectF(centered(now), axis - 30, label_w, 16), money(ext["pnl"]) + est_ext,
-                   GAIN if ext["pnl"] >= 0 else LOSS, bold=True, align=Qt.AlignCenter)
+                   EXT_GAIN if ext["pnl"] >= 0 else EXT_LOSS, bold=True, align=Qt.AlignCenter)
 
         # 進場 / 現價 on one row below; pushed apart when they would overlap.
         font = QFont(FONT, 8)
