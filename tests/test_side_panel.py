@@ -83,6 +83,18 @@ class SidePanelTests(unittest.TestCase):
         self.qtapp.processEvents()
         self.assertTrue(panel.live_flyout.isVisible())
 
+    def test_open_position_at_start_up_opens_live_pnl_once(self):
+        panel = self.open_panel()
+        panel.live_button.setChecked(False)
+        panel._auto_live_done = False
+        panel._show_live({"profile": "方案B", "choices": ["方案B"], "state": None})
+        self.assertFalse(panel.live_button.isChecked())          # no position: stays closed
+        panel._show_live({"profile": "方案B", "choices": ["方案B"], "state": {"external": {"sl": -5, "tp": 2, "pnl": -1}, "internal": {"sl": -5, "tp": 8, "pnl": 1}, "sl_price": 1.0, "tp_price": 2.0, "entry_price": 1.5, "price": 1.6, "zero": 0.5, "x": 0.6}})
+        self.assertTrue(panel.live_button.isChecked())
+        panel.live_button.setChecked(False)                      # user closes it
+        panel._show_live({"profile": "方案B", "choices": ["方案B"], "state": {"external": {"sl": -5, "tp": 2, "pnl": -1}, "internal": {"sl": -5, "tp": 8, "pnl": 1}, "sl_price": 1.0, "tp_price": 2.0, "entry_price": 1.5, "price": 1.6, "zero": 0.5, "x": 0.6}})
+        self.assertFalse(panel.live_button.isChecked())          # only once
+
     def test_live_profile_name_is_plain_with_one_and_a_dropdown_with_two(self):
         panel = self.open_panel()
         combo = panel.live_profile

@@ -256,6 +256,7 @@ class MobileServer(QObject):
         self.passkey_failures: deque = deque(maxlen=20)
         self._last_encoded = ""
         self.pip_stream = None  # set by RemoteController (computer-rendered PiP video)
+        self.pip_silent = False
 
     @property
     def local_origin(self):
@@ -619,7 +620,7 @@ class MobileServer(QObject):
                    "X-Content-Type-Options: nosniff", "X-Frame-Options: DENY",
                    "Referrer-Policy: no-referrer", "Permissions-Policy: camera=(), microphone=(), geolocation=()",
                    "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; "
-                   f"connect-src 'self' {websocket_sources}; img-src 'self'; media-src 'self'; manifest-src 'self'; "
+                   f"connect-src 'self' {websocket_sources}; img-src 'self' data:; media-src 'self'; manifest-src 'self'; "
                    "worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"]
         if self.public_origin:
             headers.append("Strict-Transport-Security: max-age=31536000")
@@ -662,6 +663,11 @@ class MobileServer(QObject):
             payload = json.loads(raw)
             if not isinstance(payload, dict) or len(raw) > MAX_MESSAGE:
                 raise ValueError()
+            if payload.get("type") == "pip_silent":
+                # Display only: the phone PiP went silent (another app has the sound),
+                # so the computer-drawn PiP shows 「鎖定不更新」 next to the time.
+                self.pip_silent = payload.get("on") is True
+                return
             if payload.get("type") == "ping":
                 echo = payload.get("echo", 0)
                 self.send(sock, {"type": "pong", "time": time.time(),
