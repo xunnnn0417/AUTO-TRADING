@@ -430,10 +430,27 @@ class RemoteController(QObject):
             p.setPen(QColor(color))
             p.drawText(rect, align, value)
 
-        text(QRectF(14, 8, 120, 20), "更新 " + datetime.now().strftime("%H:%M:%S"), MUTED, 10)
-        text(QRectF(100, 8, 160, 20), "目前持倉", "#ece8f4", 13, True, Qt.AlignCenter)
-        text(QRectF(200, 8, 146, 20), payload.get("profile") or app.profiles.active_name or "", "#b8a8d5", 11,
-             align=Qt.AlignVCenter | Qt.AlignRight)
+        # Header on one baseline: 更新 time (left) and 方案 (right) in the same colour,
+        # inset from the corners because a small PiP window rounds/crops them.
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QFontMetricsF
+
+        def line(x, value, color, size, bold=False, anchor="left", baseline=23):
+            font = QFont(FONT)
+            font.setPixelSize(size)
+            font.setBold(bold)
+            p.setFont(font)
+            p.setPen(QColor(color))
+            width = QFontMetricsF(font).horizontalAdvance(value)
+            left = x - width if anchor == "right" else x - width / 2 if anchor == "center" else x
+            p.drawText(QPointF(left, baseline), value)
+            return width
+
+        stamp = line(34, datetime.now().strftime("%H:%M:%S"), "#b8a8d5", 11)
+        if getattr(self.server, "pip_silent", False):
+            line(34 + stamp + 3, "鎖定不更新", MUTED, 5)  # small, right after the time
+        line(180, "目前持倉", "#ece8f4", 13, True, "center")
+        line(326, payload.get("profile") or app.profiles.active_name or "", "#b8a8d5", 11, anchor="right")
         p.translate(14, 36)
         bar.render(p, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
         p.end()

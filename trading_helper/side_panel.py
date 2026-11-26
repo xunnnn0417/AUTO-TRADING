@@ -1,6 +1,8 @@
 """Floating quick controls: a view of the main window, never a second trader."""
 from __future__ import annotations
 
+import time
+
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -186,6 +188,7 @@ class SideQuickPanel(QWidget):
         self.live_button.setObjectName('sideLivePnlButton')
         self.live_button.setCheckable(True)
         self.live_button.toggled.connect(self._toggle_live)
+        self._created_at = time.monotonic()
         row.addWidget(self.live_button)
         self.update_button = self._icon_button('refresh', '更新數值')
         self.update_button.clicked.connect(self.update_values)
@@ -665,7 +668,15 @@ class SideQuickPanel(QWidget):
         self.live_bar.set_closed(self.app.shown_after_close_card(value or {})
                                  if hasattr(self.app, 'shown_after_close_card') else None)
         self.live_profile.show_payload(value, self.app.profiles.active_name)
+        # Right after start-up (e.g. the helper was closed and reopened while a
+        # position is open), open 目前持倉 once on its own. Display only.
+        if (not getattr(self, "_auto_live_done", False) and (value or {}).get("state")
+                and time.monotonic() - getattr(self, "_created_at", 0.0) < self.AUTO_LIVE_SECONDS):
+            self._auto_live_done = True
+            if not self.live_button.isChecked():
+                self.live_button.setChecked(True)
 
+    AUTO_LIVE_SECONDS = 120
     LIVE_FLYOUT_HEIGHT = 176
 
     def _live_drag(self, event) -> bool:
